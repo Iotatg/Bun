@@ -1,0 +1,46 @@
+var result = ""
+try {
+    throw "boom"
+} catch e {
+    result = "caught " + e
+}
+print(result)
+
+try {
+    print("no error")
+} catch e {
+    print("unreachable")
+}
+
+fn boom() {
+    throw "from function"
+}
+
+try {
+    boom()
+} catch e {
+    print("fn: " + e)
+}
+
+try {
+    throw 42
+} catch {
+    print("anonymous catch")
+}
+
+var trail = []
+try {
+    trail.push(1)
+    throw "after push"
+} catch e {
+    trail.push(2)
+}
+print(trail.join(","))
+
+var size = 0
+try {
+    size = len([1, 2, 3])
+} catch e {
+    size = -1
+}
+print(size)

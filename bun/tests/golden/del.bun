@@ -1,0 +1,18 @@
+// `del` removes a name from the scope that holds it, and removes an
+// item from a dict or a list.
+var x = 1
+print(x)
+del x
+try {
+    print(x)
+} catch err {
+    print("gone: " + err)
+}
+
+let d = {"a": 1, "b": 2}
+del d["a"]
+print(d.keys().join(","))
+
+var items = [1, 2, 3]
+del items[1]
+print(items.join(","))

@@ -1,0 +1,31 @@
+let code = 404
+match code {
+    200 => print("ok"),
+    404 => print("not found"),
+    _ => print("something else"),
+}
+
+match "hello" {
+    string => print("a string"),
+    int => print("an int"),
+    _ => print("neither"),
+}
+
+match [1, 2] {
+    [a, b] => print("list " + str(a) + " " + str(b)),
+    _ => print("not a list"),
+}
+
+match { "id": 7 } {
+    { "id": id } => print("id is " + str(id)),
+    _ => print("no id"),
+}
+
+match 5 {
+    1 to 9 => print("small"),
+    _ => print("large"),
+}
+
+match 99 {
+    other => print("bound " + str(other)),
+}

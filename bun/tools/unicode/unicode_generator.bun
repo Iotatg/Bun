@@ -1,0 +1,92 @@
+// Converted from bun-runtime/misctools/unicode-generator.ts
+// (Generator class -> module functions; block dedup by SHA-256 -> exact
+// block-content comparison, which yields identical tables.)
+
+let BLOCK_SIZE = 256
+
+export fn generate(ctx, max_codepoint) {
+    var stage1 = []
+    var stage2 = []
+    var stage3 = []
+    var block_map = {}
+
+    var block = []
+    var fill = 0
+    while fill < BLOCK_SIZE {
+        block.push(0)
+        fill = fill + 1
+    }
+
+    var block_len = 0
+    var cp = 0
+    while cp <= max_codepoint {
+        let elem = ctx["get"](cp)
+
+        var block_idx = len(stage3)
+        var scan = 0
+        while scan < len(stage3) {
+            if ctx["eql"](stage3[scan], elem) {
+                block_idx = scan
+            }
+            scan = scan + 1
+        }
+        if block_idx == len(stage3) {
+            stage3.push(elem)
+        }
+
+        block[block_len] = block_idx
+        block_len = block_len + 1
+
+        if block_len == BLOCK_SIZE or cp == max_codepoint {
+            let key = block.join(",")
+            if !block_map.has(key) {
+                block_map[key] = len(stage2)
+                var copy = 0
+                while copy < block_len {
+                    stage2.push(block[copy])
+                    copy = copy + 1
+                }
+            }
+            stage1.push(block_map[key])
+            var reset = 0
+            while reset < BLOCK_SIZE {
+                block[reset] = 0
+                reset = reset + 1
+            }
+            block_len = 0
+        }
+        cp = cp + 1
+    }
+
+    var tables = {}
+    tables["stage1"] = stage1
+    tables["stage2"] = stage2
+    tables["stage3"] = stage3
+    return tables
+}
+
+export fn write_zig(table_name, tables, elem_to_string) {
+    var output = "/// Auto-generated. Do not edit.\n"
+    output = output + "fn " + table_name + "(comptime Elem: type) type {\n"
+    output = output + "    return struct {\n"
+    output = output + "pub const stage1: [" + str(len(tables["stage1"]))
+    output = output + "]u16 = .{"
+    output = output + tables["stage1"].join(",")
+    output = output + "};\n\n"
+    output = output + "pub const stage2: [" + str(len(tables["stage2"]))
+    output = output + "]u8 = .{"
+    output = output + tables["stage2"].join(",")
+    output = output + "};\n\n"
+    output = output + "pub const stage3: [" + str(len(tables["stage3"]))
+    output = output + "]Elem = .{"
+    var rendered = []
+    var i = 0
+    while i < len(tables["stage3"]) {
+        rendered.push(elem_to_string(tables["stage3"][i]))
+        i = i + 1
+    }
+    output = output + rendered.join(",")
+    output = output + "};\n"
+    output = output + "    };\n}\n"
+    return output
+}

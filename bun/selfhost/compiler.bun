@@ -1,0 +1,1118 @@
+fn make_code(name, params, code, filename, source) {
+    return {"name": name, "params": params, "code": code, "filename": filename, "source": source, "param_defs": []}
+}
+
+let MATCH_SUBJECT = "__match_subject"
+
+fn emit(code, op, arg, node) {
+    code.push([op, arg, node["line"], node["col"]])
+    return code.len() - 1
+}
+
+fn patch(code, index) {
+    let instruction = code[index]
+    code[index] = [instruction[0], code.len(), instruction[2], instruction[3]]
+}
+
+fn patch_to(code, index, target) {
+    let instruction = code[index]
+    code[index] = [instruction[0], target, instruction[2], instruction[3]]
+}
+
+fn make_state(filename, source) {
+    return {
+        "filename": filename,
+        "source": source,
+        "scope_depth": 0,
+        "try_contexts": [],
+        "for_depth": 0,
+        "loops": [],
+        "has_yield": false
+    }
+}
+
+fn enter_loop(st, code) {
+    let context = {
+        "code": code,
+        "scope_depth": st["scope_depth"],
+        "try_depth": st["try_contexts"].len(),
+        "for_depth": st["for_depth"],
+        "break_patches": [],
+        "continue_patches": []
+    }
+    st["loops"].push(context)
+    return context
+}
+
+fn leave_loop(st, context) {
+    st["loops"].pop()
+}
+
+fn close_loop(st, context, continue_target, break_target) {
+    var i = 0
+    while i < context["continue_patches"].len() {
+        patch_to(context["code"], context["continue_patches"][i], continue_target)
+        i = i + 1
+    }
+    var j = 0
+    while j < context["break_patches"].len() {
+        patch_to(context["code"], context["break_patches"][j], break_target)
+        j = j + 1
+    }
+}
+
+fn compile_loop_jump(st, node, code, kind) {
+    if st["loops"].len() == 0 {
+        throw "'" + kind + "' outside of a loop"
+    }
+    let context = st["loops"][st["loops"].len() - 1]
+    var levels = []
+    var idx = context["try_depth"]
+    while idx < st["try_contexts"].len() {
+        levels.push(st["try_contexts"][idx])
+        idx = idx + 1
+    }
+    var depth = unwind_try_handlers(st, code, node, levels)
+    var s = depth - context["scope_depth"]
+    while s > 0 {
+        emit(code, "EXIT_SCOPE", null, node)
+        s = s - 1
+    }
+    if kind == "break" {
+        var f = st["for_depth"] - context["for_depth"]
+        while f > 0 {
+            emit(code, "FOR_POP", null, node)
+            f = f - 1
+        }
+    }
+    let index = emit(code, "JUMP", null, node)
+    if kind == "break" {
+        context["break_patches"].push(index)
+    } else {
+        context["continue_patches"].push(index)
+    }
+}
+
+fn compile_try(st, node, code) {
+    let has_catch = node["catch_block"] != null
+    let has_finally = node["finally_body"] != null
+    var finally_jump = -1
+    var catch_jump = -1
+    if has_finally {
+        finally_jump = emit(code, "TRY_FINALLY", null, node)
+    }
+    if has_catch {
+        catch_jump = emit(code, "TRY", null, node)
+    }
+    let context = {
+        "kind": "try",
+        "depth": st["try_contexts"].len(),
+        "scope_depth": st["scope_depth"],
+        "has_catch": has_catch,
+        "has_finally": has_finally,
+        "finally_body": node["finally_body"]
+    }
+    st["try_contexts"].push(context)
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    let try_statements = node["try_block"]["statements"]
+    var i = 0
+    while i < try_statements.len() {
+        compile_statement(st, try_statements[i], code)
+        i = i + 1
+    }
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+    if has_catch {
+        emit(code, "END_TRY", null, node)
+    }
+    if has_finally {
+        emit(code, "END_TRY", null, node)
+    }
+    let end_jump = emit(code, "JUMP", null, node)
+    if has_catch {
+        patch(code, catch_jump)
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        let params = node["catch_params"]
+        var p = 0
+        while p < params.len() {
+            emit(code, "DUP", null, node)
+            emit(code, "DEFINE_NAME", [params[p], true], node)
+            p = p + 1
+        }
+        emit(code, "POP", null, node)
+        let catch_statements = node["catch_block"]["statements"]
+        var c = 0
+        while c < catch_statements.len() {
+            compile_statement(st, catch_statements[c], code)
+            c = c + 1
+        }
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        if has_finally {
+            emit(code, "END_TRY", null, node)
+        }
+    }
+    if has_finally {
+        patch(code, finally_jump)
+        let finally_start = code.len()
+        compile_finally_body(st, code, node, context)
+        emit(code, "FINALLY_END", null, node)
+        patch_to(code, end_jump, finally_start)
+    } else {
+        patch(code, end_jump)
+    }
+    st["try_contexts"].pop()
+}
+
+fn compile_with(st, node, code) {
+    let context = {
+        "kind": "with",
+        "depth": st["try_contexts"].len(),
+        "scope_depth": st["scope_depth"]
+    }
+    let handler = emit(code, "TRY_FINALLY", null, node)
+    st["try_contexts"].push(context)
+    let items = node["items"]
+    var i = 0
+    while i < items.len() {
+        let item = items[i]
+        compile_expr(st, item["expr"], code)
+        emit(code, "DUP", null, node)
+        emit(code, "LOAD_CONST", "__enter__", node)
+        emit(code, "PROTOCOL_GET", "__enter__", node)
+        emit(code, "CALL", [0, false], node)
+        emit(code, "WITH_ENTER", item["name"], node)
+        i = i + 1
+    }
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    let statements = node["body"]["statements"]
+    var s = 0
+    while s < statements.len() {
+        compile_statement(st, statements[s], code)
+        s = s + 1
+    }
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+    emit(code, "END_TRY", null, node)
+    let exit_start = code.len()
+    compile_with_exit(st, code, node)
+    let end_jump = emit(code, "JUMP", null, node)
+    patch_to(code, handler, code.len())
+    let handler_jump = emit(code, "JUMP", null, node)
+    patch_to(code, handler_jump, exit_start)
+    patch(code, end_jump)
+    st["try_contexts"].pop()
+}
+
+fn compile_scope(st, node, code) {
+    // The body runs inside a task group.  When the body leaves the scope
+    // the group joins every child it spawned; the first error of a child
+    // is raised in the parent.  The group is closed on the error path as
+    // well, so a failing body never leaves tasks running behind it.
+    let context = {
+        "kind": "scope",
+        "depth": st["try_contexts"].len(),
+        "scope_depth": st["scope_depth"]
+    }
+    emit(code, "SCOPE_ENTER", null, node)
+    let handler = emit(code, "TRY_FINALLY", null, node)
+    st["try_contexts"].push(context)
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    let statements = node["body"]["statements"]
+    var s = 0
+    while s < statements.len() {
+        compile_statement(st, statements[s], code)
+        s = s + 1
+    }
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+    emit(code, "END_TRY", null, node)
+    emit(code, "SCOPE_EXIT", null, node)
+    let end_jump = emit(code, "JUMP", null, node)
+    patch_to(code, handler, code.len())
+    emit(code, "SCOPE_EXIT", null, node)
+    emit(code, "FINALLY_END", null, node)
+    patch(code, end_jump)
+    st["try_contexts"].pop()
+}
+
+fn compile_with_exit(st, code, node) {
+    let loop = code.len()
+    emit(code, "WITH_DEPTH", null, node)
+    emit(code, "LOAD_CONST", 0, node)
+    emit(code, "BINARY", ">", node)
+    let done = emit(code, "JUMP_IF_FALSE", null, node)
+    emit(code, "WITH_POP_TARGET", null, node)
+    emit(code, "DUP", null, node)
+    emit(code, "LOAD_CONST", "__exit__", node)
+    emit(code, "PROTOCOL_GET", "__exit__", node)
+    emit(code, "PENDING_ERROR", null, node)
+    emit(code, "CALL", [1, false], node)
+    let suppress = emit(code, "JUMP_IF_TRUE", null, node)
+    let next_item = emit(code, "JUMP", null, node)
+    patch(code, suppress)
+    emit(code, "CLEAR_ERROR", null, node)
+    patch_to(code, next_item, code.len())
+    emit(code, "POP", null, node)
+    let back = emit(code, "JUMP", null, node)
+    patch_to(code, back, loop)
+    patch_to(code, done, code.len())
+    emit(code, "HAS_ERROR", null, node)
+    let rethrow = emit(code, "JUMP_IF_TRUE", null, node)
+    let end = emit(code, "JUMP", null, node)
+    patch(code, rethrow)
+    emit(code, "FINALLY_END", null, node)
+    patch_to(code, end, code.len())
+}
+
+fn compile_finally_body(st, code, node, context) {
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    let saved = st["try_contexts"]
+    var kept = []
+    var i = 0
+    while i < context["depth"] {
+        kept.push(saved[i])
+        i = i + 1
+    }
+    st["try_contexts"] = kept
+    let statements = context["finally_body"]["statements"]
+    var s = 0
+    while s < statements.len() {
+        compile_statement(st, statements[s], code)
+        s = s + 1
+    }
+    st["try_contexts"] = saved
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+}
+
+fn unwind_try_handlers(st, code, node, levels) {
+    var depth = st["scope_depth"]
+    var i = levels.len() - 1
+    while i >= 0 {
+        let context = levels[i]
+        let target = context["scope_depth"] + 1
+        while depth > target {
+            emit(code, "EXIT_SCOPE", null, node)
+            depth = depth - 1
+        }
+        if context["kind"] == "with" {
+            emit(code, "END_TRY", null, node)
+            compile_with_exit(st, code, node)
+            i = i - 1
+            continue
+        }
+        if context["kind"] == "scope" {
+            // Leaving the scope early still closes the task group, so the
+            // children of the scope are joined before the function returns.
+            emit(code, "END_TRY", null, node)
+            emit(code, "SCOPE_EXIT", null, node)
+            i = i - 1
+            continue
+        }
+        if context["has_catch"] {
+            emit(code, "END_TRY", null, node)
+        }
+        if context["has_finally"] {
+            emit(code, "END_TRY", null, node)
+            compile_finally_body(st, code, node, context)
+        }
+        i = i - 1
+    }
+    return depth
+}
+
+export fn compile_program(filename, source, program) {
+    let st = make_state(filename, source)
+    let code = []
+    let statements = program["statements"]
+    var i = 0
+    while i < statements.len() {
+        compile_statement(st, statements[i], code)
+        i = i + 1
+    }
+    code.push(["HALT", null, 0, 0])
+    return make_code("<module>", [], code, filename, source)
+}
+
+fn compile_function(st, node) {
+    let code = []
+    let saved_scope = st["scope_depth"]
+    let saved_try = st["try_contexts"]
+    let saved_for = st["for_depth"]
+    let saved_loops = st["loops"]
+    let saved_has_yield = st["has_yield"]
+    st["scope_depth"] = 0
+    st["try_contexts"] = []
+    st["for_depth"] = 0
+    st["loops"] = []
+    st["has_yield"] = false
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    let body = node["body"]
+    if body["kind"] == "Block" {
+        let statements = body["statements"]
+        var i = 0
+        while i < statements.len() {
+            compile_statement(st, statements[i], code)
+            i = i + 1
+        }
+    } else {
+        compile_statement(st, body, code)
+    }
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+    emit(code, "LOAD_CONST", null, node)
+    emit(code, "RETURN", null, node)
+    st["scope_depth"] = saved_scope
+    st["try_contexts"] = saved_try
+    st["for_depth"] = saved_for
+    st["loops"] = saved_loops
+    var name = node["name"]
+    if name == "" {
+        name = "anonymous"
+    }
+    let names = []
+    let defs = []
+    let params = node["params"]
+    var i = 0
+    while i < params.len() {
+        let param = params[i]
+        names.push(param["name"])
+        defs.push({"name": param["name"], "param_kind": param["param_kind"], "type_name": param["type_name"], "default": param_default(st, param)})
+        i = i + 1
+    }
+    let result = make_code(name, names, code, st["filename"], st["source"])
+    result["param_defs"] = defs
+    if st["has_yield"] {
+        // A function that gives its values one at a time is a generator.
+        result["is_generator"] = true
+    }
+    st["has_yield"] = saved_has_yield
+    return result
+}
+
+fn param_default(st, param) {
+    if param["default"] == null {
+        return null
+    }
+    return compile_expression(st, param["default"])
+}
+
+fn compile_expression(st, node) {
+    let code = []
+    compile_expr(st, node, code)
+    code.push(["HALT", null, node["line"], node["col"]])
+    return make_code("<expr>", [], code, st["filename"], st["source"])
+}
+
+fn compile_statement(st, node, code) {
+    let kind = node["kind"]
+    if kind == "LetStmt" {
+        compile_expr(st, node["value"], code)
+        emit(code, "DEFINE_NAME", [node["name"], node["mutable"]], node)
+        if node["exported"] {
+            emit(code, "RECORD_EXPORT", node["name"], node)
+        }
+        return
+    }
+    if kind == "UnpackStmt" {
+        compile_expr(st, node["value"], code)
+        emit(code, "UNPACK_PLAN", build_unpack_plan(node["targets"]), node)
+        let leaves = plan_leaves(node["targets"])
+        var i = 0
+        while i < leaves.len() {
+            compile_unpack_store(st, leaves[i], code, node, node["mutable"])
+            i = i + 1
+        }
+        return
+    }
+    if kind == "AssignStmt" {
+        let target = node["target"]
+        if target["kind"] == "Identifier" {
+            compile_expr(st, node["value"], code)
+            emit(code, "STORE_NAME", target["name"], node)
+        } else {
+            if target["kind"] == "UnpackTarget" {
+                compile_expr(st, node["value"], code)
+                emit(code, "UNPACK_PLAN", build_unpack_plan(target["targets"]), node)
+                let leaves = plan_leaves(target["targets"])
+                var i = 0
+                while i < leaves.len() {
+                    compile_unpack_store(st, leaves[i], code, node, null)
+                    i = i + 1
+                }
+            } else {
+                if target["kind"] == "Index" {
+                    compile_expr(st, node["value"], code)
+                    compile_expr(st, target["target"], code)
+                    if target["index"]["kind"] == "Slice" {
+                        let slice = target["index"]
+                        let parts = [slice["start"], slice["stop"], slice["step"]]
+                        var i = 0
+                        while i < parts.len() {
+                            if parts[i] == null {
+                                emit(code, "LOAD_CONST", null, node)
+                            } else {
+                                compile_expr(st, parts[i], code)
+                            }
+                            i = i + 1
+                        }
+                        emit(code, "STORE_SLICE", null, node)
+                    } else {
+                        compile_expr(st, target["index"], code)
+                        emit(code, "STORE_INDEX", null, node)
+                    }
+                } else {
+                    throw "invalid assignment target"
+                }
+            }
+        }
+        return
+    }
+    if kind == "ExprStmt" {
+        compile_expr(st, node["expr"], code)
+        emit(code, "POP", null, node)
+        return
+    }
+    if kind == "Block" {
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        let statements = node["statements"]
+        var i = 0
+        while i < statements.len() {
+            compile_statement(st, statements[i], code)
+            i = i + 1
+        }
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        return
+    }
+    if kind == "IfStmt" {
+        compile_expr(st, node["condition"], code)
+        let else_jump = emit(code, "JUMP_IF_FALSE", null, node)
+        compile_branch(st, node["then_branch"], code)
+        let end_jump = emit(code, "JUMP", null, node)
+        patch(code, else_jump)
+        if node["else_branch"] != null {
+            compile_branch(st, node["else_branch"], code)
+        }
+        patch(code, end_jump)
+        return
+    }
+    if kind == "WhileStmt" {
+        let head = code.len()
+        compile_expr(st, node["condition"], code)
+        let exit_jump = emit(code, "JUMP_IF_FALSE", null, node)
+        let context = enter_loop(st, code)
+        compile_branch(st, node["body"], code)
+        leave_loop(st, context)
+        let cont_target = emit(code, "JUMP", head, node)
+        patch(code, exit_jump)
+        if node["orelse"] != null {
+            // The else of a loop runs when the loop ends without a
+            // break, so a break has to jump over it.
+            compile_branch(st, node["orelse"], code)
+        }
+        close_loop(st, context, cont_target, code.len())
+        return
+    }
+    if kind == "ForStmt" {
+        compile_expr(st, node["iterable"], code)
+        emit(code, "FOR_SETUP", null, node)
+        let head = code.len()
+        let exit_jump = emit(code, "FOR_NEXT", null, node)
+        let context = enter_loop(st, code)
+        st["for_depth"] = st["for_depth"] + 1
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        let targets = node["targets"]
+        if targets.len() == 1 {
+            emit(code, "DEFINE_NAME", [targets[0], true], node)
+        } else {
+            var plan = ["seq"]
+            var i = 0
+            while i < targets.len() {
+                plan.push(["leaf"])
+                i = i + 1
+            }
+            emit(code, "UNPACK_PLAN", plan, node)
+            var j = 0
+            while j < targets.len() {
+                emit(code, "DEFINE_NAME", [targets[j], true], node)
+                j = j + 1
+            }
+        }
+        compile_branch(st, node["body"], code)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        leave_loop(st, context)
+        st["for_depth"] = st["for_depth"] - 1
+        emit(code, "JUMP", head, node)
+        patch(code, exit_jump)
+        if node["orelse"] != null {
+            // The else of a loop runs when the loop ends without a
+            // break, so a break has to jump over it.
+            compile_branch(st, node["orelse"], code)
+        }
+        close_loop(st, context, head, code.len())
+        return
+    }
+    if kind == "TryStmt" {
+        compile_try(st, node, code)
+        return
+    }
+    if kind == "WithStmt" {
+        compile_with(st, node, code)
+        return
+    }
+    if kind == "ScopeStmt" {
+        compile_scope(st, node, code)
+        return
+    }
+    if kind == "BreakStmt" {
+        compile_loop_jump(st, node, code, "break")
+        return
+    }
+    if kind == "ContinueStmt" {
+        compile_loop_jump(st, node, code, "continue")
+        return
+    }
+    if kind == "ThrowStmt" {
+        if node["cause"] != null {
+            compile_expr(st, node["value"], code)
+            compile_expr(st, node["cause"], code)
+            emit(code, "THROW", true, node)
+        } else {
+            compile_expr(st, node["value"], code)
+            emit(code, "THROW", false, node)
+        }
+        return
+    }
+    if kind == "AssertStmt" {
+        compile_expr(st, node["condition"], code)
+        let ok_jump = emit(code, "JUMP_IF_TRUE", null, node)
+        if node["message"] != null {
+            compile_expr(st, node["message"], code)
+            emit(code, "ASSERT", true, node)
+        } else {
+            emit(code, "ASSERT", false, node)
+        }
+        patch(code, ok_jump)
+        return
+    }
+    if kind == "FnDecl" {
+        emit(code, "MAKE_FUNCTION", compile_function(st, node), node)
+        let decorators = node["decorators"]
+        if decorators != null and decorators.len() > 0 {
+            compile_decorators(st, node, decorators, code)
+        } else {
+            emit(code, "DEFINE_NAME", [node["name"], false], node)
+        }
+        if node["exported"] {
+            emit(code, "RECORD_EXPORT", node["name"], node)
+        }
+        return
+    }
+    if kind == "ImportStmt" {
+        emit(code, "IMPORT", [node["path"], node["names"]], node)
+        return
+    }
+    if kind == "ReturnStmt" {
+        if node["value"] != null {
+            compile_expr(st, node["value"], code)
+        } else {
+            emit(code, "LOAD_CONST", null, node)
+        }
+        unwind_try_handlers(st, code, node, st["try_contexts"])
+        emit(code, "RETURN", null, node)
+        return
+    }
+    if kind == "MatchStmt" {
+        compile_match(st, node, code)
+        return
+    }
+    if kind == "DelStmt" {
+        compile_del(st, node, code)
+        return
+    }
+    if kind == "YieldStmt" {
+        if node["value"] != null {
+            compile_expr(st, node["value"], code)
+        } else {
+            emit(code, "LOAD_CONST", null, node)
+        }
+        emit(code, "YIELD", null, node)
+        // The answer of the program is of no use here.
+        emit(code, "POP", null, node)
+        st["has_yield"] = true
+        return
+    }
+    throw "unknown statement: " + kind
+}
+
+// Compile a `del` statement. `del name` removes a name from the scope
+// that holds it, `del container[key]` removes an item from a dict or a
+// list.
+fn compile_del(st, node, code) {
+    let target = node["target"]
+    if target["kind"] == "Identifier" {
+        emit(code, "DEL", target["name"], node)
+        return
+    }
+    if target["kind"] == "Index" and target["index"]["kind"] != "Slice" {
+        compile_expr(st, target["target"], code)
+        compile_expr(st, target["index"], code)
+        emit(code, "DEL_INDEX", null, node)
+        return
+    }
+    throw "cannot delete this expression"
+}
+
+// Compile the decorators of a function. The decorators are applied from
+// the closest one to the function outwards, so the decorator that is
+// written last is the one that is called first. Each of them receives
+// the function and returns the value that the name of the function holds
+// afterwards. The name is bound before the decorators run, so that a
+// decorator can call the function it decorates, and it is frozen again
+// when the decorators are done.
+fn compile_decorators(st, node, decorators, code) {
+    emit(code, "DEFINE_NAME", [node["name"], true], node)
+    var i = decorators.len() - 1
+    while i >= 0 {
+        compile_expr(st, decorators[i], code)
+        emit(code, "LOAD_NAME", node["name"], node)
+        emit(code, "CALL", [1, false], node)
+        emit(code, "STORE_NAME", node["name"], node)
+        i = i - 1
+    }
+    emit(code, "LOAD_NAME", node["name"], node)
+    emit(code, "DEFINE_NAME", [node["name"], false], node)
+}
+
+fn compile_match(st, node, code) {
+    // The subject is evaluated once and kept in a hidden name, because a
+    // case may be tried more than once and the subject may be an
+    // expression with a cost.  Every case has its own scope, so the
+    // names a pattern binds do not leak into the next case.
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    compile_expr(st, node["subject"], code)
+    emit(code, "DEFINE_NAME", [MATCH_SUBJECT, false], node)
+    let end_jumps = []
+    let cases = node["cases"]
+    var i = 0
+    while i < cases.len() {
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+        emit(code, "MATCH_TEST", pattern_plan(cases[i][0]), node)
+        let body_jump = emit(code, "JUMP_IF_TRUE", null, node)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        let next_jump = emit(code, "JUMP", null, node)
+        patch(code, body_jump)
+        let guard = cases[i][0]["guard"]
+        var guard_next_jump = 0
+        if guard != null {
+            // A guard that does not hold sends the case on to the next
+            // one, the same way a pattern that does not match.
+            compile_expr(st, guard, code)
+            let guard_jump = emit(code, "JUMP_IF_TRUE", null, node)
+            emit(code, "EXIT_SCOPE", null, node)
+            st["scope_depth"] = st["scope_depth"] - 1
+            guard_next_jump = emit(code, "JUMP", null, node)
+            patch(code, guard_jump)
+        }
+        compile_branch(st, cases[i][1], code)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        end_jumps.push(emit(code, "JUMP", null, node))
+        patch(code, next_jump)
+        if guard != null {
+            patch(code, guard_next_jump)
+        }
+        i = i + 1
+    }
+    emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+    emit(code, "MATCH_FAIL", null, node)
+    let end = code.len()
+    var j = 0
+    while j < end_jumps.len() {
+        patch_to(code, end_jumps[j], end)
+        j = j + 1
+    }
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+}
+
+fn pattern_plan(pattern) {
+    let kind = pattern["pattern_kind"]
+    if kind == "literal" {
+        return ["literal", pattern["value"]]
+    }
+    if kind == "wildcard" {
+        return ["wildcard"]
+    }
+    if kind == "binding" {
+        return ["binding", pattern["name"]]
+    }
+    if kind == "type" {
+        return ["type", pattern["value"]]
+    }
+    if kind == "range" {
+        return ["range", pattern["value"], pattern["high"]]
+    }
+    if kind == "list" {
+        let items = pattern["items"]
+        let plans = []
+        var i = 0
+        while i < items.len() {
+            plans.push(pattern_plan(items[i]))
+            i = i + 1
+        }
+        var tail = null
+        if pattern["tail"] != null {
+            tail = pattern_plan(pattern["tail"])
+        }
+        return ["list", plans, tail]
+    }
+    if kind == "dict" {
+        let entries = pattern["entries"]
+        let plans = []
+        var i = 0
+        while i < entries.len() {
+            plans.push([entries[i][0], pattern_plan(entries[i][1])])
+            i = i + 1
+        }
+        return ["dict", plans]
+    }
+    if kind == "or" {
+        let items = pattern["items"]
+        let plans = []
+        var i = 0
+        while i < items.len() {
+            plans.push(pattern_plan(items[i]))
+            i = i + 1
+        }
+        return ["or", plans]
+    }
+    throw "unknown pattern: " + kind
+}
+
+fn compile_branch(st, node, code) {
+    if node["kind"] == "Block" {
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        let statements = node["statements"]
+        var i = 0
+        while i < statements.len() {
+            compile_statement(st, statements[i], code)
+            i = i + 1
+        }
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+    } else {
+        compile_statement(st, node, code)
+    }
+}
+
+// Compile a list or dict comprehension. The accumulator lives on the
+// value stack while the clause loops run, so `LIST_APPEND`/`DICT_SET`
+// only have to look at the top of the stack.
+fn compile_comprehension(st, node, code) {
+    if node["is_dict"] {
+        emit(code, "BUILD_DICT", 0, node)
+    } else {
+        emit(code, "BUILD_LIST", 0, node)
+    }
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    compile_clauses(st, node, node["clauses"], 0, code)
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+}
+
+fn compile_clauses(st, node, clauses, index, code) {
+    if index >= clauses.len() {
+        if node["is_dict"] {
+            compile_expr(st, node["key"], code)
+            compile_expr(st, node["value"], code)
+            emit(code, "DICT_SET", null, node)
+        } else {
+            compile_expr(st, node["element"], code)
+            emit(code, "LIST_APPEND", null, node)
+        }
+        return
+    }
+    let clause = clauses[index]
+    compile_expr(st, clause["iterable"], code)
+    emit(code, "FOR_SETUP", null, node)
+    let head = code.len()
+    let exit_jump = emit(code, "FOR_NEXT", null, node)
+    emit(code, "DEFINE_NAME", [clause["target"], true], node)
+    var skip_jump = 0
+    if clause["condition"] != null {
+        compile_expr(st, clause["condition"], code)
+        skip_jump = emit(code, "JUMP_IF_FALSE", null, node)
+    }
+    compile_clauses(st, node, clauses, index + 1, code)
+    if clause["condition"] != null {
+        patch(code, skip_jump)
+    }
+    emit(code, "JUMP", head, node)
+    patch(code, exit_jump)
+}
+
+fn compile_expr(st, node, code) {
+    let kind = node["kind"]
+    if kind == "YieldExpr" {
+        // The value of a `yield` expression is the value that the
+        // program sends back into the generator.
+        if node["value"] != null {
+            compile_expr(st, node["value"], code)
+        } else {
+            emit(code, "LOAD_CONST", null, node)
+        }
+        emit(code, "YIELD", null, node)
+        st["has_yield"] = true
+        return
+    }
+    if kind == "Literal" {
+        emit(code, "LOAD_CONST", node["value"], node)
+        return
+    }
+    if kind == "Identifier" {
+        emit(code, "LOAD_NAME", node["name"], node)
+        return
+    }
+    if kind == "ListLiteral" {
+        let elements = node["elements"]
+        var i = 0
+        while i < elements.len() {
+            compile_expr(st, elements[i], code)
+            i = i + 1
+        }
+        emit(code, "BUILD_LIST", elements.len(), node)
+        return
+    }
+    if kind == "Comprehension" {
+        compile_comprehension(st, node, code)
+        return
+    }
+    if kind == "Unary" {
+        compile_expr(st, node["operand"], code)
+        emit(code, "UNARY", node["op"], node)
+        return
+    }
+    if kind == "Binary" {
+        compile_expr(st, node["left"], code)
+        compile_expr(st, node["right"], code)
+        emit(code, "BINARY", node["op"], node)
+        return
+    }
+    if kind == "Logical" {
+        compile_expr(st, node["left"], code)
+        emit(code, "DUP", null, node)
+        var jump = 0
+        if node["op"] == "and" {
+            jump = emit(code, "JUMP_IF_FALSE", null, node)
+        } else {
+            jump = emit(code, "JUMP_IF_TRUE", null, node)
+        }
+        emit(code, "POP", null, node)
+        compile_expr(st, node["right"], code)
+        patch(code, jump)
+        return
+    }
+    if kind == "Index" {
+        compile_expr(st, node["target"], code)
+        if node["index"]["kind"] == "Slice" {
+            let slice = node["index"]
+            let parts = [slice["start"], slice["stop"], slice["step"]]
+            var i = 0
+            while i < parts.len() {
+                if parts[i] == null {
+                    emit(code, "LOAD_CONST", null, node)
+                } else {
+                    compile_expr(st, parts[i], code)
+                }
+                i = i + 1
+            }
+            emit(code, "SLICE", null, node)
+        } else {
+            compile_expr(st, node["index"], code)
+            emit(code, "INDEX", null, node)
+        }
+        return
+    }
+    if kind == "MethodCall" {
+        compile_expr(st, node["receiver"], code)
+        let args = node["args"]
+        var i = 0
+        while i < args.len() {
+            compile_expr(st, args[i], code)
+            i = i + 1
+        }
+        emit(code, "METHOD_CALL", [node["method"], args.len()], node)
+        return
+    }
+    if kind == "DictLiteral" {
+        let entries = node["entries"]
+        var i = 0
+        while i < entries.len() {
+            compile_expr(st, entries[i][0], code)
+            compile_expr(st, entries[i][1], code)
+            i = i + 1
+        }
+        emit(code, "BUILD_DICT", entries.len(), node)
+        return
+    }
+    if kind == "FString" {
+        let parts = node["parts"]
+        var i = 0
+        while i < parts.len() {
+            let part = parts[i]
+            if part["literal"] != null {
+                emit(code, "LOAD_CONST", part["literal"], node)
+            } else {
+                compile_expr(st, part["expr"], code)
+                emit(code, "FORMAT", [part["spec"], part["conv"], part["source_text"]], node)
+            }
+            i = i + 1
+        }
+        emit(code, "BUILD_STRING", parts.len(), node)
+        return
+    }
+    if kind == "Call" {
+        compile_expr(st, node["callee"], code)
+        let args = node["args"]
+        var i = 0
+        while i < args.len() {
+            compile_expr(st, args[i], code)
+            i = i + 1
+        }
+        let kwargs = node["kwargs"]
+        if kwargs.len() > 0 {
+            emit(code, "BUILD_DICT", 0, node)
+            var k = 0
+            while k < kwargs.len() {
+                let entry = kwargs[k]
+                emit(code, "LOAD_CONST", entry[0], node)
+                compile_expr(st, entry[1], code)
+                emit(code, "DICT_SET", null, node)
+                k = k + 1
+            }
+        }
+        emit(code, "CALL", [args.len(), kwargs.len() > 0], node)
+        return
+    }
+    if kind == "FnDecl" {
+        emit(code, "MAKE_FUNCTION", compile_function(st, node), node)
+        return
+    }
+    throw "unknown expression: " + kind
+}
+
+fn build_unpack_plan(targets) {
+    var roots = targets
+    if targets.len() == 1 and targets[0]["kind"] == "UnpackTarget" {
+        let target_kind = targets[0]["target_kind"]
+        if target_kind == "list" or target_kind == "tuple" {
+            roots = targets[0]["targets"]
+        }
+    }
+    let plan = ["seq"]
+    var i = 0
+    while i < roots.len() {
+        plan.push(target_plan(roots[i]))
+        i = i + 1
+    }
+    return plan
+}
+
+fn target_plan(target) {
+    if target["kind"] == "UnpackTarget" {
+        if target["target_kind"] == "star" {
+            return ["star"]
+        }
+        let plan = [target["target_kind"]]
+        let targets = target["targets"]
+        var i = 0
+        while i < targets.len() {
+            plan.push(target_plan(targets[i]))
+            i = i + 1
+        }
+        return plan
+    }
+    return ["leaf"]
+}
+
+fn plan_leaves(targets) {
+    let leaves = []
+    var i = 0
+    while i < targets.len() {
+        collect_leaves(targets[i], leaves)
+        i = i + 1
+    }
+    return leaves
+}
+
+fn collect_leaves(target, leaves) {
+    if target["kind"] == "UnpackTarget" {
+        if target["target_kind"] == "star" {
+            leaves.push(target)
+            return
+        }
+        let targets = target["targets"]
+        var i = 0
+        while i < targets.len() {
+            collect_leaves(targets[i], leaves)
+            i = i + 1
+        }
+        return
+    }
+    leaves.push(target)
+}
+
+fn compile_unpack_store(st, leaf, code, node, mutable) {
+    if leaf["kind"] == "UnpackTarget" {
+        emit(code, "DEFINE_NAME", [leaf["name"], true], node)
+        return
+    }
+    if leaf["kind"] == "Identifier" {
+        if mutable == null {
+            emit(code, "STORE_NAME", leaf["name"], node)
+        } else {
+            emit(code, "DEFINE_NAME", [leaf["name"], mutable], node)
+        }
+        return
+    }
+    if leaf["kind"] == "Index" {
+        compile_expr(st, leaf["target"], code)
+        if leaf["index"]["kind"] == "Slice" {
+            let slice = leaf["index"]
+            let parts = [slice["start"], slice["stop"], slice["step"]]
+            var i = 0
+            while i < parts.len() {
+                if parts[i] == null {
+                    emit(code, "LOAD_CONST", null, node)
+                } else {
+                    compile_expr(st, parts[i], code)
+                }
+                i = i + 1
+            }
+            emit(code, "STORE_SLICE", null, node)
+        } else {
+            compile_expr(st, leaf["index"], code)
+            emit(code, "STORE_INDEX", null, node)
+        }
+        return
+    }
+    throw "invalid unpacking target"
+}

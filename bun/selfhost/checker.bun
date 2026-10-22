@@ -1,0 +1,1352 @@
+import { tokenize } from "./lexer"
+import { parse } from "./parser"
+
+let TYPES = {
+    "int": true,
+    "float": true,
+    "string": true,
+    "bool": true,
+    "null": true,
+    "any": true,
+    "list": true,
+    "dict": true,
+    "fn": true,
+    "secret": true,
+    "set": true,
+    "number": true,
+    "text": true,
+}
+
+// The names that are another name: a `number` is a `float` and a `text`
+// is a `string`.
+let ALIASES = {
+    "number": "float",
+    "text": "string",
+}
+
+let BUILTIN_SIGNATURES = {
+    "print": [[["any"], "null"]],
+    "len": [[["any"], "int"]],
+    "range": [[["int"], "list"], [["int", "int"], "list"], [["int", "int", "int"], "list"]],
+    "str": [[["any"], "string"]],
+    "input": [[["string"], "string"], [[], "string"]],
+    "int": [[["any"], "int"], [["any", "int"], "int"]],
+    "chr": [[["int"], "string"]],
+    "ord": [[["string"], "int"]],
+    "float": [[["any"], "float"]],
+    "read_file": [[["string"], "string"]],
+    "write_file": [[["string", "string"], "null"]],
+    "append_file": [[["string", "string"], "null"]],
+    "file_exists": [[["string"], "bool"]],
+    "getenv": [[["string"], "any"]],
+    "getenv_or": [[["string", "string"], "string"]],
+    "json_parse": [[["string"], "any"]],
+    "json_stringify": [[["any"], "string"]],
+    "http_get": [[["string", "dict", "any"], "dict"]],
+    "http_post": [[["string", "dict", "string", "any"], "dict"]],
+    "http_get_bytes": [[["string", "dict", "any"], "dict"]],
+    "http_post_multipart": [[["string", "dict", "list", "any"], "dict"]],
+    "write_bytes": [[["string", "list"], "int"]],
+    "read_bytes": [[["string"], "list"]],
+    "bytes_slice": [[["any", "int", "int"], "list"]],
+    "bytes_append": [[["any", "any"], "int"]],
+    "exec": [[["list"], "dict"], [["list", "int"], "dict"], [["list", "float"], "dict"]],
+    "eval": [[["string"], "any"]],
+    "now": [[[], "float"]],
+    "sleep": [[["float"], "null"]],
+    "spawn": [[["fn"], "dict"]],
+    "task_join": [[["dict"], "any"]],
+    "task_done": [[["dict"], "bool"]],
+    "cancel": [[["dict"], "null"]],
+    "task_cancelled": [[["dict"], "bool"], [[], "bool"]],
+    "sandbox_enter": [[["dict"], "null"]],
+    "sandbox_exit": [[[], "null"]],
+    "mutex": [[[], "dict"]],
+    "lock": [[["dict"], "null"]],
+    "unlock": [[["dict"], "null"]],
+    "ffi_load": [[["string"], "dict"]],
+    "list_dir": [[["string"], "list"]],
+    "make_dir": [[["string"], "null"]],
+    "exit": [[["int"], "null"]],
+    "args": [[[], "list"]],
+    "sha256": [[["string"], "list"], [["any"], "list"]],
+    "sha1": [[["string"], "list"], [["any"], "list"]],
+    "md5": [[["any"], "string"]],
+    "pbkdf2_sha512": [[["any", "any", "int"], "list"], [["any", "any", "int", "int"], "list"]],
+    "base64_encode": [[["any"], "string"]],
+    "gzip_decompress": [[["any"], "list"]],
+    "base64_decode": [[["string"], "list"]],
+    "random_bytes": [[["int"], "list"]],
+    "random": [[[], "float"]],
+    "random_int": [[["int", "int"], "int"]],
+    "aes_ige_encrypt": [[["any", "any", "any"], "list"]],
+    "aes_ige_decrypt": [[["any", "any", "any"], "list"]],
+    "aes_ctr_crypt": [[["any", "any", "any"], "list"]],
+    "rsa_encrypt": [[["any", "string", "int"], "list"]],
+    "pow_mod": [[["any", "any", "any"], "any"]],
+    "tcp_connect": [[["string", "int"], "dict"]],
+    "tcp_listen": [[["string", "int"], "dict"], [["string"], "dict"]],
+    "tcp_accept": [[["dict"], "dict"], [["dict", "any"], "dict"]],
+    "tcp_close": [[["dict"], "bool"]],
+    "tcp_write": [[["dict", "any"], "bool"]],
+    "tcp_read": [[["dict", "int"], "list"]],
+    "tcp_set_timeout": [[["dict", "any"], "bool"]],
+    "tcp_tls_connect": [[["string", "int"], "dict"], [["string", "int", "list"], "dict"], [["string", "int", "list", "string"], "dict"]],
+    "h2_connect": [[["string", "int"], "dict"], [["string", "int", "string"], "dict"], [["string", "int", "string", "list"], "dict"]],
+    "h2_request": [[["dict", "string"], "dict"], [["dict", "string", "string"], "dict"], [["dict", "string", "string", "any"], "dict"]],
+    "h2_close": [[["dict"], "bool"]],
+    "bigint_from_bytes": [[["any"], "list"]],
+    "bigint_to_bytes": [[["any"], "list"], [["any", "int"], "list"]],
+    "bigint_from_int": [[["int"], "list"]],
+    "bigint_to_int": [[["any"], "int"]],
+    "bigint_mul": [[["any", "any"], "list"]],
+    "bigint_add": [[["any", "any"], "list"]],
+    "bigint_sub": [[["any", "any"], "list"]],
+    "bigint_mod": [[["any", "any"], "list"]],
+    "bigint_div": [[["any", "any"], "list"]],
+    "bigint_gcd": [[["any", "any"], "list"]],
+    "bigint_mul_mod": [[["int", "int", "int"], "int"]],
+    "bigint_mul_mod_bytes": [[["any", "any", "any"], "list"]],
+    "bigint_cmp": [[["any", "any"], "int"]],
+    "bigint_pow_mod": [[["any", "any", "any"], "list"]],
+    "bigint_factorize": [[["any"], "list"]],
+    "double_from_bits": [[["int"], "float"]],
+    "double_to_bits": [[["float"], "int"]],
+    "utf8_bytes": [[["string"], "list"]],
+    "utf8_string": [[["any"], "string"]],
+    "type_of": [[["any"], "string"]],
+    "bool": [[["any"], "bool"]],
+    "abs": [[["any"], "float"]],
+    "sum": [[["list"], "float"]],
+    "any": [[["list"], "bool"]],
+    "all": [[["list"], "bool"]],
+    "min": [[["list"], "any"]],
+    "max": [[["list"], "any"]],
+    "zip": [[["list", "list"], "list"]],
+    "enumerate": [[["list"], "list"]],
+    "sorted": [[["list"], "list"]],
+    "reversed": [[["list"], "list"]],
+    "set": [[[], "set"], [["list"], "set"]],
+    "next": [[["any"], "any"], [["any", "any"], "any"]],
+    "send": [[["any", "any"], "any"]],
+    "run_code": [[["any"], "null"]],
+    "type_error": [[["string", "int", "int"], "null"]],
+    "module_path": [[["string", "string"], "string"]],
+    "read_module": [[["string", "string"], "string"]],
+    "dump": [[["any"], "string"]],
+    "secret": [[["any"], "secret"]],
+    "url_encode": [[["string"], "string"]],
+    "url_decode": [[["string"], "string"]],
+    "starts_with": [[["string", "string"], "bool"]],
+    "ends_with": [[["string", "string"], "bool"]],
+    "substring": [[["string", "int", "int"], "string"], [["string", "int"], "string"]],
+    "index_of": [[["string", "string"], "int"]],
+    "split": [[["string", "string"], "list"], [["string", "string", "int"], "list"]],
+    "join": [[["list", "string"], "string"]],
+    "replace": [[["string", "string", "string"], "string"]],
+    "trim": [[["string"], "string"]],
+    "lower": [[["string"], "string"]],
+    "upper": [[["string"], "string"]],
+}
+
+fn is_known_type(name) {
+    return TYPES.has(name)
+}
+
+fn is_assignable(source, target) {
+    if ALIASES.has(source) {
+        source = ALIASES[source]
+    }
+    if ALIASES.has(target) {
+        target = ALIASES[target]
+    }
+    if source == target {
+        return true
+    }
+    if source == "any" or target == "any" {
+        return true
+    }
+    if source == "int" and target == "float" {
+        return true
+    }
+    if source == "null" {
+        return true
+    }
+    return false
+}
+
+fn node_line(node) {
+    if node.has("line") {
+        return node["line"]
+    }
+    return 0
+}
+
+fn node_col(node) {
+    if node.has("col") {
+        return node["col"]
+    }
+    return 0
+}
+
+fn fail(message, node) {
+    type_error(message, node_line(node), node_col(node))
+}
+
+fn make_binding(kind) {
+    return {"type": kind, "params": null, "return_type": null, "mutable": true}
+}
+
+fn make_immutable_binding(kind) {
+    return {"type": kind, "params": null, "return_type": null, "mutable": false}
+}
+
+fn make_fn_binding(params, ret) {
+    return {"type": "fn", "params": params, "return_type": ret, "mutable": true}
+}
+
+fn make_immutable_fn_binding(params, ret) {
+    return {"type": "fn", "params": params, "return_type": ret, "mutable": false}
+}
+
+fn param_specs(decl) {
+    let result = []
+    let params = decl["params"]
+    var i = 0
+    while i < params.len() {
+        let param = params[i]
+        var has_default = false
+        if param["default"] != null {
+            has_default = true
+        }
+        result.push({"name": param["name"], "type": param["type_name"], "param_kind": param["param_kind"], "has_default": has_default})
+        i = i + 1
+    }
+    return result
+}
+
+fn copy_scope(scope) {
+    let result = {}
+    let keys = scope.keys()
+    var i = 0
+    while i < keys.len() {
+        result[keys[i]] = scope[keys[i]]
+        i = i + 1
+    }
+    return result
+}
+
+fn make_state(base_dir) {
+    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0}
+}
+
+fn check_annotation(name, node) {
+    if name != null and !is_known_type(name) {
+        fail("unknown type '" + name + "'", node)
+    }
+}
+
+fn check_annotation_throw(name) {
+    if name != null and !is_known_type(name) {
+        throw "unknown type '" + name + "'"
+    }
+}
+
+fn collect_functions(statements, scope) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "FnDecl" {
+            scope[statement["name"]] = make_immutable_fn_binding(param_specs(statement), statement["return_type"])
+        }
+        i = i + 1
+    }
+}
+
+// Collect the names the module binds. The names are collected before the
+// statements are checked, so a function may use a variable of the module
+// that is defined further down.
+fn collect_module_names(state, statements) {
+    let names = state["module_names"]
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        let kind = statement["kind"]
+        if kind == "LetStmt" {
+            names[statement["name"]] = true
+        } else if kind == "FnDecl" {
+            names[statement["name"]] = true
+        } else if kind == "UnpackStmt" {
+            let unpacked = unpack_names(statement["targets"])
+            var k = 0
+            while k < unpacked.len() {
+                names[unpacked[k]] = true
+                k = k + 1
+            }
+        } else if kind == "ImportStmt" {
+            let imported = statement["names"]
+            var k = 0
+            while k < imported.len() {
+                names[imported[k]] = true
+                k = k + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Collect the names a block binds. The names are collected for the whole
+// block, so a name may be used before the statement that binds it.
+fn bound_names(statements) {
+    let names = {}
+    var i = 0
+    while i < statements.len() {
+        collect_bound_names(statements[i], names)
+        i = i + 1
+    }
+    return names
+}
+
+fn collect_bound_names(node, names) {
+    let kind = node["kind"]
+    if kind == "LetStmt" {
+        names[node["name"]] = true
+        return
+    }
+    if kind == "FnDecl" {
+        names[node["name"]] = true
+        return
+    }
+    if kind == "AssignStmt" {
+        let target = node["target"]
+        if target["kind"] == "Identifier" {
+            names[target["name"]] = true
+        } else if target["kind"] == "UnpackTarget" {
+            let unpacked = unpack_names([target])
+            var i = 0
+            while i < unpacked.len() {
+                names[unpacked[i]] = true
+                i = i + 1
+            }
+        }
+        return
+    }
+    if kind == "UnpackStmt" {
+        let unpacked = unpack_names(node["targets"])
+        var i = 0
+        while i < unpacked.len() {
+            names[unpacked[i]] = true
+            i = i + 1
+        }
+        return
+    }
+    if kind == "ForStmt" {
+        let targets = node["targets"]
+        var i = 0
+        while i < targets.len() {
+            names[targets[i]] = true
+            i = i + 1
+        }
+        collect_block_names(node["body"], names)
+        if node["orelse"] != null {
+            collect_block_names(node["orelse"], names)
+        }
+        return
+    }
+    if kind == "MatchStmt" {
+        let cases = node["cases"]
+        var i = 0
+        while i < cases.len() {
+            let bound = pattern_names(cases[i][0])
+            var j = 0
+            while j < bound.len() {
+                names[bound[j]] = true
+                j = j + 1
+            }
+            collect_block_names(cases[i][1], names)
+            i = i + 1
+        }
+        return
+    }
+    if kind == "TryStmt" {
+        let params = node["catch_params"]
+        var i = 0
+        while i < params.len() {
+            names[params[i]] = true
+            i = i + 1
+        }
+        collect_block_names(node["try_block"], names)
+        if node["catch_block"] != null {
+            collect_block_names(node["catch_block"], names)
+        }
+        if node["finally_body"] != null {
+            collect_block_names(node["finally_body"], names)
+        }
+        return
+    }
+    if kind == "WithStmt" {
+        let items = node["items"]
+        var i = 0
+        while i < items.len() {
+            names[items[i]["name"]] = true
+            i = i + 1
+        }
+        collect_block_names(node["body"], names)
+        return
+    }
+    if kind == "ScopeStmt" {
+        collect_block_names(node["body"], names)
+        return
+    }
+    if kind == "Block" {
+        collect_block_names(node, names)
+        return
+    }
+    if kind == "IfStmt" {
+        collect_block_names(node["then_branch"], names)
+        if node["else_branch"] != null {
+            collect_block_names(node["else_branch"], names)
+        }
+        return
+    }
+    if kind == "WhileStmt" {
+        collect_block_names(node["body"], names)
+        if node["orelse"] != null {
+            collect_block_names(node["orelse"], names)
+        }
+        return
+    }
+}
+
+fn collect_block_names(node, names) {
+    if node["kind"] == "Block" {
+        let statements = node["statements"]
+        var i = 0
+        while i < statements.len() {
+            collect_bound_names(statements[i], names)
+            i = i + 1
+        }
+        return
+    }
+    collect_bound_names(node, names)
+}
+
+fn pattern_names(pattern) {
+    let kind = pattern["pattern_kind"]
+    if kind == "binding" {
+        return [pattern["name"]]
+    }
+    if kind == "list" {
+        let names = []
+        let items = pattern["items"]
+        var i = 0
+        while i < items.len() {
+            let inner = pattern_names(items[i])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+            i = i + 1
+        }
+        if pattern["tail"] != null {
+            let inner = pattern_names(pattern["tail"])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+        }
+        return names
+    }
+    if kind == "dict" {
+        let names = []
+        let entries = pattern["entries"]
+        var i = 0
+        while i < entries.len() {
+            let inner = pattern_names(entries[i][1])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+            i = i + 1
+        }
+        return names
+    }
+    if kind == "or" {
+        let names = []
+        let items = pattern["items"]
+        var i = 0
+        while i < items.len() {
+            let inner = pattern_names(items[i])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+            i = i + 1
+        }
+        return names
+    }
+    return []
+}
+
+// Report whether a name is bound somewhere.
+fn known_name(state, name) {
+    if state["module_names"].has(name) {
+        return true
+    }
+    let stack = state["name_stack"]
+    var i = stack.len() - 1
+    while i >= 0 {
+        if stack[i].has(name) {
+            return true
+        }
+        i = i - 1
+    }
+    return false
+}
+
+// Report a name that is not bound anywhere.
+fn check_known_name(state, node) {
+    let name = node["name"]
+    if BUILTIN_SIGNATURES.has(name) {
+        return
+    }
+    if known_name(state, name) {
+        return
+    }
+    fail("undefined variable '" + name + "'", node)
+}
+
+fn check_statements(state, statements, scope) {
+    var i = 0
+    while i < statements.len() {
+        check_statement(state, statements[i], scope)
+        i = i + 1
+    }
+}
+
+fn check_statement(state, node, scope) {
+    let kind = node["kind"]
+    if kind == "LetStmt" {
+        check_annotation(node["type_ann"], node)
+        let value_type = check_expr(state, node["value"], scope)
+        if node["type_ann"] != null and !is_assignable(value_type, node["type_ann"]) {
+            fail("cannot assign value of type '" + value_type + "' to variable '" + node["name"] + "' of type '" + node["type_ann"] + "'", node)
+        }
+        if node["value"]["kind"] == "FnDecl" and (node["type_ann"] == null or node["type_ann"] == "fn") {
+            scope[node["name"]] = make_fn_binding(param_specs(node["value"]), node["value"]["return_type"])
+        } else {
+            if node["type_ann"] == null {
+                scope[node["name"]] = make_binding("any")
+            } else {
+                scope[node["name"]] = make_binding(node["type_ann"])
+            }
+        }
+        if !node["mutable"] {
+            scope[node["name"]]["mutable"] = false
+        }
+        return
+    }
+    if kind == "FnDecl" {
+        check_annotation(node["return_type"], node)
+        check_decorators(state, node, scope)
+        check_function(state, node, scope)
+        // The name of the function belongs to the block that holds it, so a
+        // function that is defined inside a block may be called there.
+        scope[node["name"]] = make_immutable_fn_binding(param_specs(node), node["return_type"])
+        return
+    }
+    if kind == "AssignStmt" {
+        let value_type = check_expr(state, node["value"], scope)
+        if node["target"]["kind"] == "Identifier" {
+            let name = node["target"]["name"]
+            if scope.has(name) {
+                let binding = scope[name]
+                if binding["type"] != "any" and !is_assignable(value_type, binding["type"]) {
+                    fail("cannot assign value of type '" + value_type + "' to variable '" + name + "' of type '" + binding["type"] + "'", node)
+                }
+                if !binding["mutable"] {
+                    fail("cannot assign to immutable variable '" + name + "'", node)
+                }
+            }
+        } else {
+            if node["target"]["kind"] == "UnpackTarget" {
+                let leaves = plan_leaves(node["target"]["targets"])
+                var i = 0
+                while i < leaves.len() {
+                    let leaf = leaves[i]
+                    if leaf["kind"] == "Identifier" {
+                        let name = leaf["name"]
+                        if scope.has(name) {
+                            let binding = scope[name]
+                            if binding["type"] != "any" and !is_assignable(value_type, binding["type"]) {
+                                fail("cannot assign value of type '" + value_type + "' to variable '" + name + "' of type '" + binding["type"] + "'", node)
+                            }
+                            if !binding["mutable"] {
+                                fail("cannot assign to immutable variable '" + name + "'", node)
+                            }
+                        }
+                    }
+                    i = i + 1
+                }
+            } else {
+                check_expr(state, node["target"], scope)
+            }
+        }
+        return
+    }
+    if kind == "UnpackStmt" {
+        check_expr(state, node["value"], scope)
+        let names = unpack_names(node["targets"])
+        var i = 0
+        while i < names.len() {
+            scope[names[i]] = make_binding("any")
+            if !node["mutable"] {
+                scope[names[i]]["mutable"] = false
+            }
+            i = i + 1
+        }
+        return
+    }
+    if kind == "ReturnStmt" {
+        var value_type = "null"
+        if node["value"] != null {
+            value_type = check_expr(state, node["value"], scope)
+        }
+        let stack = state["return_stack"]
+        if stack.len() > 0 {
+            let declared = stack[stack.len() - 1]
+            if declared != null and !is_assignable(value_type, declared) {
+                fail("cannot return value of type '" + value_type + "' from function with return type '" + declared + "'", node)
+            }
+        }
+        return
+    }
+    if kind == "Block" {
+        check_statements(state, node["statements"], copy_scope(scope))
+        return
+    }
+    if kind == "IfStmt" {
+        check_expr(state, node["condition"], scope)
+        check_statement(state, node["then_branch"], copy_scope(scope))
+        if node["else_branch"] != null {
+            check_statement(state, node["else_branch"], copy_scope(scope))
+        }
+        return
+    }
+    if kind == "WhileStmt" {
+        check_expr(state, node["condition"], scope)
+        state["loop_depth"] = state["loop_depth"] + 1
+        check_statements(state, node["body"]["statements"], copy_scope(scope))
+        if node["orelse"] != null {
+            check_statement(state, node["orelse"], copy_scope(scope))
+        }
+        state["loop_depth"] = state["loop_depth"] - 1
+        return
+    }
+    if kind == "ForStmt" {
+        check_expr(state, node["iterable"], scope)
+        let loop_scope = copy_scope(scope)
+        let targets = node["targets"]
+        var i = 0
+        while i < targets.len() {
+            loop_scope[targets[i]] = make_binding("any")
+            i = i + 1
+        }
+        state["loop_depth"] = state["loop_depth"] + 1
+        check_statements(state, node["body"]["statements"], loop_scope)
+        if node["orelse"] != null {
+            // The else runs after the loop, so the name of the loop is
+            // gone by then.
+            check_statement(state, node["orelse"], copy_scope(scope))
+        }
+        state["loop_depth"] = state["loop_depth"] - 1
+        return
+    }
+    if kind == "AssertStmt" {
+        check_expr(state, node["condition"], scope)
+        if node["message"] != null {
+            check_expr(state, node["message"], scope)
+        }
+        return
+    }
+    if kind == "ExprStmt" {
+        check_expr(state, node["expr"], scope)
+        return
+    }
+    if kind == "DelStmt" {
+        check_expr(state, node["target"], scope)
+        return
+    }
+    if kind == "YieldStmt" {
+        if state["function_depth"] == 0 {
+            fail("'yield' outside of a function", node)
+        }
+        if node["value"] != null {
+            check_expr(state, node["value"], scope)
+        }
+        return
+    }
+    if kind == "YieldExpr" {
+        if state["function_depth"] == 0 {
+            fail("'yield' outside of a function", node)
+        }
+        if node["value"] != null {
+            check_expr(state, node["value"], scope)
+        }
+        return
+    }
+    if kind == "Program" {
+        check_statements(state, node["statements"], copy_scope(scope))
+        return
+    }
+    if kind == "ImportStmt" {
+        check_import(state, node, scope)
+        return
+    }
+    if kind == "TryStmt" {
+        let catch_scope = copy_scope(scope)
+        var i = 0
+        while i < node["catch_params"].len() {
+            catch_scope[node["catch_params"][i]] = make_binding("any")
+            i = i + 1
+        }
+        check_statement(state, node["try_block"], copy_scope(scope))
+        if node["catch_block"] != null {
+            check_statement(state, node["catch_block"], catch_scope)
+        }
+        if node["finally_body"] != null {
+            check_statement(state, node["finally_body"], copy_scope(scope))
+        }
+        return
+    }
+    if kind == "WithStmt" {
+        let with_scope = copy_scope(scope)
+        let items = node["items"]
+        var i = 0
+        while i < items.len() {
+            check_expr(state, items[i]["expr"], with_scope)
+            with_scope[items[i]["name"]] = make_binding("any")
+            i = i + 1
+        }
+        check_statement(state, node["body"], with_scope)
+        return
+    }
+    if kind == "ScopeStmt" {
+        check_statement(state, node["body"], copy_scope(scope))
+        return
+    }
+    if kind == "ThrowStmt" {
+        check_expr(state, node["value"], scope)
+        if node["cause"] != null {
+            check_expr(state, node["cause"], scope)
+        }
+        return
+    }
+    if kind == "MatchStmt" {
+        check_expr(state, node["subject"], scope)
+        let cases = node["cases"]
+        var i = 0
+        while i < cases.len() {
+            let case_scope = copy_scope(scope)
+            let names = pattern_names(cases[i][0])
+            var j = 0
+            while j < names.len() {
+                case_scope[names[j]] = make_binding("any")
+                j = j + 1
+            }
+            let guard = cases[i][0]["guard"]
+            if guard != null {
+                check_expr(state, guard, case_scope)
+            }
+            check_statement(state, cases[i][1], case_scope)
+            i = i + 1
+        }
+        return
+    }
+    if kind == "BreakStmt" {
+        if state["loop_depth"] == 0 {
+            fail("'break' outside of a loop", node)
+        }
+        return
+    }
+    if kind == "ContinueStmt" {
+        if state["loop_depth"] == 0 {
+            fail("'continue' outside of a loop", node)
+        }
+        return
+    }
+    fail("cannot check statement: " + kind, node)
+}
+
+// Check that every decorator of a function is a known function. A
+// decorator is written as a name, so the name must be bound in the scope
+// that holds the function, and it must be a function. The name of an
+// import that is not checked yet is accepted, so that the order of the
+// statements does not decide the meaning.
+fn check_decorators(state, node, scope) {
+    let decorators = node["decorators"]
+    if decorators == null {
+        return
+    }
+    var i = 0
+    while i < decorators.len() {
+        let name = decorators[i]["name"]
+        if !scope.has(name) {
+            if known_name(state, name) or BUILTIN_SIGNATURES.has(name) {
+                i = i + 1
+                continue
+            }
+            fail("undefined decorator '" + name + "'", decorators[i])
+        }
+        let binding = scope[name]
+        if binding["type"] != "fn" and binding["type"] != "any" {
+            fail("decorator '" + name + "' is not a function", decorators[i])
+        }
+        i = i + 1
+    }
+}
+
+fn check_function(state, decl, scope) {
+    let local = copy_scope(scope)
+    let specs = param_specs(decl)
+    let names = {}
+    var i = 0
+    while i < specs.len() {
+        let spec = specs[i]
+        check_annotation(spec["type"], decl)
+        if spec["type"] == null {
+            local[spec["name"]] = make_binding("any")
+        } else {
+            local[spec["name"]] = make_binding(spec["type"])
+        }
+        names[spec["name"]] = true
+        i = i + 1
+    }
+    let bound = bound_names(decl["body"]["statements"])
+    let keys = bound.keys()
+    var k = 0
+    while k < keys.len() {
+        names[keys[k]] = true
+        k = k + 1
+    }
+    state["name_stack"].push(names)
+    state["return_stack"].push(decl["return_type"])
+    let saved_loop_depth = state["loop_depth"]
+    state["loop_depth"] = 0
+    state["function_depth"] = state["function_depth"] + 1
+    check_statements(state, decl["body"]["statements"], local)
+    state["function_depth"] = state["function_depth"] - 1
+    state["loop_depth"] = saved_loop_depth
+    state["return_stack"].pop()
+    state["name_stack"].pop()
+}
+
+// Check a comprehension in its own scope. The loop targets are fresh
+// mutable bindings, so they never leak into the enclosing scope.
+fn check_comprehension(state, node, scope) {
+    let local = copy_scope(scope)
+    let clauses = node["clauses"]
+    var i = 0
+    while i < clauses.len() {
+        check_expr(state, clauses[i]["iterable"], local)
+        local[clauses[i]["target"]] = make_binding("any")
+        i = i + 1
+    }
+    i = 0
+    while i < clauses.len() {
+        if clauses[i]["condition"] != null {
+            check_expr(state, clauses[i]["condition"], local)
+        }
+        i = i + 1
+    }
+    if node["is_dict"] {
+        check_expr(state, node["key"], local)
+        check_expr(state, node["value"], local)
+        return "dict"
+    }
+    check_expr(state, node["element"], local)
+    return "list"
+}
+
+fn check_expr(state, node, scope) {
+    if node["kind"] == "YieldExpr" {
+        if state["function_depth"] == 0 {
+            fail("'yield' outside of a function", node)
+        }
+        if node["value"] != null {
+            check_expr(state, node["value"], scope)
+        }
+        return
+    }
+    let kind = node["kind"]
+    if kind == "Literal" {
+        return type_of(node["value"])
+    }
+    if kind == "Identifier" {
+        let name = node["name"]
+        if scope.has(name) {
+            return scope[name]["type"]
+        }
+        check_known_name(state, node)
+        return "any"
+    }
+    if kind == "ListLiteral" {
+        var i = 0
+        while i < node["elements"].len() {
+            check_expr(state, node["elements"][i], scope)
+            i = i + 1
+        }
+        return "list"
+    }
+    if kind == "DictLiteral" {
+        var i = 0
+        while i < node["entries"].len() {
+            check_expr(state, node["entries"][i][0], scope)
+            check_expr(state, node["entries"][i][1], scope)
+            i = i + 1
+        }
+        return "dict"
+    }
+    if kind == "FString" {
+        let parts = node["parts"]
+        var i = 0
+        while i < parts.len() {
+            let part = parts[i]
+            if part["literal"] == null {
+                check_expr(state, part["expr"], scope)
+            }
+            i = i + 1
+        }
+        return "string"
+    }
+    if kind == "Comprehension" {
+        return check_comprehension(state, node, scope)
+    }
+    if kind == "FnDecl" {
+        let specs = param_specs(node)
+        var i = 0
+        while i < specs.len() {
+            check_annotation(specs[i]["type"], node)
+            i = i + 1
+        }
+        check_annotation(node["return_type"], node)
+        check_function(state, node, scope)
+        return "fn"
+    }
+    if kind == "Call" {
+        return check_call(state, node, scope)
+    }
+    if kind == "Unary" {
+        check_expr(state, node["operand"], scope)
+        return "any"
+    }
+    if kind == "Binary" {
+        check_expr(state, node["left"], scope)
+        check_expr(state, node["right"], scope)
+        return "any"
+    }
+    if kind == "Logical" {
+        check_expr(state, node["left"], scope)
+        check_expr(state, node["right"], scope)
+        return "any"
+    }
+    if kind == "Index" {
+        check_expr(state, node["target"], scope)
+        if node["index"]["kind"] == "Slice" {
+            let slice = node["index"]
+            let parts = [slice["start"], slice["stop"], slice["step"]]
+            var i = 0
+            while i < parts.len() {
+                if parts[i] != null {
+                    check_expr(state, parts[i], scope)
+                }
+                i = i + 1
+            }
+        } else {
+            check_expr(state, node["index"], scope)
+        }
+        return "any"
+    }
+    if kind == "MethodCall" {
+        check_expr(state, node["receiver"], scope)
+        var i = 0
+        while i < node["args"].len() {
+            check_expr(state, node["args"][i], scope)
+            i = i + 1
+        }
+        return "any"
+    }
+    fail("cannot check expression: " + kind, node)
+    return "any"
+}
+
+fn check_call(state, node, scope) {
+    let args = node["args"]
+    let arg_types = []
+    var i = 0
+    while i < args.len() {
+        arg_types.push(check_expr(state, args[i], scope))
+        i = i + 1
+    }
+    let kwarg_types = {}
+    let kwargs = node["kwargs"]
+    var k = 0
+    while k < kwargs.len() {
+        let entry = kwargs[k]
+        kwarg_types[entry[0]] = check_expr(state, entry[1], scope)
+        k = k + 1
+    }
+    if node["callee"]["kind"] != "Identifier" {
+        check_expr(state, node["callee"], scope)
+        return "any"
+    }
+    let name = node["callee"]["name"]
+    if !scope.has(name) {
+        if BUILTIN_SIGNATURES.has(name) {
+            return check_builtin_call(name, node, arg_types)
+        }
+        check_known_name(state, node["callee"])
+        return "any"
+    }
+    let binding = scope[name]
+    if binding["type"] == "any" {
+        return "any"
+    }
+    if binding["type"] != "fn" {
+        fail("'" + name + "' of type '" + binding["type"] + "' is not callable", node)
+    }
+    if binding["params"] == null {
+        return "any"
+    }
+    check_call_args(name, binding["params"], arg_types, kwarg_types, node)
+    if binding["return_type"] == null {
+        return "any"
+    }
+    return binding["return_type"]
+}
+
+fn check_call_args(name, specs, arg_types, kwarg_types, node) {
+    let positional = []
+    let kwonly = []
+    var has_vararg = false
+    var has_kwarg = false
+    var plain = true
+    var i = 0
+    while i < specs.len() {
+        let spec = specs[i]
+        if spec["param_kind"] == "positional" {
+            positional.push(spec)
+        } else {
+            if spec["param_kind"] == "kwonly" {
+                kwonly.push(spec)
+                plain = false
+            } else {
+                if spec["param_kind"] == "vararg" {
+                    has_vararg = true
+                    plain = false
+                } else {
+                    has_kwarg = true
+                    plain = false
+                }
+            }
+        }
+        if spec["has_default"] {
+            plain = false
+        }
+        i = i + 1
+    }
+    if plain and kwarg_types.len() == 0 {
+        if arg_types.len() != specs.len() {
+            fail("function '" + name + "' expects " + str(specs.len()) + " argument(s), got " + str(arg_types.len()), node)
+        }
+        var j = 0
+        while j < specs.len() {
+            check_arg_type(arg_types[j], specs[j]["type"], name, node)
+            j = j + 1
+        }
+        return
+    }
+    let known = {}
+    i = 0
+    while i < positional.len() {
+        known[positional[i]["name"]] = positional[i]
+        i = i + 1
+    }
+    i = 0
+    while i < kwonly.len() {
+        known[kwonly[i]["name"]] = kwonly[i]
+        i = i + 1
+    }
+    if arg_types.len() > positional.len() and !has_vararg {
+        fail("function '" + name + "' expects " + str(positional.len()) + " argument(s), got " + str(arg_types.len()), node)
+    }
+    var p = 0
+    while p < arg_types.len() and p < positional.len() {
+        check_arg_type(arg_types[p], positional[p]["type"], name, node)
+        p = p + 1
+    }
+    let keys = kwarg_types.keys()
+    i = 0
+    while i < keys.len() {
+        let key = keys[i]
+        if !known.has(key) {
+            if !has_kwarg {
+                fail("function '" + name + "' got an unexpected keyword argument '" + key + "'", node)
+            }
+        } else {
+            check_arg_type(kwarg_types[key], known[key]["type"], name, node)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < positional.len() {
+        let spec = positional[i]
+        if i < arg_types.len() and kwarg_types.has(spec["name"]) {
+            fail("function '" + name + "' got multiple values for argument '" + spec["name"] + "'", node)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < positional.len() {
+        let spec = positional[i]
+        if i < arg_types.len() {
+            i = i + 1
+            continue
+        }
+        if kwarg_types.has(spec["name"]) {
+            i = i + 1
+            continue
+        }
+        if spec["has_default"] {
+            i = i + 1
+            continue
+        }
+        fail("function '" + name + "' missing required argument '" + spec["name"] + "'", node)
+    }
+    i = 0
+    while i < kwonly.len() {
+        let spec = kwonly[i]
+        if !kwarg_types.has(spec["name"]) and !spec["has_default"] {
+            fail("function '" + name + "' missing required argument '" + spec["name"] + "'", node)
+        }
+        i = i + 1
+    }
+}
+
+fn check_arg_type(arg_type, ptype, name, node) {
+    if ptype == null {
+        return
+    }
+    if !is_assignable(arg_type, ptype) {
+        fail("argument of type '" + arg_type + "' is not assignable to parameter of type '" + ptype + "' in call to '" + name + "'", node)
+    }
+}
+
+fn check_builtin_call(name, node, arg_types) {
+    let sigs = BUILTIN_SIGNATURES[name]
+    var i = 0
+    while i < sigs.len() {
+        let params = sigs[i][0]
+        let return_type = sigs[i][1]
+        var matched = true
+        if params.len() != arg_types.len() {
+            matched = false
+        } else {
+            var j = 0
+            while j < params.len() {
+                if !is_assignable(arg_types[j], params[j]) {
+                    matched = false
+                }
+                j = j + 1
+            }
+        }
+        if matched {
+            return return_type
+        }
+        i = i + 1
+    }
+    let counts = []
+    var k = 0
+    while k < sigs.len() {
+        counts.push(str(sigs[k][0].len()))
+        k = k + 1
+    }
+    fail(name + "() received arguments that do not match its signature (expected " + counts.join(" or ") + " argument(s))", node)
+    return "any"
+}
+
+fn dirname(path) {
+    var i = path.len() - 1
+    while i >= 0 {
+        if path[i] == "/" {
+            if i == 0 {
+                return "/"
+            }
+            return path.slice(0, i)
+        }
+        i = i - 1
+    }
+    return "."
+}
+
+fn module_error_message(path, message) {
+    let prefix = "cannot load module '" + path + "'"
+    if message.starts_with(prefix) {
+        return message
+    }
+    return prefix + ": " + message
+}
+
+fn exported_binding(statement) {
+    if statement["kind"] == "FnDecl" and statement["exported"] {
+        check_annotation_throw(statement["return_type"])
+        let ptypes = param_specs(statement)
+        var i = 0
+        while i < ptypes.len() {
+            check_annotation_throw(ptypes[i]["type"])
+            i = i + 1
+        }
+        return [statement["name"], make_immutable_fn_binding(param_specs(statement), statement["return_type"])]
+    }
+    if statement["kind"] == "LetStmt" and statement["exported"] {
+        check_annotation_throw(statement["type_ann"])
+        if statement["type_ann"] == null {
+            return [statement["name"], make_binding("any")]
+        }
+        return [statement["name"], make_binding(statement["type_ann"])]
+    }
+    return null
+}
+
+fn module_exports(state, path, node) {
+    var full_path = null
+    try {
+        full_path = module_path(path, state["base_dir"])
+    } catch err {
+        fail(module_error_message(path, err), node)
+    }
+    if state["module_cache"].has(full_path) {
+        return state["module_cache"][full_path]
+    }
+    if state["module_loading"].has(full_path) {
+        fail("circular import of '" + path + "'", node)
+    }
+    var source = null
+    try {
+        source = read_module(path, full_path)
+    } catch err {
+        fail(module_error_message(path, err), node)
+    }
+    var program = null
+    try {
+        program = parse(tokenize(source))
+    } catch err {
+        fail(module_error_message(path, err), node)
+    }
+    state["module_loading"][full_path] = true
+    let exports = {}
+    let previous_dir = state["base_dir"]
+    state["base_dir"] = dirname(full_path)
+    var i = 0
+    while i < program["statements"].len() {
+        let statement = program["statements"][i]
+        if statement["kind"] == "ImportStmt" {
+            check_import(state, statement, {})
+        }
+        var binding = null
+        try {
+            binding = exported_binding(statement)
+        } catch err {
+            fail(module_error_message(path, err), node)
+        }
+        if binding != null {
+            exports[binding[0]] = binding[1]
+        }
+        i = i + 1
+    }
+    state["base_dir"] = previous_dir
+    state["module_loading"].remove(full_path)
+    state["module_cache"][full_path] = exports
+    return exports
+}
+
+fn check_import(state, node, scope) {
+    let exports = module_exports(state, node["path"], node)
+    var i = 0
+    while i < node["names"].len() {
+        let name = node["names"][i]
+        if !exports.has(name) {
+            fail("module '" + node["path"] + "' does not export '" + name + "'", node)
+        }
+        scope[name] = exports[name]
+        scope[name]["mutable"] = false
+        i = i + 1
+    }
+}
+
+export fn check_program(program, base_dir) {
+    let state = make_state(base_dir)
+    let scope = {}
+    collect_functions(program["statements"], scope)
+    collect_module_names(state, program["statements"])
+    check_statements(state, program["statements"], scope)
+    return null
+}
+
+fn unpack_names(targets) {
+    let names = []
+    var i = 0
+    while i < targets.len() {
+        collect_unpack_names(targets[i], names)
+        i = i + 1
+    }
+    return names
+}
+
+fn collect_unpack_names(target, names) {
+    if target["kind"] == "UnpackTarget" {
+        if target["target_kind"] == "star" {
+            names.push(target["name"])
+            return
+        }
+        let targets = target["targets"]
+        var i = 0
+        while i < targets.len() {
+            collect_unpack_names(targets[i], names)
+            i = i + 1
+        }
+        return
+    }
+    names.push(target["name"])
+}
+
+fn plan_leaves(targets) {
+    let leaves = []
+    var i = 0
+    while i < targets.len() {
+        collect_plan_leaves(targets[i], leaves)
+        i = i + 1
+    }
+    return leaves
+}
+
+fn collect_plan_leaves(target, leaves) {
+    if target["kind"] == "UnpackTarget" {
+        if target["target_kind"] == "star" {
+            leaves.push(target)
+            return
+        }
+        let targets = target["targets"]
+        var i = 0
+        while i < targets.len() {
+            collect_plan_leaves(targets[i], leaves)
+            i = i + 1
+        }
+        return
+    }
+    leaves.push(target)
+}

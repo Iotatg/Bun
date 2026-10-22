@@ -1,0 +1,8 @@
+// Golden driver for tools/mime_type/mime_type_list.bun. The fixture lives
+// with the tool; the read path is repo-root-relative (pytest runs from the
+// repo root). Importing via "../../" also covers deferred parent-relative
+// module imports at golden level.
+import { generate } from "../../tools/mime_type/mime_type_list"
+
+let list_text = read_file("tools/mime_type/mime_list.txt")
+print(generate(list_text))

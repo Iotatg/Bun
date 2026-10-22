@@ -1,0 +1,22 @@
+let pairs = [[1, "one"], [2, "two"]]
+for number, word in pairs {
+    print(str(number) + "=" + word)
+}
+
+let scores = { "ann": 10, "bob": 20 }
+for name in scores {
+    print(name + "=" + str(scores[name]))
+}
+
+for letter in "abc" {
+    print(letter)
+}
+
+assert 1 + 1 == 2
+assert 2 + 2 == 4, "math is broken"
+
+try {
+    assert false, "deliberate"
+} catch err {
+    print("caught " + err)
+}

@@ -1,0 +1,440 @@
+// bun:math — the mathematics of the language.
+//
+// Everything here is written in Bun, so a program that uses the
+// mathematics needs nothing but the language itself.
+//
+// The functions are the ones of the textbooks: the argument is made
+// small, a series is summed, and the result is put back together. The
+// accuracy is about fifteen digits, which is the accuracy of a double.
+
+// The natural logarithm of two, and the square root of two. The two
+// constants the reduction needs.
+let LN2 = 0.6931471805599453
+let SQRT2 = 1.4142135623730951
+
+// The number of the circle.
+export let pi = 3.141592653589793
+
+// The number of the natural logarithm.
+export let e = 2.718281828459045
+
+// The number of a whole turn.
+export let tau = 6.283185307179586
+
+// ---------------------------------------------------------------------------
+// The helpers
+// ---------------------------------------------------------------------------
+
+// The integer part of a number, rounded down. The `int` of the language
+// cuts the fraction away, so a negative number needs a turn of its own.
+export fn floor(x: float) -> float {
+    if x >= 0.0 {
+        return float(int(x))
+    }
+    let whole = float(int(-x))
+    if whole == -x {
+        return -whole
+    }
+    return -whole - 1.0
+}
+
+// The smallest whole number that is not smaller than the number.
+export fn ceil(x: float) -> float {
+    return -floor(-x)
+}
+
+// The whole number that is nearest to the number. A tie goes to the
+// even one, as in Python.
+export fn round(x: float) -> float {
+    let lower = floor(x)
+    let difference = x - lower
+    if difference < 0.5 {
+        return lower
+    }
+    if difference > 0.5 {
+        return lower + 1.0
+    }
+    let half = lower / 2.0
+    if half == int(half) {
+        return lower
+    }
+    return lower + 1.0
+}
+
+// The absolute value of a number.
+export fn abs(x: float) -> float {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+// The larger of two numbers.
+export fn max(x: float, y: float) -> float {
+    if x >= y {
+        return x
+    }
+    return y
+}
+
+// The smaller of two numbers.
+export fn min(x: float, y: float) -> float {
+    if x <= y {
+        return x
+    }
+    return y
+}
+
+// A power of two. The exponent may be negative.
+fn pow2(exponent: int) -> float {
+    var result = 1.0
+    var i = 0
+    while i < exponent {
+        result = result * 2.0
+        i = i + 1
+    }
+    while i > exponent {
+        result = result / 2.0
+        i = i - 1
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The exponential and the logarithm
+// ---------------------------------------------------------------------------
+
+// The series of the exponential: 1 + x + x^2/2! + x^3/3! + ...
+//
+// The series is only used for a small argument, where it sums quickly.
+fn exp_series(x: float) -> float {
+    var term = 1.0
+    var total = 1.0
+    var n = 1
+    while n < 24 {
+        term = term * x / float(n)
+        total = total + term
+        n = n + 1
+    }
+    return total
+}
+
+// The exponential of a number.
+//
+// The argument is split into a whole part and a small part, x = k*ln2 + r
+// with |r| at most half of ln2. The series is summed for the small part,
+// and the whole part is a power of two, which is exact.
+export fn exp(x: float) -> float {
+    if x != x {
+        return x
+    }
+    if x > 709.782712893384 {
+        throw "exp() is too large for a number of this size"
+    }
+    if x < -745.1332191019411 {
+        return 0.0
+    }
+    var k = 0
+    if x > 1.0 {
+        k = int(x / LN2 + 0.5)
+    } else {
+        if x < -1.0 {
+            k = int(x / LN2 - 0.5)
+        }
+    }
+    let rest = x - float(k) * LN2
+    var result = exp_series(rest)
+    var i = 0
+    while i < k {
+        result = result * 2.0
+        i = i + 1
+    }
+    while i > k {
+        result = result / 2.0
+        i = i - 1
+    }
+    return result
+}
+
+// The series of the logarithm of a number near one.
+//
+// The logarithm of m is 2*(z + z^3/3 + z^5/5 + ...), with z = (m-1)/(m+1).
+export fn log_series(m: float) -> float {
+    let z = (m - 1.0) / (m + 1.0)
+    let square = z * z
+    var term = z
+    var total = z
+    var n = 3
+    while n < 41 {
+        term = term * square
+        total = total + term / float(n)
+        n = n + 2
+    }
+    return 2.0 * total
+}
+
+// The logarithm of a number.
+//
+// The number is split into a part that is near one and a power of two,
+// and the series gives the first answer. Two steps of Newton's method
+// then give the last digits, because the step squares the error.
+export fn log(x: float) -> float {
+    if x != x {
+        return x
+    }
+    if x < 0.0 {
+        throw "log() expects a number that is not negative"
+    }
+    if x == 0.0 {
+        throw "log() expects a number that is not zero"
+    }
+    var m = x
+    var exponent = 0
+    while m >= 2.0 {
+        m = m / 2.0
+        exponent = exponent + 1
+    }
+    while m < 1.0 {
+        m = m * 2.0
+        exponent = exponent - 1
+    }
+    var result = log_series(m) + float(exponent) * LN2
+    var step = 0
+    while step < 3 {
+        let value = exp(result)
+        result = result - (value - x) / value
+        step = step + 1
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The square root
+// ---------------------------------------------------------------------------
+
+// The square root of a number.
+//
+// The number is split into a part that is near one and a power of two,
+// and Newton's method squares the error of every step.
+export fn sqrt(x: float) -> float {
+    if x != x {
+        return x
+    }
+    if x < 0.0 {
+        throw "sqrt() expects a number that is not negative"
+    }
+    if x == 0.0 {
+        return 0.0
+    }
+    var m = x
+    var exponent = 0
+    while m >= 2.0 {
+        m = m / 2.0
+        exponent = exponent + 1
+    }
+    while m < 1.0 {
+        m = m * 2.0
+        exponent = exponent - 1
+    }
+    var guess = (m + 1.0) / 2.0
+    var step = 0
+    while step < 30 {
+        guess = (guess + m / guess) / 2.0
+        step = step + 1
+    }
+    var scale = 1.0
+    if exponent % 2 == 0 {
+        scale = pow2(exponent / 2)
+    } else {
+        scale = pow2((exponent - 1) / 2) * SQRT2
+    }
+    return guess * scale
+}
+
+// ---------------------------------------------------------------------------
+// The circle
+// ---------------------------------------------------------------------------
+
+// The angle of a number, made small. The whole turn is taken away until
+// the angle is between -pi and pi.
+fn reduce(x: float) -> float {
+    var angle = x % tau
+    if angle > pi {
+        angle = angle - tau
+    }
+    if angle < -pi {
+        angle = angle + tau
+    }
+    return angle
+}
+
+// The sine of an angle.
+//
+// The series is the one of the textbooks: x - x^3/3! + x^5/5! - ...
+export fn sin(x: float) -> float {
+    let angle = reduce(x)
+    let square = angle * angle
+    var term = angle
+    var total = angle
+    var n = 1
+    while n < 20 {
+        term = term * square / float((2 * n) * (2 * n + 1))
+        if (n % 2) == 1 {
+            total = total - term
+        } else {
+            total = total + term
+        }
+        n = n + 1
+    }
+    return total
+}
+
+// The cosine of an angle.
+//
+// The series is the one of the textbooks: 1 - x^2/2! + x^4/4! - ...
+export fn cos(x: float) -> float {
+    let angle = reduce(x)
+    let square = angle * angle
+    var term = 1.0
+    var total = 1.0
+    var n = 1
+    while n < 20 {
+        term = term * square / float((2 * n - 1) * (2 * n))
+        if (n % 2) == 1 {
+            total = total - term
+        } else {
+            total = total + term
+        }
+        n = n + 1
+    }
+    return total
+}
+
+// The tangent of an angle.
+export fn tan(x: float) -> float {
+    return sin(x) / cos(x)
+}
+
+// The angle whose sine is the number.
+export fn asin(x: float) -> float {
+    if x < -1.0 or x > 1.0 {
+        throw "asin() expects a number between -1 and 1"
+    }
+    if x == 1.0 {
+        return pi / 2.0
+    }
+    if x == -1.0 {
+        return -pi / 2.0
+    }
+    // The angle is found by halving the distance to the answer, with the
+    // series of the sine giving the direction.
+    var low = 0.0
+    var high = pi / 2.0
+    var step = 0
+    while step < 60 {
+        let middle = (low + high) / 2.0
+        if sin(middle) < x {
+            low = middle
+        } else {
+            high = middle
+        }
+        step = step + 1
+    }
+    return (low + high) / 2.0
+}
+
+// The angle whose tangent is the number.
+export fn atan(x: float) -> float {
+    var value = x
+    var negative = false
+    if value < 0.0 {
+        value = -value
+        negative = true
+    }
+    // The tangent of the answer is the tangent of the angle, and the
+    // tangent of twice an angle is 2*t/(1-t*t), so the angle is halved
+    // until it is small.
+    var halved = 0
+    while value > 0.5 {
+        value = value / (1.0 + sqrt(1.0 + value * value))
+        halved = halved + 1
+    }
+    var square = value * value
+    var term = value
+    var total = value
+    var n = 1
+    while n < 30 {
+        term = term * square
+        if (n % 2) == 1 {
+            total = total - term / float(2 * n + 1)
+        } else {
+            total = total + term / float(2 * n + 1)
+        }
+        n = n + 1
+    }
+    var result = total
+    var step = 0
+    while step < halved {
+        result = result * 2.0
+        step = step + 1
+    }
+    if negative {
+        return -result
+    }
+    return result
+}
+
+// The angle whose sine and cosine are the two numbers.
+export fn atan2(y: float, x: float) -> float {
+    if x > 0.0 {
+        return atan(y / x)
+    }
+    if x < 0.0 {
+        if y >= 0.0 {
+            return atan(y / x) + pi
+        }
+        return atan(y / x) - pi
+    }
+    if y > 0.0 {
+        return pi / 2.0
+    }
+    if y < 0.0 {
+        return -pi / 2.0
+    }
+    return 0.0
+}
+
+// ---------------------------------------------------------------------------
+// The powers
+// ---------------------------------------------------------------------------
+
+// The number raised to the power of another number.
+export fn pow(x: float, y: float) -> float {
+    if y == int(y) {
+        if x < 0.0 and y % 2.0 != 0.0 {
+            let negative = 0.0 - pow(-x, y)
+            return negative
+        }
+        var result = 1.0
+        var n = int(abs(y))
+        var step = 0
+        while step < n {
+            result = result * x
+            step = step + 1
+        }
+        if y < 0.0 {
+            return 1.0 / result
+        }
+        return result
+    }
+    if x < 0.0 {
+        throw "pow() expects a number that is not negative"
+    }
+    return exp(y * log(x))
+}
+
+// The integer part of a number, and the part that is left.
+export fn modf(x: float) -> any {
+    let whole = floor(x)
+    return { "fractional": x - whole, "integer": whole }
+}

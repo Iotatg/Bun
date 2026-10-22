@@ -1,0 +1,30 @@
+// A generator gives its values one at a time. The program asks for the
+// next one, and the function wakes up where it left off.
+fn counter(start) {
+    var value = start
+    while true {
+        yield value
+        value = value + 1
+    }
+}
+
+fn steps() {
+    print("start")
+    yield 1
+    print("middle")
+    yield 2
+    print("end")
+}
+
+let g = counter(1)
+print(next(g))
+print(next(g))
+print(next(g))
+
+for value in steps() {
+    print("got " + str(value))
+}
+
+let echo = counter(10)
+print(send(echo, 42))
+print(next(echo))

@@ -1,0 +1,1482 @@
+// bun:ai — the model layer of Bun.
+//
+// A model is data. It is a dictionary with the weights, the list of the
+// layers and the seed it was trained with, so a model can be printed,
+// compared, saved and loaded without anything that has to know about it.
+//
+// The mathematics is the one of bun:tensor: a tensor is a flat list of
+// numbers and a shape, and the reductions use a fixed order, so a
+// training run is reproducible. The gradient is the reverse-mode tape of
+// bun:tensor, and every layer of this stack records its rule on that one
+// tape, so a model made of these layers trains with one backward pass.
+//
+// The random generator is explicit and seeded: a draw is a function of
+// the seed and the counter, never of the clock. Two runs with the same
+// seed give the same numbers, down to the last digit, and that is what
+// makes a training run a test.
+//
+// The scope is deliberate. The attention is here, but it is written by
+// hand: the matrix multiply of the runtime is interpreted, so the
+// attention of a wide model would take minutes per step. The block of a
+// transformer is here for the same reason — one operation, one rule, and
+// the loops written out so that a step of a small model stays short.
+
+import { tensor, from_list, zeros, ones, full, is_tensor, shape, data,
+         size, rank, shape_str, add, sub, mul, matmul, transpose, reshape,
+         row, column, relu, sigmoid, tanh_tensor, softmax, sum, mean,
+         sum_axis, adam, adam_state, to_string, start_tape, stop_tape,
+         recording, grad, take_grad, accumulate_grad, record_rule, backward,
+         gradients } from "bun:tensor"
+
+let math = ffi_load("math")
+let exp = math["exp"]
+let log = math["log"]
+let sqrt = math["sqrt"]
+let pow = math["pow"]
+let erf = math["erf"]
+
+// The modulus of the random generator: a Mersenne prime, so the
+// sequence of a seed never falls into a short cycle.
+let RNG_MODULUS = 2147483647
+let RNG_MULTIPLIER = 48271
+
+// ---------------------------------------------------------------------------
+// The random generator
+// ---------------------------------------------------------------------------
+
+// The state of the generator.
+//
+// The generator is a linear congruential generator of Park and Miller.
+// It is the smallest generator that is good enough for the weights of a
+// model, and the smallest one that can be written down in a page: the
+// draw is a function of the seed and the counter, so the same seed gives
+// the same weights on every machine and every run.
+fn new_rng(seed: int) -> any {
+    var value = seed % RNG_MODULUS
+    if value <= 0 {
+        value = value + RNG_MODULUS - 1
+    }
+    return { "value": value }
+}
+
+// The next float of the generator, between zero and one.
+fn next_float(rng: any) -> float {
+    let value = (rng["value"] * RNG_MULTIPLIER) % RNG_MODULUS
+    rng["value"] = value
+    return float(value) / float(RNG_MODULUS)
+}
+
+// A tensor of the given shape, with the values drawn from the generator.
+//
+// The range is the half open interval [low, high).
+fn random_tensor(rng: any, shape: any, low: float, high: float) -> any {
+    var count = 1
+    for size in shape {
+        count = count * size
+    }
+    var values = []
+    var i = 0
+    while i < count {
+        values.push(low + (high - low) * next_float(rng))
+        i = i + 1
+    }
+    return from_list(values, shape)
+}
+
+// The order of the samples, shuffled with the generator.
+//
+// The shuffle is the Fisher-Yates one: it is the only shuffle that is
+// unbiased, and the bias of a training run shows up in the loss.
+fn shuffled(count: int, rng: any) -> any {
+    var order = []
+    var i = 0
+    while i < count {
+        order.push(i)
+        i = i + 1
+    }
+    var last = count - 1
+    while last > 0 {
+        var pick = int(next_float(rng) * (last + 1))
+        if pick > last {
+            pick = last
+        }
+        let held = order[last]
+        order[last] = order[pick]
+        order[pick] = held
+        last = last - 1
+    }
+    return order
+}
+
+// ---------------------------------------------------------------------------
+// The layers
+// ---------------------------------------------------------------------------
+
+// The linear layer: the input times the weights, plus the bias.
+//
+// The input is [batch, in] and the weights are [in, out]; the answer is
+// [batch, out]. The bias is added to every row.
+export fn linear(x: any, w: any, b: any) -> any {
+    if !is_tensor(x) {
+        throw "linear() expects a tensor"
+    }
+    if !is_tensor(w) {
+        throw "linear() expects a tensor of weights"
+    }
+    let product = matmul(x, w)
+    if b == null {
+        return product
+    }
+    if !is_tensor(b) {
+        throw "linear() expects a tensor of bias"
+    }
+    let shape = product["shape"]
+    if shape.len() != 2 {
+        throw "linear() expects a rank-2 input"
+    }
+    let columns = shape[1]
+    if b["data"].len() != columns {
+        throw "linear() expects a bias of " + str(columns) + " values"
+    }
+    let bias = b["data"]
+    var values = []
+    for i in range(0, product["data"].len()) {
+        values.push(product["data"][i] + bias[i % columns])
+    }
+    let result = from_list(values, shape)
+    if recording() {
+        let output = result
+        let inner = product
+        let target = b
+        let rows = shape[0]
+        let width = columns
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var bias_grad = []
+            var c = 0
+            while c < width {
+                var total = 0.0
+                var r = 0
+                while r < rows {
+                    total = total + g["data"][r * width + c]
+                    r = r + 1
+                }
+                bias_grad.push(total)
+                c = c + 1
+            }
+            accumulate_grad(target, from_list(bias_grad, [width]))
+            accumulate_grad(inner, g)
+        })
+    }
+    return result
+}
+
+// The hyperbolic tangent, with its rule on the tape.
+//
+// The tensor stack has the value; the rule is here, because a layer
+// that trains has to be able to answer for its gradient.
+export fn tanh(t: any) -> any {
+    let result = tanh_tensor(t)
+    if recording() {
+        let input = t
+        let output = result
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            for i in range(0, input["data"].len()) {
+                let v = output["data"][i]
+                values.push(g["data"][i] * (1.0 - v * v))
+            }
+            accumulate_grad(input, from_list(values, input["shape"]))
+        })
+    }
+    return result
+}
+
+// The Gaussian error linear unit.
+//
+// The formula is the exact one, 0.5 * x * (1 + erf(x / sqrt(2))), so the
+// value is the same on every machine.
+export fn gelu(t: any) -> any {
+    let values = []
+    for item in t["data"] {
+        values.push(0.5 * item * (1.0 + erf(item / sqrt(2.0))))
+    }
+    let result = from_list(values, t["shape"])
+    if recording() {
+        let input = t
+        let output = result
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values2 = []
+            for i in range(0, input["data"].len()) {
+                let x = input["data"][i]
+                let cdf = 0.5 * (1.0 + erf(x / sqrt(2.0)))
+                let pdf = exp(0.0 - 0.5 * x * x) / sqrt(2.0 * 3.141592653589793)
+                values2.push(g["data"][i] * (cdf + x * pdf))
+            }
+            accumulate_grad(input, from_list(values2, input["shape"]))
+        })
+    }
+    return result
+}
+
+// The layer normalisation of a row.
+//
+// Every row is centred on its mean, scaled by its own standard
+// deviation, and then scaled and shifted by the two parameters.
+export fn layernorm(x: any, gamma: any, beta: any, epsilon: float) -> any {
+    if !is_tensor(x) {
+        throw "layernorm() expects a tensor"
+    }
+    let shape = x["shape"]
+    if shape.len() != 2 {
+        throw "layernorm() expects a rank-2 tensor"
+    }
+    let rows = shape[0]
+    let columns = shape[1]
+    if gamma["data"].len() != columns or beta["data"].len() != columns {
+        throw "layernorm() expects parameters of " + str(columns) + " values"
+    }
+    var values = []
+    var hats = []
+    var inverses = []
+    var r = 0
+    while r < rows {
+        var total = 0.0
+        var c = 0
+        while c < columns {
+            total = total + x["data"][r * columns + c]
+            c = c + 1
+        }
+        let mean = total / columns
+        var variance = 0.0
+        c = 0
+        while c < columns {
+            let d = x["data"][r * columns + c] - mean
+            variance = variance + d * d
+            c = c + 1
+        }
+        variance = variance / columns
+        let inverse = 1.0 / sqrt(variance + epsilon)
+        inverses.push(inverse)
+        c = 0
+        while c < columns {
+            let hat = (x["data"][r * columns + c] - mean) * inverse
+            hats.push(hat)
+            values.push(hat * gamma["data"][c] + beta["data"][c])
+            c = c + 1
+        }
+        r = r + 1
+    }
+    let result = from_list(values, shape)
+    if recording() {
+        let output = result
+        let input = x
+        let scale = gamma
+        let shift = beta
+        let normalised = hats
+        let inverse_list = inverses
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var scale_grad = []
+            var shift_grad = []
+            var c = 0
+            while c < columns {
+                scale_grad.push(0.0)
+                shift_grad.push(0.0)
+                c = c + 1
+            }
+            var values2 = []
+            var r2 = 0
+            while r2 < rows {
+                var mean_dhat = 0.0
+                var mean_dhat_hat = 0.0
+                c = 0
+                while c < columns {
+                    let dhat = g["data"][r2 * columns + c] * scale["data"][c]
+                    mean_dhat = mean_dhat + dhat
+                    mean_dhat_hat = mean_dhat_hat + dhat * normalised[r2 * columns + c]
+                    scale_grad[c] = scale_grad[c] + g["data"][r2 * columns + c] * normalised[r2 * columns + c]
+                    shift_grad[c] = shift_grad[c] + g["data"][r2 * columns + c]
+                    c = c + 1
+                }
+                mean_dhat = mean_dhat / columns
+                mean_dhat_hat = mean_dhat_hat / columns
+                c = 0
+                while c < columns {
+                    let dhat = g["data"][r2 * columns + c] * scale["data"][c]
+                    let hat = normalised[r2 * columns + c]
+                    values2.push(inverse_list[r2] * (dhat - mean_dhat - hat * mean_dhat_hat))
+                    c = c + 1
+                }
+                r2 = r2 + 1
+            }
+            accumulate_grad(scale, from_list(scale_grad, [columns]))
+            accumulate_grad(shift, from_list(shift_grad, [columns]))
+            accumulate_grad(input, from_list(values2, input["shape"]))
+        })
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The attention
+// ---------------------------------------------------------------------------
+//
+// The attention of a transformer: every position of a sequence looks at
+// the positions before it, and the weight of every look is a number the
+// network learns.
+//
+// The layer is one operation with one rule on the tape. The reason is
+// the speed: the matrix multiply of the runtime is interpreted, so the
+// attention of a wide model would take minutes per step, and a rule
+// written with loops is the price of keeping the step short. The loops
+// below are written by hand for the same reason, and they never record:
+// the rule of the layer is the only thing that touches the tape.
+//
+// The shapes are the shapes of a transformer: the input is [sequence,
+// size], the weights are [size, size] and the answer is [sequence,
+// size]. The heads are the columns of the answer, and every head sees
+// its own part of the size.
+
+// A matrix multiply that does not record.
+//
+// The rule of the attention calls it, and a rule must not put anything
+// on the tape: the backward pass would run the rule twice.
+fn raw_matmul(a: any, b: any) -> any {
+    let rows = a["shape"][0]
+    let inner = a["shape"][1]
+    let columns = b["shape"][1]
+    var values = []
+    for i in range(0, rows) {
+        for j in range(0, columns) {
+            var total = 0.0
+            for k in range(0, inner) {
+                total = total + a["data"][i * inner + k] * b["data"][k * columns + j]
+            }
+            values.push(total)
+        }
+    }
+    return from_list(values, [rows, columns])
+}
+
+// A transpose that does not record.
+fn raw_transpose(a: any) -> any {
+    let rows = a["shape"][0]
+    let columns = a["shape"][1]
+    var values = []
+    for i in range(0, columns) {
+        for j in range(0, rows) {
+            values.push(a["data"][j * columns + i])
+        }
+    }
+    return from_list(values, [columns, rows])
+}
+
+// The sum of two matrices, which does not record.
+fn raw_add(a: any, b: any) -> any {
+    var values = []
+    for i in range(0, a["data"].len()) {
+        values.push(a["data"][i] + b["data"][i])
+    }
+    return from_list(values, a["shape"])
+}
+
+// The columns of a matrix, as a matrix of their own.
+fn raw_columns(a: any, start: int, count: int) -> any {
+    return raw_slice(a["data"], a["shape"][0], a["shape"][1], start, count)
+}
+
+// The columns of a list of numbers that stands for a matrix.
+fn raw_slice(values: any, rows: int, width: int, start: int, count: int) -> any {
+    var out = []
+    for i in range(0, rows) {
+        for j in range(0, count) {
+            out.push(values[i * width + start + j])
+        }
+    }
+    return from_list(out, [rows, count])
+}
+
+// The attention of a sequence.
+//
+// The input is [sequence, size] and the three weights are [size, size].
+// Every head of the attention sees `size / heads` columns of the input,
+// and the answer of a position is the weighted sum of the values of the
+// positions it looks at. When `causal` is true a position looks only at
+// the positions before it, which is what a language model needs.
+export fn attention(x: any, wq: any, wk: any, wv: any, heads: int,
+                    causal: bool) -> any {
+    if !is_tensor(x) {
+        throw "attention() expects a tensor"
+    }
+    if x["shape"].len() != 2 {
+        throw "attention() expects a rank-2 input"
+    }
+    let rows = x["shape"][0]
+    let width = x["shape"][1]
+    if heads <= 0 {
+        throw "attention() expects at least one head"
+    }
+    if width % heads != 0 {
+        throw "attention() expects a size of " + str(heads) + " heads"
+    }
+    let part = width / heads
+    let scale = 1.0 / sqrt(float(part))
+
+    let q = raw_matmul(x, wq)
+    let k = raw_matmul(x, wk)
+    let v = raw_matmul(x, wv)
+
+    var values = []
+    for i in range(0, rows * width) {
+        values.push(0.0)
+    }
+
+    // The probabilities of every head, kept for the rule.
+    var probabilities = []
+
+    for head in range(0, heads) {
+        let start = head * part
+        let qh = raw_columns(q, start, part)
+        let kh = raw_columns(k, start, part)
+        let vh = raw_columns(v, start, part)
+
+        var head_probs = []
+        for i in range(0, rows) {
+            var line = []
+            var row_max = 0.0
+            for j in range(0, rows) {
+                var total = 0.0
+                for c in range(0, part) {
+                    total = total + qh["data"][i * part + c] * kh["data"][j * part + c]
+                }
+                total = total * scale
+                line.push(total)
+                if j == 0 {
+                    row_max = total
+                }
+                if total > row_max {
+                    row_max = total
+                }
+            }
+            // A position that looks forward is masked out.
+            var total = 0.0
+            for j in range(0, rows) {
+                if causal and j > i {
+                    line[j] = -1e30
+                }
+                total = total + exp(line[j] - row_max)
+            }
+            var probs = []
+            for j in range(0, rows) {
+                probs.push(exp(line[j] - row_max) / total)
+            }
+            head_probs.push(probs)
+        }
+        probabilities.push(head_probs)
+
+        // The answer of the head.
+        for i in range(0, rows) {
+            for c in range(0, part) {
+                var total = 0.0
+                for j in range(0, rows) {
+                    total = total + head_probs[i][j] * vh["data"][j * part + c]
+                }
+                values[i * width + start + c] = total
+            }
+        }
+    }
+
+    let result = from_list(values, [rows, width])
+
+    if recording() {
+        let output = result
+        let input = x
+        let wq_copy = wq
+        let wk_copy = wk
+        let wv_copy = wv
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            let rows2 = input["shape"][0]
+            let width2 = input["shape"][1]
+            let part2 = width2 / heads
+
+            // The gradients of the three projections.
+            var dq = []
+            var dk = []
+            var dv = []
+            for i in range(0, rows2 * width2) {
+                dq.push(0.0)
+                dk.push(0.0)
+                dv.push(0.0)
+            }
+
+            for head in range(0, heads) {
+                let start = head * part2
+                let probs = probabilities[head]
+                let dout = raw_columns(g, start, part2)
+                let kh = raw_columns(k, start, part2)
+                let qh = raw_columns(q, start, part2)
+                let vh = raw_columns(v, start, part2)
+
+                // The gradient of the values: the probabilities decide.
+                var dvh = []
+                for i in range(0, rows2 * part2) {
+                    dvh.push(0.0)
+                }
+                for j in range(0, rows2) {
+                    for c in range(0, part2) {
+                        var total = 0.0
+                        for i in range(0, rows2) {
+                            total = total + probs[i][j] * dout["data"][i * part2 + c]
+                        }
+                        dvh[j * part2 + c] = total
+                    }
+                }
+
+                // The gradient of the probabilities, and the row sums the
+                // softmax needs.
+                var dprobs = []
+                var row_sums = []
+                for i in range(0, rows2) {
+                    var line = []
+                    var row_sum = 0.0
+                    for j in range(0, rows2) {
+                        var total = 0.0
+                        for c in range(0, part2) {
+                            total = total + dout["data"][i * part2 + c] * vh["data"][j * part2 + c]
+                        }
+                        line.push(total)
+                        row_sum = row_sum + total * probs[i][j]
+                    }
+                    dprobs.push(line)
+                    row_sums.push(row_sum)
+                }
+
+                // The gradient of the queries and of the keys.
+                var dqh = []
+                var dkh = []
+                for i in range(0, rows2 * part2) {
+                    dqh.push(0.0)
+                    dkh.push(0.0)
+                }
+                for i in range(0, rows2) {
+                    for j in range(0, rows2) {
+                        let dscore = probs[i][j] * (dprobs[i][j] - row_sums[i])
+                        if dscore == 0.0 { continue }
+                        for c in range(0, part2) {
+                            dqh[i * part2 + c] = dqh[i * part2 + c] + dscore * kh["data"][j * part2 + c] * scale
+                            dkh[j * part2 + c] = dkh[j * part2 + c] + dscore * qh["data"][i * part2 + c] * scale
+                        }
+                    }
+                }
+
+                // Put the gradients of the head back into the whole.
+                for i in range(0, rows2) {
+                    for c in range(0, part2) {
+                        dq[i * width2 + start + c] = dqh[i * part2 + c]
+                        dk[i * width2 + start + c] = dkh[i * part2 + c]
+                        dv[i * width2 + start + c] = dvh[i * part2 + c]
+                    }
+                }
+            }
+
+            let dq_tensor = from_list(dq, [rows2, width2])
+            let dk_tensor = from_list(dk, [rows2, width2])
+            let dv_tensor = from_list(dv, [rows2, width2])
+            accumulate_grad(wq_copy, raw_matmul(raw_transpose(input), dq_tensor))
+            accumulate_grad(wk_copy, raw_matmul(raw_transpose(input), dk_tensor))
+            accumulate_grad(wv_copy, raw_matmul(raw_transpose(input), dv_tensor))
+            let dx = raw_add(raw_add(raw_matmul(dq_tensor, raw_transpose(wq_copy)),
+                                     raw_matmul(dk_tensor, raw_transpose(wk_copy))),
+                            raw_matmul(dv_tensor, raw_transpose(wv_copy)))
+            accumulate_grad(input, dx)
+        })
+    }
+    return result
+}
+
+// The embedding layer: the rows of a table, picked by the tokens.
+//
+// The table is [vocabulary, size] and the tokens are a list of
+// integers; the answer is [tokens, size].
+export fn embedding(table: any, ids: any) -> any {
+    if !is_tensor(table) {
+        throw "embedding() expects a tensor"
+    }
+    if type_of(ids) != "array" {
+        throw "embedding() expects a list of tokens"
+    }
+    let shape = table["shape"]
+    if shape.len() != 2 {
+        throw "embedding() expects a rank-2 table"
+    }
+    let width = shape[1]
+    var values = []
+    for id in ids {
+        if id < 0 or id >= shape[0] {
+            throw "the token " + str(id) + " is out of the vocabulary"
+        }
+        for c in range(0, width) {
+            values.push(table["data"][id * width + c])
+        }
+    }
+    let result = from_list(values, [ids.len(), width])
+    if recording() {
+        let output = result
+        let source = table
+        let rows = shape[0]
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values2 = []
+            var r = 0
+            while r < rows {
+                var c = 0
+                while c < width {
+                    values2.push(0.0)
+                    c = c + 1
+                }
+                r = r + 1
+            }
+            var i = 0
+            while i < ids.len() {
+                let id = ids[i]
+                var c = 0
+                while c < width {
+                    values2[id * width + c] = values2[id * width + c] + g["data"][i * width + c]
+                    c = c + 1
+                }
+                i = i + 1
+            }
+            accumulate_grad(source, from_list(values2, [rows, width]))
+        })
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The model
+// ---------------------------------------------------------------------------
+
+// Build a model.
+//
+// The parameters are a dictionary of tensors and the layers are a list
+// of dictionaries. A layer names its operation and the names of its
+// parameters, so a model file never repeats the weights.
+export fn model(params: any, layers: any) -> any {
+    return {
+        "kind": "model",
+        "name": "model",
+        "params": params,
+        "layers": layers,
+        "seed": 0
+    }
+}
+
+// The parameter of a model, by name.
+fn param_of(m: any, name: any) -> any {
+    let params = m["params"]
+    if !params.has(name) {
+        throw "the model has no parameter named '" + name + "'"
+    }
+    return params[name]
+}
+
+// The block of a transformer.
+//
+// The block is the layer of a transformer: the attention, the residual
+// around it, the normalisation, the feed-forward network, the residual
+// around that and the normalisation again. Every part of it is a layer
+// of this stack, so the block trains with one backward pass.
+export fn block(m: any, layer: any, x: any) -> any {
+    var heads = 1
+    if layer.has("heads") {
+        heads = layer["heads"]
+    }
+    var causal = true
+    if layer.has("causal") {
+        causal = layer["causal"]
+    }
+    let attended = attention(x, param_of(m, layer["wq"]), param_of(m, layer["wk"]),
+                             param_of(m, layer["wv"]), heads, causal)
+    let normed = layernorm(add(x, attended), param_of(m, layer["ln1g"]),
+                           param_of(m, layer["ln1b"]), 1e-5)
+    let hidden = linear(normed, param_of(m, layer["ff1w"]), param_of(m, layer["ff1b"]))
+    let activated = gelu(hidden)
+    let projected = linear(activated, param_of(m, layer["ff2w"]), param_of(m, layer["ff2b"]))
+    return layernorm(add(normed, projected), param_of(m, layer["ln2g"]),
+                      param_of(m, layer["ln2b"]), 1e-5)
+}
+
+// Run a layer of a model.
+fn apply_layer(m: any, layer: any, x: any) -> any {
+    let op = layer["op"]
+    if op == "linear" {
+        return linear(x, param_of(m, layer["w"]), param_of(m, layer["b"]))
+    }
+    if op == "relu" {
+        return relu(x)
+    }
+    if op == "gelu" {
+        return gelu(x)
+    }
+    if op == "tanh" {
+        return tanh(x)
+    }
+    if op == "layernorm" {
+        return layernorm(x, param_of(m, layer["g"]), param_of(m, layer["b"]), 1e-5)
+    }
+    if op == "attention" {
+        var heads = 1
+        if layer.has("heads") {
+            heads = layer["heads"]
+        }
+        var causal = true
+        if layer.has("causal") {
+            causal = layer["causal"]
+        }
+        return attention(x, param_of(m, layer["wq"]), param_of(m, layer["wk"]),
+                         param_of(m, layer["wv"]), heads, causal)
+    }
+    if op == "block" {
+        return block(m, layer, x)
+    }
+    if op == "softmax" {
+        if x["shape"].len() == 1 {
+            return softmax(x, 0)
+        }
+        return softmax(x, 1)
+    }
+    throw "unknown layer '" + op + "'"
+}
+
+// The answer of the model for an input.
+export fn forward(m: any, x: any) -> any {
+    var value = x
+    for layer in m["layers"] {
+        value = apply_layer(m, layer, value)
+    }
+    return value
+}
+
+// The number of parameters of a model.
+export fn param_count(m: any) -> int {
+    var total = 0
+    for name in m["params"].keys() {
+        total = total + m["params"][name]["data"].len()
+    }
+    return total
+}
+
+// The names of the parameters of a model.
+export fn param_names(m: any) -> any {
+    var names = []
+    for name in m["params"].keys() {
+        names.push(name)
+    }
+    return names
+}
+
+// ---------------------------------------------------------------------------
+// The format
+// ---------------------------------------------------------------------------
+
+// The model as plain data: the tensors lose everything but their data
+// and their shape.
+fn model_to_data(m: any) -> any {
+    var params = {}
+    for name in m["params"].keys() {
+        let t = m["params"][name]
+        params.set(name, { "kind": "tensor", "data": t["data"], "shape": t["shape"] })
+    }
+    return {
+        "kind": "model",
+        "name": m["name"],
+        "params": params,
+        "layers": m["layers"],
+        "seed": m["seed"]
+    }
+}
+
+// The model as a JSON text.
+//
+// The text is the model and nothing else: a file of a model is the same
+// shape as the model, so a binary format is a walk over this shape and
+// not a new format.
+export fn model_to_json(m: any) -> string {
+    return json_stringify(model_to_data(m))
+}
+
+// A model from a JSON text.
+export fn model_from_json(text: string) -> any {
+    let data = json_parse(text)
+    if type_of(data) != "dict" {
+        throw "the model file is not an object"
+    }
+    if !data.has("params") {
+        throw "the model file has no parameters"
+    }
+    var params = {}
+    for name in data["params"].keys() {
+        let t = data["params"][name]
+        if type_of(t) != "dict" or !t.has("data") or !t.has("shape") {
+            throw "the model file has a bad tensor"
+        }
+        params.set(name, from_list(t["data"], t["shape"]))
+    }
+    var layers = []
+    if data.has("layers") {
+        for layer in data["layers"] {
+            layers.push(layer)
+        }
+    }
+    var name = "model"
+    if data.has("name") {
+        name = data["name"]
+    }
+    var seed = 0
+    if data.has("seed") {
+        seed = data["seed"]
+    }
+    return { "kind": "model", "name": name, "params": params, "layers": layers, "seed": seed }
+}
+
+// Write a model to a file.
+export fn save_model(m: any, path: string) {
+    write_file(path, model_to_json(m))
+}
+
+// Read a model from a file.
+export fn load_model(path: string) -> any {
+    return model_from_json(read_file(path))
+}
+
+// ---------------------------------------------------------------------------
+// The losses
+// ---------------------------------------------------------------------------
+
+// The mean squared error of a prediction.
+//
+// The answer is a tensor with one element, so the backward pass of the
+// tensor stack accepts it directly.
+export fn mse_loss(pred: any, target: any) -> any {
+    let diff = sub(pred, target)
+    let squared = mul(diff, diff)
+    let count = squared["data"].len()
+    if count == 0 {
+        throw "mse_loss() expects a non-empty tensor"
+    }
+    var total = 0.0
+    for value in squared["data"] {
+        total = total + value
+    }
+    let loss = tensor([total / count])
+    if recording() {
+        let output = loss
+        let inner = squared
+        let scale = 1.0 / count
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            var i = 0
+            while i < inner["data"].len() {
+                values.push(g["data"][0] * scale)
+                i = i + 1
+            }
+            accumulate_grad(inner, from_list(values, inner["shape"]))
+        })
+    }
+    return loss
+}
+
+// The cross entropy of a set of logits and a set of labels.
+//
+// The logits are [batch, classes] and the labels are a list of
+// integers. The loss is the log-sum-exp of every row, less the logit of
+// the label; the sum-exp is taken from the largest logit of the row, so
+// a large logit cannot overflow.
+//
+// The gradient of the loss is the softmax of the row, less the one-hot
+// of the label, over the number of rows. It goes straight into the
+// logits: the softmax and the cross entropy are one operation, and the
+// rule of the softmax would answer with the wrong number.
+export fn cross_entropy(logits: any, labels: any) -> any {
+    if !is_tensor(logits) {
+        throw "cross_entropy() expects a tensor"
+    }
+    if type_of(labels) != "array" {
+        throw "cross_entropy() expects a list of labels"
+    }
+    let shape = logits["shape"]
+    if shape.len() != 2 {
+        throw "cross_entropy() expects a rank-2 tensor"
+    }
+    let rows = shape[0]
+    let classes = shape[1]
+    if labels.len() != rows {
+        throw "cross_entropy() expects " + str(rows) + " labels"
+    }
+    let probs = softmax(logits, 1)
+    var total = 0.0
+    var r = 0
+    while r < rows {
+        let label = labels[r]
+        if label < 0 or label >= classes {
+            throw "the label " + str(label) + " is out of range"
+        }
+        var biggest = logits["data"][r * classes]
+        var c = 0
+        while c < classes {
+            if logits["data"][r * classes + c] > biggest {
+                biggest = logits["data"][r * classes + c]
+            }
+            c = c + 1
+        }
+        var sum_exp = 0.0
+        c = 0
+        while c < classes {
+            sum_exp = sum_exp + exp(logits["data"][r * classes + c] - biggest)
+            c = c + 1
+        }
+        total = total + log(sum_exp) + biggest - logits["data"][r * classes + label]
+        r = r + 1
+    }
+    let loss = tensor([total / rows])
+    if recording() {
+        let output = loss
+        let input = logits
+        let distribution = probs
+        let count = rows
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            var r2 = 0
+            while r2 < rows {
+                var c2 = 0
+                while c2 < classes {
+                    var value = distribution["data"][r2 * classes + c2]
+                    if c2 == labels[r2] {
+                        value = value - 1.0
+                    }
+                    values.push(value * g["data"][0] / count)
+                    c2 = c2 + 1
+                }
+                r2 = r2 + 1
+            }
+            accumulate_grad(input, from_list(values, input["shape"]))
+        })
+    }
+    return loss
+}
+
+// The binary cross entropy of a prediction and a target.
+//
+// The prediction holds probabilities between zero and one.
+export fn binary_cross_entropy(pred: any, target: any) -> any {
+    let count = pred["data"].len()
+    if target["data"].len() != count {
+        throw "binary_cross_entropy() expects two tensors of the same size"
+    }
+    var total = 0.0
+    var i = 0
+    while i < count {
+        let p = pred["data"][i]
+        let y = target["data"][i]
+        if p <= 0.0 or p >= 1.0 {
+            throw "binary_cross_entropy() expects probabilities between zero and one"
+        }
+        total = total - (y * log(p) + (1.0 - y) * log(1.0 - p))
+        i = i + 1
+    }
+    let loss = tensor([total / count])
+    if recording() {
+        let output = loss
+        let input = pred
+        let scale = 1.0 / count
+        record_rule(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            var i2 = 0
+            while i2 < count {
+                let p = input["data"][i2]
+                let y = target["data"][i2]
+                values.push((p - y) / (p * (1.0 - p)) * g["data"][0] * scale)
+                i2 = i2 + 1
+            }
+            accumulate_grad(input, from_list(values, input["shape"]))
+        })
+    }
+    return loss
+}
+
+// ---------------------------------------------------------------------------
+// The optimisers
+// ---------------------------------------------------------------------------
+
+// Copy the values of a tensor into another one.
+fn copy_into(target: any, source: any) {
+    var i = 0
+    while i < target["data"].len() {
+        target["data"][i] = source["data"][i]
+        i = i + 1
+    }
+}
+
+// One step of the stochastic gradient descent.
+//
+// The parameters are updated in place, so the caller keeps the model in
+// one place.
+export fn sgd(params: any, grads: any, rate: float) -> any {
+    for name in params.keys() {
+        let g = grads[name]
+        if g == null {
+            continue
+        }
+        let p = params[name]
+        if p["data"].len() != g["data"].len() {
+            throw "sgd() expects the gradient of the parameters"
+        }
+        var values = []
+        var i = 0
+        while i < p["data"].len() {
+            values.push(p["data"][i] - rate * g["data"][i])
+            i = i + 1
+        }
+        copy_into(p, from_list(values, p["shape"]))
+    }
+    return params
+}
+
+// The state of the Adam optimiser: one state per parameter.
+export fn adam_states(params: any) -> any {
+    var state = {}
+    for name in params.keys() {
+        state.set(name, adam_state(params[name]))
+    }
+    return state
+}
+
+// One step of Adam.
+//
+// The state holds the first and the second moment of every parameter,
+// and the step is counted inside it, so the bias correction of Adam is
+// right.
+export fn adam_step(params: any, grads: any, state: any, rate: float) -> any {
+    for name in params.keys() {
+        let g = grads[name]
+        if g == null {
+            continue
+        }
+        if !state.has(name) {
+            state.set(name, adam_state(params[name]))
+        }
+        let updated = adam(params[name], g, state[name], rate, 0.9, 0.999, 1e-8)
+        copy_into(params[name], updated)
+    }
+    return params
+}
+
+// ---------------------------------------------------------------------------
+// The training loop
+// ---------------------------------------------------------------------------
+
+// The rows of a tensor, in the order of the list.
+fn slice_rows(t: any, order: any, start: int, stop: int) -> any {
+    let shape = t["shape"]
+    let columns = shape[1]
+    var values = []
+    var i = start
+    while i < stop {
+        let row = order[i]
+        var c = 0
+        while c < columns {
+            values.push(t["data"][row * columns + c])
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return from_list(values, [stop - start, columns])
+}
+
+// The labels of a batch, in the order of the list.
+fn slice_labels(labels: any, order: any, start: int, stop: int) -> any {
+    var values = []
+    var i = start
+    while i < stop {
+        values.push(labels[order[i]])
+        i = i + 1
+    }
+    return values
+}
+
+// Forget the gradient of every parameter of a model.
+fn clear_grads(m: any) {
+    for name in m["params"].keys() {
+        m["params"][name]["grad"] = null
+    }
+}
+
+// Train a model.
+//
+// The options are a dictionary:
+//
+//   "epochs"      the number of passes over the data
+//   "batch_size"  the size of a step
+//   "rate"        the learning rate
+//   "loss"        "mse" or "cross_entropy"
+//   "optimizer"   "sgd" or "adam"
+//   "seed"        the seed of the shuffle
+//
+// The answer is the history of the run: the loss of every epoch and the
+// number of the epoch. Two runs with the same seed give the same list.
+export fn train(m: any, x: any, y: any, options: any) -> any {
+    var epochs = 40
+    if options.has("epochs") {
+        epochs = options["epochs"]
+    }
+    var batch_size = 8
+    if options.has("batch_size") {
+        batch_size = options["batch_size"]
+    }
+    var rate = 0.01
+    if options.has("rate") {
+        rate = options["rate"]
+    }
+    var loss_name = "mse"
+    if options.has("loss") {
+        loss_name = options["loss"]
+    }
+    var optimizer = "sgd"
+    if options.has("optimizer") {
+        optimizer = options["optimizer"]
+    }
+    var seed = 0
+    if options.has("seed") {
+        seed = options["seed"]
+    }
+    if loss_name != "mse" and loss_name != "cross_entropy" {
+        throw "train() does not know the loss '" + loss_name + "'"
+    }
+    if optimizer != "sgd" and optimizer != "adam" {
+        throw "train() does not know the optimizer '" + optimizer + "'"
+    }
+    let rng = new_rng(seed)
+    let samples = x["shape"][0]
+    var state = {}
+    if optimizer == "adam" {
+        state = adam_states(m["params"])
+    }
+    var history = { "loss": [], "epoch": [] }
+    var epoch = 0
+    while epoch < epochs {
+        let order = shuffled(samples, rng)
+        var total = 0.0
+        var batches = 0
+        var start = 0
+        while start < samples {
+            var stop = start + batch_size
+            if stop > samples {
+                stop = samples
+            }
+            let batch = slice_rows(x, order, start, stop)
+            clear_grads(m)
+            start_tape()
+            var loss = null
+            if loss_name == "cross_entropy" {
+                let labels = slice_labels(y, order, start, stop)
+                loss = cross_entropy(forward(m, batch), labels)
+            } else {
+                let targets = slice_rows(y, order, start, stop)
+                loss = mse_loss(forward(m, batch), targets)
+            }
+            backward(loss)
+            stop_tape()
+            let grads = gradients(m["params"])
+            if optimizer == "adam" {
+                adam_step(m["params"], grads, state, rate)
+            } else {
+                sgd(m["params"], grads, rate)
+            }
+            total = total + loss["data"][0]
+            batches = batches + 1
+            start = stop
+        }
+        history["loss"].push(total / batches)
+        history["epoch"].push(epoch)
+        epoch = epoch + 1
+    }
+    return history
+}
+
+// ---------------------------------------------------------------------------
+// The tokenisers
+// ---------------------------------------------------------------------------
+
+// The words of a text.
+export fn word_tokenizer(text: string) -> any {
+    var vocab = {}
+    var ids = []
+    var next = 0
+    for word in text.split(" ") {
+        if word.len() == 0 {
+            continue
+        }
+        if !vocab.has(word) {
+            vocab.set(word, next)
+            next = next + 1
+        }
+        ids.push(vocab[word])
+    }
+    return { "kind": "word", "vocab": vocab, "ids": ids }
+}
+
+// The characters of a text.
+export fn char_tokenizer(text: string) -> any {
+    var vocab = {}
+    var ids = []
+    var next = 0
+    var i = 0
+    while i < text.len() {
+        let ch = text[i]
+        if !vocab.has(ch) {
+            vocab.set(ch, next)
+            next = next + 1
+        }
+        ids.push(vocab[ch])
+        i = i + 1
+    }
+    return { "kind": "char", "vocab": vocab, "ids": ids }
+}
+
+// The tokens of a text, with the vocabulary of a tokeniser.
+export fn encode(tokenizer: any, text: string) -> any {
+    var ids = []
+    let vocab = tokenizer["vocab"]
+    if tokenizer["kind"] == "char" {
+        var i = 0
+        while i < text.len() {
+            let ch = text[i]
+            if vocab.has(ch) {
+                ids.push(vocab[ch])
+            }
+            i = i + 1
+        }
+        return ids
+    }
+    for word in text.split(" ") {
+        if word.len() == 0 {
+            continue
+        }
+        if vocab.has(word) {
+            ids.push(vocab[word])
+        }
+    }
+    return ids
+}
+
+// The text of a list of tokens, with the vocabulary of a tokeniser.
+export fn decode(tokenizer: any, ids: any) -> string {
+    let vocab = tokenizer["vocab"]
+    var inverse = {}
+    for word in vocab.keys() {
+        inverse.set(vocab[word], word)
+    }
+    var words = []
+    for id in ids {
+        if inverse.has(id) {
+            words.push(inverse[id])
+        }
+    }
+    if tokenizer["kind"] == "char" {
+        var text = ""
+        for ch in words {
+            text = text + ch
+        }
+        return text
+    }
+    return words.join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// The sampler
+// ---------------------------------------------------------------------------
+
+// Draw a token from a distribution.
+//
+// The temperature sharpens the distribution: a temperature of one keeps
+// it, a temperature below one makes the likely tokens more likely, and
+// a temperature of zero takes the most likely token every time.
+//
+// The draw is a function of the seed, so the same seed gives the same
+// token.
+export fn sample(probs: any, temperature: float, seed: int) -> int {
+    let rng = new_rng(seed)
+    return draw(probs, temperature, rng)
+}
+
+// Draw a token from every distribution of a list.
+export fn sample_sequence(dists: any, temperature: float, seed: int) -> any {
+    let rng = new_rng(seed)
+    var tokens = []
+    for probs in dists {
+        tokens.push(draw(probs, temperature, rng))
+    }
+    return tokens
+}
+
+// The draw itself.
+fn draw(probs: any, temperature: float, rng: any) -> int {
+    if probs.len() == 0 {
+        throw "sample() expects a distribution"
+    }
+    if temperature <= 0.0 {
+        var best = 0
+        var i = 1
+        while i < probs.len() {
+            if probs[i] > probs[best] {
+                best = i
+            }
+            i = i + 1
+        }
+        return best
+    }
+    var values = []
+    var total = 0.0
+    var i = 0
+    while i < probs.len() {
+        let value = pow(probs[i], 1.0 / temperature)
+        values.push(value)
+        total = total + value
+        i = i + 1
+    }
+    if total <= 0.0 {
+        return 0
+    }
+    var target = next_float(rng) * total
+    var k = 0
+    while k < values.len() {
+        target = target - values[k]
+        if target <= 0.0 {
+            return k
+        }
+        k = k + 1
+    }
+    return values.len() - 1
+}
+
+// ---------------------------------------------------------------------------
+// The language model
+// ---------------------------------------------------------------------------
+
+// The logits of the model for one token.
+fn lm_logits(params: any, id: int) -> any {
+    let e = embedding(params["E"], [id])
+    let h = tanh(linear(e, params["W1"], params["b1"]))
+    return linear(h, params["W2"], params["b2"])
+}
+
+// Train a language model on the text of a tokeniser.
+//
+// The model is an embedding, a hidden layer with a hyperbolic tangent,
+// and a softmax over the vocabulary. It is small on purpose: the point
+// is the loop, not the size.
+//
+// The answer is the model, with the history of the run under the key
+// "history".
+export fn train_language_model(tokenizer: any, hidden: int, rate: float, epochs: int) -> any {
+    let vocab = tokenizer["vocab"]
+    let ids = tokenizer["ids"]
+    let vocab_size = vocab.keys().len()
+    if vocab_size < 2 {
+        throw "train_language_model() expects a text of at least two words"
+    }
+    if ids.len() < 2 {
+        throw "train_language_model() expects a text of at least two tokens"
+    }
+    var seed = 1234
+    if tokenizer.has("seed") {
+        seed = tokenizer["seed"]
+    }
+    let rng = new_rng(seed)
+    var params = {
+        "E": random_tensor(rng, [vocab_size, hidden], -0.5, 0.5),
+        "W1": random_tensor(rng, [hidden, hidden], -0.5, 0.5),
+        "b1": zeros([hidden]),
+        "W2": random_tensor(rng, [hidden, vocab_size], -0.5, 0.5),
+        "b2": zeros([vocab_size])
+    }
+    var pairs = []
+    var i = 0
+    while i < ids.len() - 1 {
+        pairs.push([ids[i], ids[i + 1]])
+        i = i + 1
+    }
+    let state = adam_states(params)
+    var history = { "loss": [], "epoch": [] }
+    var epoch = 0
+    while epoch < epochs {
+        var total = 0.0
+        var p = 0
+        while p < pairs.len() {
+            let pair = pairs[p]
+            for name in params.keys() {
+                params[name]["grad"] = null
+            }
+            start_tape()
+            let loss = cross_entropy(lm_logits(params, pair[0]), [pair[1]])
+            backward(loss)
+            stop_tape()
+            let grads = gradients(params)
+            adam_step(params, grads, state, rate)
+            total = total + loss["data"][0]
+            p = p + 1
+        }
+        history["loss"].push(total / pairs.len())
+        history["epoch"].push(epoch)
+        epoch = epoch + 1
+    }
+    return {
+        "kind": "model",
+        "name": "language",
+        "params": params,
+        "layers": [],
+        "seed": seed,
+        "history": history
+    }
+}
+
+// Write a text with a language model.
+//
+// The model is sampled with the given seed, so the text is the same on
+// every run.
+export fn generate(m: any, tokenizer: any, length: int, seed: int) -> string {
+    let params = m["params"]
+    let ids = tokenizer["ids"]
+    if ids.len() == 0 {
+        throw "generate() expects a tokeniser with tokens"
+    }
+    let rng = new_rng(seed)
+    var current = ids[0]
+    var out = []
+    var i = 0
+    while i < length {
+        let logits = lm_logits(params, current)
+        let probs = softmax(logits, 1)
+        let next = draw(probs["data"], 1.0, rng)
+        out.push(next)
+        current = next
+        i = i + 1
+    }
+    return decode(tokenizer, out)
+}

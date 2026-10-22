@@ -1,0 +1,99 @@
+let argv = args()
+let command = argv[0]
+let root = getenv_or("BUN_PACKAGES", "bun_modules")
+let registry = getenv_or("BUN_REGISTRY", "")
+
+fn usage() {
+    print("bun pkg — package manager")
+    print("")
+    print("Usage:")
+    print("  pkg list")
+    print("  pkg add <name> [url]")
+    print("")
+    print("Environment:")
+    print("  BUN_PACKAGES  package directory (default: bun_modules)")
+    print("  BUN_REGISTRY  base url used when [url] is omitted")
+}
+
+fn fail(message) {
+    print("error: " + message)
+    exit(1)
+}
+
+fn package_url(name, url) {
+    if url != "" {
+        return url
+    }
+    if registry == "" {
+        fail("no url given and BUN_REGISTRY is not set")
+    }
+    if registry.ends_with("/") {
+        return registry + name + ".bun"
+    }
+    return registry + "/" + name + ".bun"
+}
+
+fn read_manifest(dir) {
+    let path = dir + "/bun.pkg"
+    if !file_exists(path) {
+        return null
+    }
+    return json_parse(read_file(path))
+}
+
+fn install(name, url) {
+    let dir = root + "/" + name
+    let manifest = read_manifest(dir)
+    if manifest != null {
+        print(name + " is already installed")
+        return
+    }
+    make_dir(dir)
+    let response = http_get(package_url(name, url), {}, 30)
+    if response["status"] != 200 {
+        fail("download failed with status " + str(response["status"]))
+    }
+    write_file(dir + "/main.bun", response["body"])
+    let meta = {"name": name, "version": "0.1.0", "main": "main.bun"}
+    write_file(dir + "/bun.pkg", json_stringify(meta))
+    print("installed " + name)
+}
+
+fn list_packages() {
+    if !file_exists(root) {
+        print("no packages installed")
+        return
+    }
+    let names = list_dir(root)
+    var count = 0
+    var i = 0
+    while i < names.len() {
+        let dir = root + "/" + names[i]
+        if file_exists(dir + "/bun.pkg") or file_exists(dir + "/main.bun") {
+            print(names[i])
+            count = count + 1
+        }
+        i = i + 1
+    }
+    if count == 0 {
+        print("no packages installed")
+    }
+}
+
+if command == "list" {
+    list_packages()
+} else {
+    if command == "add" {
+        let name = argv[1]
+        if name == "" {
+            fail("add requires a package name")
+        }
+        install(name, argv[2])
+    } else {
+        if command == "help" or command == "--help" or command == "-h" {
+            usage()
+        } else {
+            fail("unknown command '" + command + "'")
+        }
+    }
+}

@@ -1,0 +1,18 @@
+let xs = [1, 2, 3, 4, 5]
+let words = ["alpha", "beta", "gamma"]
+let grid = [[1, 2], [3, 4]]
+
+print([x for x in xs])
+print([x * 2 for x in xs])
+print([x for x in xs if x % 2 == 0])
+print([x + y for x in xs for y in [10, 20]])
+print({x: x * x for x in xs})
+print([w for w in words if w.len() > 4])
+print([[y for y in row] for row in grid])
+print([row[1] for row in grid])
+print([x for x in xs if x > 2])
+print([x for x in []])
+print({})
+print([])
+print([x for x in xs][1:3])
+print(len([x for x in xs if x < 3]))

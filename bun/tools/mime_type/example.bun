@@ -1,0 +1,10 @@
+// Converted from the import.meta.main driver in
+// bun-runtime/src/http_types/mime_type_list.generate.ts. Prints the Rust
+// tables to stdout; redirect to save a file:
+//   python3 -m bun tools/mime_type/example.bun > mime_type_list_sorted.rs
+// Run from the repo root: the fixture path is repo-root-relative, and this
+// excerpt stands in for the full 2300-line list.
+import { generate } from "./mime_type_list"
+
+let list_text = read_file("tools/mime_type/mime_list.txt")
+print(generate(list_text))

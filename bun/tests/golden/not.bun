@@ -1,0 +1,16 @@
+print(not true)
+print(not false)
+print(not 0)
+print(not "x")
+
+print(not 1 == 2)
+print(not 1 != 2)
+
+print(not false and true)
+print(true or not false)
+
+print(not not true)
+
+let value = 0
+print(not value)
+print(!value)

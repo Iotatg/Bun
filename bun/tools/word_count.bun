@@ -1,0 +1,40 @@
+// Word frequency counter: reads a text file, counts words with a dict.
+let text = read_file("tests/golden/word_count_input.txt")
+var counts = {}
+var order = []
+var li = 0
+while li < len(text.split("\n")) {
+    let line = text.split("\n")[li].trim()
+    if line != "" {
+        let words = line.split(" ")
+        var wi = 0
+        while wi < len(words) {
+            let w = words[wi]
+            if w != "" {
+                if !counts.has(w) {
+                    counts[w] = 1
+                    order.push(w)
+                } else {
+                    counts[w] = counts[w] + 1
+                }
+            }
+            wi = wi + 1
+        }
+    }
+    li = li + 1
+}
+
+var total = 0
+for w in order {
+    total = total + counts[w]
+}
+
+print("total words: " + str(total))
+print("unique words: " + str(len(order)))
+
+var j = 0
+while j < len(order) {
+    let w = order[j]
+    print(w + ": " + str(counts[w]))
+    j = j + 1
+}

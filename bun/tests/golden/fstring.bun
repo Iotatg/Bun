@@ -1,0 +1,27 @@
+let name = "world"
+let n = 42
+let pi = 3.14159
+let items = ["a", "b"]
+
+print(f"hello {name}!")
+print(f"{n} items at {pi}")
+print(f"escaped {{literal}} braces")
+print(f"expr is {n * 2}")
+print(f"sum {n + 1} and {n - 1}")
+print(f"{n = }")
+print(f"{n=}")
+print(f"pi to 2dp: {pi:.2f}")
+print(f"padded: [{n:>5}]")
+print(f"padded0: [{n:05}]")
+print(f"comma: {1234567:,}")
+print(f"hex: {255:x}")
+print(f"upper hex: {255:X}")
+print(f"oct: {64:o}")
+print(f"bin: {5:b}")
+print(f"pct: {0.5:.1%}")
+print(f"repr: {"quoted"!r}")
+print(f"str: {n!s}")
+print(f"list: {items}")
+print(f"nested {f"inner {n}"}")
+print(f"call: {len(items)}")
+print(f"multi{''}part")

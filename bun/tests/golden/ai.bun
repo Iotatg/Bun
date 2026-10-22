@@ -1,0 +1,27 @@
+// A small model, trained and written out.
+//
+// The stack is deterministic: the generator is seeded, so the numbers
+// below are the same on every run and on every engine.
+import { model, train, word_tokenizer, train_language_model } from "bun:ai"
+import { from_list, zeros } from "bun:tensor"
+
+let x = from_list([0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0], [4, 2])
+let w = from_list([0.3, 0.4, 0.5, 0.6], [2, 2])
+let b = zeros([2])
+let m = model({ "w": w, "b": b }, [{ "op": "linear", "w": "w", "b": "b" }])
+
+let history = train(m, x, [0, 1, 1, 0], {
+    "epochs": 20,
+    "batch_size": 4,
+    "rate": 0.05,
+    "loss": "cross_entropy",
+    "optimizer": "adam",
+    "seed": 7
+})
+print(history["loss"][0])
+print(history["loss"][19])
+
+let tokenizer = word_tokenizer("the cat sat on the mat the cat sat")
+let language = train_language_model(tokenizer, 4, 0.05, 5)
+print(language["history"]["loss"][0])
+print(language["history"]["loss"][4])

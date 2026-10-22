@@ -1,0 +1,64 @@
+var log = []
+
+fn ctx(label, suppress) {
+    return {
+        "__enter__": fn() {
+            log.push("enter " + label)
+            return label
+        },
+        "__exit__": fn(err) {
+            if err == null {
+                log.push("exit " + label)
+            } else {
+                log.push("exit " + label + " err=" + err)
+            }
+            return suppress
+        }
+    }
+}
+
+with ctx("a", false) as first {
+    log.push("body " + first)
+}
+print(log.join(","))
+
+with ctx("outer", false) as o, ctx("inner", false) as i {
+    log.push("body " + o + i)
+}
+print(log.join(","))
+
+try {
+    with ctx("boom", false) as b {
+        throw "failed"
+    }
+} catch e {
+    log.push("caught " + e)
+}
+print(log.join(","))
+
+try {
+    with ctx("quiet", true) as q {
+        throw "swallowed"
+    }
+    log.push("after")
+} catch e {
+    log.push("caught " + e)
+}
+print(log.join(","))
+
+fn pick() {
+    with ctx("returned", false) as r {
+        return r
+    }
+}
+print(pick())
+print(log.join(","))
+
+for x in [1, 2, 3] {
+    with ctx("loop", false) as l {
+        if x == 2 { continue }
+        if x == 3 { break }
+        log.push("body " + l + x)
+    }
+}
+print(log.join(","))

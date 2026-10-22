@@ -1,0 +1,29 @@
+// The else of a loop: the block that runs when the loop ends without
+// a break.
+for x in [1, 2, 3] {
+    print(x)
+} else {
+    print("no break")
+}
+
+for x in [1, 2, 3] {
+    if x == 2 {
+        break
+    }
+    print(x)
+} else {
+    print("no break")
+}
+
+var i = 0
+while i < 3 {
+    i = i + 1
+} else {
+    print("while done " + str(i))
+}
+
+for x in [] {
+    print(x)
+} else {
+    print("empty")
+}

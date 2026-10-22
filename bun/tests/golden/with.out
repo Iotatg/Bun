@@ -1,0 +1,7 @@
+enter a,body a,exit a
+enter a,body a,exit a,enter outer,enter inner,body outerinner,exit inner,exit outer
+enter a,body a,exit a,enter outer,enter inner,body outerinner,exit inner,exit outer,enter boom,exit boom err=failed,caught failed
+enter a,body a,exit a,enter outer,enter inner,body outerinner,exit inner,exit outer,enter boom,exit boom err=failed,caught failed,enter quiet,exit quiet err=swallowed,after
+returned
+enter a,body a,exit a,enter outer,enter inner,body outerinner,exit inner,exit outer,enter boom,exit boom err=failed,caught failed,enter quiet,exit quiet err=swallowed,after,enter returned,exit returned
+enter a,body a,exit a,enter outer,enter inner,body outerinner,exit inner,exit outer,enter boom,exit boom err=failed,caught failed,enter quiet,exit quiet err=swallowed,after,enter returned,exit returned,enter loop,body loop1,exit loop,enter loop,exit loop,enter loop,exit loop

@@ -1,0 +1,18 @@
+// The integers of the language are 64 bits wide. A program that leaves
+// the range is an error, and the error is the same under every engine.
+print(9223372036854775807)
+print(-9223372036854775807 - 1)
+
+try {
+    print(9223372036854775807 + 1)
+} catch err {
+    print("caught: " + err)
+}
+
+try {
+    print(1 << 64)
+} catch err {
+    print("caught: " + err)
+}
+
+print(3037000499 * 3037000499)

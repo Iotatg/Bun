@@ -1,0 +1,68 @@
+fn greet(name, greeting = "Hello") {
+    return greeting + ", " + name
+}
+
+print(greet("World"))
+print(greet("World", "Hi"))
+print(greet(greeting = "Yo", name = "Bob"))
+print(greet("Bob", greeting = "Hey"))
+
+fn total(base, *values) {
+    var result = base
+    for value in values {
+        result = result + value
+    }
+    return result
+}
+
+print(total(1))
+print(total(1, 2, 3, 4))
+
+fn describe(label, **extra) {
+    var text = label
+    for key in extra.keys() {
+        text = text + " " + key + "=" + str(extra.get(key))
+    }
+    return text
+}
+
+print(describe("stats"))
+print(describe("stats", views = 10))
+
+fn connect(host, port = 8080, *, timeout = 30) {
+    return host + ":" + str(port) + "/" + str(timeout)
+}
+
+print(connect("localhost"))
+print(connect("localhost", port = 90))
+print(connect("localhost", timeout = 5))
+print(connect("localhost", port = 90, timeout = 5))
+
+fn scaled(value, factor = 2) {
+    return value * factor
+}
+
+print(scaled(5))
+print(scaled(5, 3))
+print(scaled(factor = 4, value = 5))
+
+fn apply_twice(fn_ptr, value) {
+    return fn_ptr(fn_ptr(value))
+}
+
+print(apply_twice(scaled, 3))
+
+fn counter(start = 0, step = 1) {
+    var total = start
+    var count = 0
+    while count < 3 {
+        total = total + step
+        count = count + 1
+    }
+    return total
+}
+
+print(counter())
+print(counter(10))
+print(counter(step = 5))
+print(counter(1, 2))

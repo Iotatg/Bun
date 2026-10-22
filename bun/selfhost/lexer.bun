@@ -1,0 +1,377 @@
+let KEYWORDS = {
+    "let": "LET",
+    "var": "VAR",
+    "fn": "FN",
+    "if": "IF",
+    "else": "ELSE",
+    "while": "WHILE",
+    "for": "FOR",
+    "in": "IN",
+    "return": "RETURN",
+    "true": "TRUE",
+    "false": "FALSE",
+    "null": "NULL",
+    "and": "AND",
+    "or": "OR",
+    "not": "NOT",
+    "import": "IMPORT",
+    "from": "FROM",
+    "export": "EXPORT",
+    "try": "TRY",
+    "catch": "CATCH",
+    "finally": "FINALLY",
+    "with": "WITH",
+    "as": "AS",
+    "throw": "THROW",
+    "assert": "ASSERT",
+    "break": "BREAK",
+    "continue": "CONTINUE",
+    "del": "DEL",
+    "yield": "YIELD",
+}
+
+let TWO_CHAR = {
+    "==": "EQ",
+    "!=": "NEQ",
+    "<=": "LTE",
+    ">=": "GTE",
+    "->": "ARROW",
+    "=>": "FAT_ARROW",
+    "**": "DOUBLE_STAR",
+    "<<": "LSHIFT",
+    ">>": "RSHIFT",
+}
+
+let ONE_CHAR = {
+    "+": "PLUS",
+    "-": "MINUS",
+    "*": "STAR",
+    "/": "SLASH",
+    "%": "PERCENT",
+    "&": "AMP",
+    "|": "PIPE",
+    "^": "CARET",
+    "~": "TILDE",
+    "=": "ASSIGN",
+    "<": "LT",
+    ">": "GT",
+    "!": "BANG",
+    "(": "LPAREN",
+    ")": "RPAREN",
+    "{": "LBRACE",
+    "}": "RBRACE",
+    "[": "LBRACKET",
+    "]": "RBRACKET",
+    ",": "COMMA",
+    ":": "COLON",
+    ".": "DOT",
+    "@": "AT",
+}
+
+let ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0", "\"": "\"", "'": "'", "\\": "\\"}
+
+fn is_digit(ch) {
+    return ch >= "0" and ch <= "9"
+}
+
+fn is_lower(ch) {
+    return ch >= "a" and ch <= "z"
+}
+
+fn is_upper(ch) {
+    return ch >= "A" and ch <= "Z"
+}
+
+fn is_alpha(ch) {
+    return is_lower(ch) or is_upper(ch)
+}
+
+fn is_alnum(ch) {
+    return is_alpha(ch) or is_digit(ch)
+}
+
+// True when the current position starts an exponent, like `e-8`.
+fn exponent_ahead(st) {
+    let ch = peek_at(st, 0)
+    if ch != "e" and ch != "E" {
+        return false
+    }
+    var offset = 1
+    let sign = peek_at(st, offset)
+    if sign == "+" or sign == "-" {
+        offset = offset + 1
+    }
+    return is_digit(peek_at(st, offset))
+}
+
+fn make_lexer(source) {
+    return {"source": source, "pos": 0, "line": 1, "col": 1, "tokens": []}
+}
+
+fn peek_at(st, offset) {
+    let index = st["pos"] + offset
+    if index < st["source"].len() {
+        return st["source"][index]
+    }
+    return ""
+}
+
+fn advance(st) {
+    let ch = st["source"][st["pos"]]
+    st["pos"] = st["pos"] + 1
+    if ch == "\n" {
+        st["line"] = st["line"] + 1
+        st["col"] = 1
+    } else {
+        st["col"] = st["col"] + 1
+    }
+    return ch
+}
+
+fn add_token(st, token_type, value, line, col) {
+    st["tokens"].push({"type": token_type, "value": value, "line": line, "col": col})
+}
+
+fn number(st) {
+    let line = st["line"]
+    let col = st["col"]
+    let start = st["pos"]
+    if peek_at(st, 0) == "0" {
+        let marker = peek_at(st, 1)
+        if marker == "x" or marker == "X" or marker == "b" or marker == "B" or marker == "o" or marker == "O" {
+            advance(st)
+            advance(st)
+            let digits_start = st["pos"]
+            while is_alnum(peek_at(st, 0)) {
+                advance(st)
+            }
+            let digits = st["source"].slice(digits_start, st["pos"])
+            if digits.len() == 0 {
+                throw "invalid numeric literal at " + str(line) + ":" + str(col)
+            }
+            var base = 16
+            if marker == "b" or marker == "B" {
+                base = 2
+            }
+            if marker == "o" or marker == "O" {
+                base = 8
+            }
+            add_token(st, "INT", int_literal(digits, base, line, col), line, col)
+            return
+        }
+    }
+    while is_digit(peek_at(st, 0)) {
+        advance(st)
+    }
+    var is_float = false
+    if peek_at(st, 0) == "." and is_digit(peek_at(st, 1)) {
+        is_float = true
+        advance(st)
+        while is_digit(peek_at(st, 0)) {
+            advance(st)
+        }
+    }
+    if exponent_ahead(st) {
+        is_float = true
+        advance(st)
+        if peek_at(st, 0) == "+" or peek_at(st, 0) == "-" {
+            advance(st)
+        }
+        while is_digit(peek_at(st, 0)) {
+            advance(st)
+        }
+    } else if peek_at(st, 0) == "e" or peek_at(st, 0) == "E" {
+        throw "invalid numeric literal at " + str(line) + ":" + str(col)
+    }
+    let text = st["source"].slice(start, st["pos"])
+    if is_float {
+        add_token(st, "FLOAT", float(text), line, col)
+    } else {
+        add_token(st, "INT", int_literal(text, 10, line, col), line, col)
+    }
+}
+
+// Read an integer literal. The integers of the language are 64 bits
+// wide, so a literal that does not fit is an error and not a number.
+fn int_literal(text, base, line, col) {
+    try {
+        return int(text, base)
+    } catch err {
+        throw "integer literal out of range at " + str(line) + ":" + str(col)
+    }
+}
+
+fn string_token(st, quote) {
+    let line = st["line"]
+    let col = st["col"]
+    advance(st)
+    let chars = []
+    var done = false
+    while !done {
+        if st["pos"] >= st["source"].len() {
+            throw "unterminated string at " + str(line) + ":" + str(col)
+        }
+        let ch = advance(st)
+        if ch == quote {
+            done = true
+        } else {
+            if ch == "\\" {
+                let esc_line = st["line"]
+                let esc_col = st["col"]
+                let nxt = advance(st)
+                if !ESCAPES.has(nxt) {
+                    throw "invalid escape at " + str(esc_line) + ":" + str(esc_col)
+                }
+                chars.push(ESCAPES.get(nxt))
+            } else {
+                chars.push(ch)
+            }
+        }
+    }
+    add_token(st, "STRING", chars.join(""), line, col)
+}
+
+// Skip a nested string literal that appears inside an interpolated
+// f-string expression.
+fn skip_nested_string(st, quote, line, col) {
+    var closed = false
+    while !closed {
+        if st["pos"] >= st["source"].len() {
+            throw "unterminated string at " + str(line) + ":" + str(col)
+        }
+        let inner = peek_at(st, 0)
+        if inner == "\\" {
+            advance(st)
+            if st["pos"] >= st["source"].len() {
+                throw "unterminated string at " + str(line) + ":" + str(col)
+            }
+            advance(st)
+        } else {
+            advance(st)
+            if inner == quote {
+                closed = true
+            }
+        }
+    }
+}
+
+// An f-string token carries the raw body between the quotes. Escapes are
+// resolved by the parser, which needs the literal text and the
+// interpolated expressions separately.
+fn fstring_token(st) {
+    let line = st["line"]
+    let col = st["col"]
+    advance(st)
+    let quote = advance(st)
+    let start = st["pos"]
+    var depth = 0
+    var scanning = true
+    while scanning {
+        if st["pos"] >= st["source"].len() {
+            throw "unterminated string at " + str(line) + ":" + str(col)
+        }
+        let ch = peek_at(st, 0)
+        if ch == "\\" {
+            advance(st)
+            if st["pos"] >= st["source"].len() {
+                throw "unterminated string at " + str(line) + ":" + str(col)
+            }
+            advance(st)
+        } else {
+            if depth == 0 and ch == quote {
+                scanning = false
+            } else {
+                if ch == "{" {
+                    depth = depth + 1
+                    advance(st)
+                } else {
+                    if ch == "}" {
+                        if depth > 0 {
+                            depth = depth - 1
+                        }
+                        advance(st)
+                    } else {
+                        if ch == quote {
+                            advance(st)
+                            skip_nested_string(st, quote, line, col)
+                        } else {
+                            advance(st)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let body = st["source"].slice(start, st["pos"])
+    advance(st)
+    add_token(st, "FSTRING", body, line, col)
+}
+
+fn identifier(st) {
+    let line = st["line"]
+    let col = st["col"]
+    let start = st["pos"]
+    while is_alnum(peek_at(st, 0)) or peek_at(st, 0) == "_" {
+        advance(st)
+    }
+    let text = st["source"].slice(start, st["pos"])
+    if KEYWORDS.has(text) {
+        add_token(st, KEYWORDS.get(text), text, line, col)
+    } else {
+        add_token(st, "IDENT", text, line, col)
+    }
+}
+
+fn operator(st) {
+    let line = st["line"]
+    let col = st["col"]
+    let ch = advance(st)
+    let two = ch + peek_at(st, 0)
+    if TWO_CHAR.has(two) {
+        advance(st)
+        add_token(st, TWO_CHAR.get(two), two, line, col)
+        return
+    }
+    if ONE_CHAR.has(ch) {
+        add_token(st, ONE_CHAR.get(ch), ch, line, col)
+        return
+    }
+    throw "unexpected character '" + ch + "' at " + str(line) + ":" + str(col)
+}
+
+export fn tokenize(source) {
+    let st = make_lexer(source)
+    while st["pos"] < st["source"].len() {
+        let ch = peek_at(st, 0)
+        if ch == " " or ch == "\t" or ch == "\n" {
+            advance(st)
+        } else {
+            if ch == "#" or (ch == "/" and peek_at(st, 1) == "/") {
+                while st["pos"] < st["source"].len() and peek_at(st, 0) != "\n" {
+                    advance(st)
+                }
+            } else {
+                if is_digit(ch) {
+                    number(st)
+                } else {
+                    if ch == "\"" or ch == "'" {
+                        string_token(st, ch)
+                    } else {
+                        if ch == "f" and (peek_at(st, 1) == "\"" or peek_at(st, 1) == "'") {
+                            fstring_token(st)
+                        } else {
+                            if is_alpha(ch) or ch == "_" {
+                                identifier(st)
+                            } else {
+                                operator(st)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    add_token(st, "EOF", null, st["line"], st["col"])
+    return st["tokens"]
+}
+

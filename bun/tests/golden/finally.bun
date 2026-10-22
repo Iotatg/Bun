@@ -1,0 +1,56 @@
+var log = []
+
+try {
+    log.push("try")
+    throw "boom"
+} catch e {
+    log.push("catch " + e)
+} finally {
+    log.push("finally")
+}
+print(log.join(","))
+
+try {
+    print("no error")
+} finally {
+    print("finally only")
+}
+
+fn pick() {
+    try {
+        return "value"
+    } finally {
+        log.push("return finally")
+    }
+}
+print(pick())
+
+for x in [1, 2, 3] {
+    try {
+        if x == 2 { continue }
+        if x == 3 { break }
+        log.push("body " + x)
+    } finally {
+        log.push("loop finally " + x)
+    }
+}
+print(log.join(","))
+
+try {
+    try {
+        throw "inner"
+    } finally {
+        log.push("inner finally")
+    }
+} catch e {
+    log.push("outer catch " + e)
+} finally {
+    log.push("outer finally")
+}
+print(log.join(","))
+
+try {
+    throw "outer", "root cause"
+} catch e {
+    print("caught " + e)
+}

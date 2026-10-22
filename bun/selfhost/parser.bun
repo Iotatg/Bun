@@ -1,0 +1,1366 @@
+import { tokenize } from "./lexer"
+
+fn peek(st) {
+    return st["tokens"][st["pos"]]
+}
+
+fn peek_token(st, offset) {
+    let index = st["pos"] + offset
+    if index >= st["tokens"].len() {
+        return st["tokens"][st["tokens"].len() - 1]
+    }
+    return st["tokens"][index]
+}
+
+fn prev_line(st) {
+    if st["pos"] == 0 {
+        return peek(st)["line"]
+    }
+    return st["tokens"][st["pos"] - 1]["line"]
+}
+
+fn check(st, token_type) {
+    return peek(st)["type"] == token_type
+}
+
+fn advance(st) {
+    let tok = st["tokens"][st["pos"]]
+    if tok["type"] != "EOF" {
+        st["pos"] = st["pos"] + 1
+    }
+    return tok
+}
+
+fn in_types(items, value) {
+    var i = 0
+    while i < items.len() {
+        if items[i] == value {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn match_token(st, types) {
+    if in_types(types, peek(st)["type"]) {
+        return advance(st)
+    }
+    return null
+}
+
+fn expect(st, token_type, message) {
+    if check(st, token_type) {
+        return advance(st)
+    }
+    let tok = peek(st)
+    throw message + ", found " + tok["type"]
+}
+
+fn statement(st) {
+    let t = peek(st)["type"]
+    if t == "IMPORT" {
+        return import_stmt(st)
+    }    if t == "EXPORT" {
+        return exported_decl(st)
+    }
+    if t == "LET" {
+        return var_decl(st, false)
+    }
+    if t == "VAR" {
+        return var_decl(st, true)
+    }
+    if t == "FN" {
+        return fn_decl(st)
+    }
+    if t == "AT" {
+        return decorated_decl(st)
+    }
+    if t == "IF" {
+        return if_stmt(st)
+    }
+    if t == "WHILE" {
+        return while_stmt(st)
+    }
+    if t == "FOR" {
+        return for_stmt(st)
+    }
+    if t == "ASSERT" {
+        return assert_stmt(st)
+    }
+    if t == "DEL" {
+        return del_stmt(st)
+    }
+    if t == "YIELD" {
+        return yield_stmt(st)
+    }
+    if t == "RETURN" {
+        return return_stmt(st)
+    }
+    if t == "TRY" {
+        return try_stmt(st)
+    }
+    if t == "WITH" {
+        return with_stmt(st)
+    }
+    if t == "IDENT" and peek(st)["value"] == "scope" and peek_token(st, 1)["type"] == "LBRACE" and peek_token(st, 1)["line"] == peek(st)["line"] {
+        // `scope` is a soft keyword: it only starts a scope statement when
+        // a block follows it on the same line.
+        return scope_stmt(st)
+    }
+    if t == "IDENT" and peek(st)["value"] == "match" {
+        // `match` is a soft keyword: it only starts a match statement when
+        // a subject and a block follow it.
+        let node = try_match_stmt(st)
+        if node != null {
+            return node
+        }
+    }
+    if t == "THROW" {
+        return throw_stmt(st)
+    }
+    if t == "BREAK" {
+        let kw = advance(st)
+        return {"kind": "BreakStmt", "line": kw["line"], "col": kw["col"]}
+    }
+    if t == "CONTINUE" {
+        let kw = advance(st)
+        return {"kind": "ContinueStmt", "line": kw["line"], "col": kw["col"]}
+    }
+    return expr_stmt(st)
+}
+
+fn binding_name(st) {
+    // `from` is only meaningful inside import statements, so - like Python -
+    // it stays usable as an ordinary variable name everywhere else.
+    if check(st, "FROM") {
+        advance(st)
+        return "from"
+    }
+    return expect(st, "IDENT", "expected variable name")["value"]
+}
+
+fn var_decl(st, mutable) {
+    let kw = advance(st)
+    if check(st, "LBRACKET") or check(st, "STAR") {
+        let targets = [unpack_binding(st)]
+        while match_token(st, ["COMMA"]) != null {
+            if check(st, "ASSIGN") {
+                break
+            }
+            targets.push(unpack_binding(st))
+        }
+        expect(st, "ASSIGN", "expected '=' after variable name")
+        let value = expression(st)
+        return {"kind": "UnpackStmt", "targets": targets, "value": value, "mutable": mutable, "line": kw["line"], "col": kw["col"], "exported": false}
+    }
+    let name = binding_name(st)
+    let type_ann = opt_type(st)
+    if check(st, "COMMA") {
+        let targets = [{"kind": "Identifier", "name": name, "line": kw["line"], "col": kw["col"]}]
+        while match_token(st, ["COMMA"]) != null {
+            if check(st, "ASSIGN") {
+                break
+            }
+            targets.push(unpack_binding(st))
+        }
+        expect(st, "ASSIGN", "expected '=' after variable name")
+        let value = expression(st)
+        return {"kind": "UnpackStmt", "targets": targets, "value": value, "mutable": mutable, "line": kw["line"], "col": kw["col"], "exported": false}
+    }
+    expect(st, "ASSIGN", "expected '=' after variable name")
+    let value = expression(st)
+    return {"kind": "LetStmt", "name": name, "value": value, "mutable": mutable, "line": kw["line"], "col": kw["col"], "exported": false, "type_ann": type_ann}
+}
+
+fn unpack_binding(st) {
+    let start = peek(st)
+    if check(st, "STAR") {
+        advance(st)
+        let name = binding_name(st)
+        return {"kind": "UnpackTarget", "target_kind": "star", "targets": [], "name": name, "line": start["line"], "col": start["col"]}
+    }
+    if check(st, "LBRACKET") {
+        advance(st)
+        let targets = []
+        if !check(st, "RBRACKET") {
+            targets.push(unpack_binding(st))
+            while match_token(st, ["COMMA"]) != null {
+                if check(st, "RBRACKET") {
+                    break
+                }
+                targets.push(unpack_binding(st))
+            }
+        }
+        expect(st, "RBRACKET", "expected ']' after unpacking targets")
+        return {"kind": "UnpackTarget", "target_kind": "list", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
+    }
+    let name = binding_name(st)
+    return {"kind": "Identifier", "name": name, "line": start["line"], "col": start["col"]}
+}
+
+fn fn_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected function name")
+    expect(st, "LPAREN", "expected '(' after function name")
+    let params = param_list(st)
+    var return_type = null
+    if match_token(st, ["ARROW"]) != null {
+        return_type = type_name(st)
+    }
+    let body = block(st)
+    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": []}
+}
+
+// Parse a function with decorators in front of it. The decorators are
+// applied from the closest one to the function outwards, so the name
+// that is written last is the one that is called first. The function may
+// be exported, and the `export` may be written before the decorators or
+// after them.
+fn decorated_decl(st) {
+    let decorators = []
+    while match_token(st, ["AT"]) != null {
+        let name = expect(st, "IDENT", "expected a decorator name")
+        decorators.push({"kind": "Identifier", "name": name["value"], "line": name["line"], "col": name["col"]})
+    }
+    var exported = false
+    if match_token(st, ["EXPORT"]) != null {
+        exported = true
+    }
+    if !check(st, "FN") {
+        throw "expected 'fn' after a decorator"
+    }
+    let node = fn_decl(st)
+    node["decorators"] = decorators
+    node["exported"] = exported
+    return node
+}
+
+fn param_list(st) {
+    let params = []
+    var keyword_only = false
+    if !check(st, "RPAREN") {
+        while true {
+            let param = param(st, keyword_only)
+            if param["param_kind"] == "kwonly_marker" {
+                keyword_only = true
+            } else {
+                if param["param_kind"] == "vararg" {
+                    keyword_only = true
+                }
+                params.push(param)
+            }
+            if match_token(st, ["COMMA"]) == null {
+                break
+            }
+            if check(st, "RPAREN") {
+                break
+            }
+        }
+    }
+    expect(st, "RPAREN", "expected ')' after parameters")
+    return params
+}
+
+fn param(st, keyword_only) {
+    if check(st, "DOUBLE_STAR") {
+        let tok = advance(st)
+        let name = expect(st, "IDENT", "expected parameter name after '**'")
+        return {"kind": "Param", "name": name["value"], "type_name": opt_type(st), "default": null, "param_kind": "kwarg", "line": tok["line"], "col": tok["col"]}
+    }
+    if check(st, "STAR") {
+        let tok = advance(st)
+        if check(st, "IDENT") {
+            let name = expect(st, "IDENT", "expected parameter name after '*'")
+            return {"kind": "Param", "name": name["value"], "type_name": opt_type(st), "default": null, "param_kind": "vararg", "line": tok["line"], "col": tok["col"]}
+        }
+        return {"kind": "Param", "name": "", "type_name": null, "default": null, "param_kind": "kwonly_marker", "line": tok["line"], "col": tok["col"]}
+    }
+    let tok = expect(st, "IDENT", "expected parameter name")
+    let type_name = opt_type(st)
+    var default = null
+    if match_token(st, ["ASSIGN"]) != null {
+        default = expression(st)
+    }
+    var kind = "positional"
+    if keyword_only {
+        kind = "kwonly"
+    }
+    return {"kind": "Param", "name": tok["value"], "type_name": type_name, "default": default, "param_kind": kind, "line": tok["line"], "col": tok["col"]}
+}
+
+fn opt_type(st) {
+    if match_token(st, ["COLON"]) != null {
+        return type_name(st)
+    }
+    return null
+}
+
+fn type_name(st) {
+    if check(st, "FN") {
+        return advance(st)["value"]
+    }
+    return expect(st, "IDENT", "expected type name")["value"]
+}
+
+fn import_stmt(st) {
+    let kw = advance(st)
+    expect(st, "LBRACE", "expected '{' after 'import'")
+    let names = []
+    if !check(st, "RBRACE") {
+        names.push(expect(st, "IDENT", "expected imported name")["value"])
+        while match_token(st, ["COMMA"]) != null {
+            names.push(expect(st, "IDENT", "expected imported name")["value"])
+        }
+    }
+    expect(st, "RBRACE", "expected '}' after import names")
+    expect(st, "FROM", "expected 'from' after import list")
+    let path = expect(st, "STRING", "expected module path string")
+    return {"kind": "ImportStmt", "names": names, "path": path["value"], "line": kw["line"], "col": kw["col"]}
+}
+
+fn exported_decl(st) {
+    advance(st)
+    let t = peek(st)["type"]
+    var decl = null
+    if t == "FN" {
+        decl = fn_decl(st)
+    } else {
+        if t == "AT" {
+            decl = decorated_decl(st)
+        } else {
+            if t == "LET" {
+                decl = var_decl(st, false)
+            } else {
+                if t == "VAR" {
+                    decl = var_decl(st, true)
+                } else {
+                    throw "'export' must precede 'fn', 'let', or 'var'"
+                }
+            }
+        }
+    }
+    decl["exported"] = true
+    return decl
+}
+
+fn if_stmt(st) {
+    let kw = advance(st)
+    let condition = expression(st)
+    let then_branch = block(st)
+    var else_branch = null
+    if match_token(st, ["ELSE"]) != null {
+        if check(st, "IF") {
+            else_branch = if_stmt(st)
+        } else {
+            else_branch = block(st)
+        }
+    }
+    return {"kind": "IfStmt", "condition": condition, "then_branch": then_branch, "else_branch": else_branch, "line": kw["line"], "col": kw["col"]}
+}
+
+fn while_stmt(st) {
+    let kw = advance(st)
+    let condition = expression(st)
+    let body = block(st)
+    let orelse = loop_else(st)
+    return {"kind": "WhileStmt", "condition": condition, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"]}
+}
+
+fn loop_else(st) {
+    // The else of a loop: the block that runs when the loop ends
+    // without a break.
+    if !check(st, "ELSE") {
+        return null
+    }
+    advance(st)
+    return block(st)
+}
+
+fn for_stmt(st) {
+    let kw = advance(st)
+    let targets = []
+    let name = expect(st, "IDENT", "expected loop variable name")
+    targets.push(name["value"])
+    while match_token(st, ["COMMA"]) != null {
+        let more = expect(st, "IDENT", "expected loop variable name")
+        targets.push(more["value"])
+    }
+    expect(st, "IN", "expected 'in' after loop variable")
+    let iterable = expression(st)
+    let body = block(st)
+    let orelse = loop_else(st)
+    return {"kind": "ForStmt", "targets": targets, "iterable": iterable, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"]}
+}
+
+fn assert_stmt(st) {
+    let kw = advance(st)
+    let condition = expression(st)
+    var message = null
+    if match_token(st, ["COMMA"]) != null {
+        message = expression(st)
+    }
+    return {"kind": "AssertStmt", "condition": condition, "message": message, "line": kw["line"], "col": kw["col"]}
+}
+
+fn yield_expr(st) {
+    // `yield value` as an expression. The value of the expression is the
+    // value that the program sends back into the generator.
+    let kw = advance(st)
+    var value = null
+    if !check(st, "RBRACE") and !check(st, "EOF") and peek(st)["line"] == kw["line"] {
+        value = expression(st)
+    }
+    return {"kind": "YieldExpr", "value": value, "line": kw["line"], "col": kw["col"]}
+}
+
+fn yield_stmt(st) {
+    // `yield` gives a value to the program and waits for the next one.
+    let kw = advance(st)
+    var value = null
+    if !check(st, "RBRACE") and !check(st, "EOF") and peek(st)["line"] == kw["line"] {
+        value = expression(st)
+    }
+    return {"kind": "YieldStmt", "value": value, "line": kw["line"], "col": kw["col"]}
+}
+
+fn del_stmt(st) {
+    // `del name` removes a name, `del container[key]` removes an item.
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected a name after 'del'")
+    var target = {"kind": "Identifier", "name": name["value"], "line": name["line"], "col": name["col"]}
+    if check(st, "LBRACKET") {
+        advance(st)
+        let index = subscript(st)
+        expect(st, "RBRACKET", "expected ']' after index")
+        target = {"kind": "Index", "target": target, "index": index, "line": name["line"], "col": name["col"]}
+    }
+    return {"kind": "DelStmt", "target": target, "line": kw["line"], "col": kw["col"]}
+}
+
+let TYPE_NAMES = ["int", "float", "string", "bool", "null", "any", "list", "dict", "fn", "secret"]
+
+fn try_match_stmt(st) {
+    // `match` is a soft keyword.  When the tokens after it are not a
+    // subject and a block, the name is used as an ordinary identifier.
+    let save = st["pos"]
+    let kw = advance(st)
+    var subject = null
+    var parsed = false
+    try {
+        subject = expression(st)
+        parsed = true
+    } catch err {
+        parsed = false
+    }
+    if !parsed {
+        st["pos"] = save
+        return null
+    }
+    if !check(st, "LBRACE") {
+        st["pos"] = save
+        return null
+    }
+    advance(st)
+    let cases = []
+    while !check(st, "RBRACE") {
+        var pattern = match_pattern(st)
+        if check(st, "COMMA") {
+            // A case may name more than one pattern.  The first one that
+            // matches wins, so the comma before the '=>' joins the
+            // alternatives of one case.
+            let alternatives = [pattern]
+            while match_token(st, ["COMMA"]) != null {
+                alternatives.push(match_pattern(st))
+            }
+            pattern = match_pattern_node("or", pattern, "", null, null, alternatives, [])
+        }
+        if check(st, "IF") {
+            // A guard is a condition that has to hold for the case to
+            // match.  It sees the names the pattern binds.
+            advance(st)
+            pattern["guard"] = expression(st)
+        }
+        expect(st, "FAT_ARROW", "expected '=>' after a match pattern")
+        let body = match_body(st)
+        cases.push([pattern, body])
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after the match cases")
+    return {"kind": "MatchStmt", "subject": subject, "cases": cases, "line": kw["line"], "col": kw["col"]}
+}
+
+fn match_body(st) {
+    // A block holds many statements; anything else is one statement.  A
+    // dict literal as a case body needs parentheses, because a `{` after
+    // `=>` always starts a block.
+    if check(st, "LBRACE") {
+        return block(st)
+    }
+    let start = st["pos"]
+    st["match_body_depth"] = st["match_body_depth"] + 1
+    var body = statement(st)
+    st["match_body_depth"] = st["match_body_depth"] - 1
+    let kind = body["kind"]
+    if kind == "ExprStmt" {
+        let expr_kind = body["expr"]["kind"]
+        if (expr_kind == "Identifier" or expr_kind == "Index") and check(st, "COMMA") and unpack_ahead(st) {
+            // The comma belongs to an unpacking assignment and not to the
+            // list of the cases, so the body is parsed again without the
+            // restriction of the case.
+            st["pos"] = start
+            body = statement(st)
+        }
+    }
+    return body
+}
+
+fn unpack_ahead(st) {
+    // Report whether the tokens after a comma are an unpacking target.
+    // The comma after the first name of an unpacking assignment is
+    // followed by the other names and an `=`.  The comma that separates
+    // the cases of a `match` is followed by a pattern.
+    var offset = 1
+    while true {
+        let tok = peek_token(st, offset)
+        if tok["type"] != "IDENT" {
+            return false
+        }
+        offset = offset + 1
+        let nxt = peek_token(st, offset)
+        if nxt["type"] == "COMMA" {
+            offset = offset + 1
+            continue
+        }
+        return nxt["type"] == "ASSIGN"
+    }
+}
+
+fn match_pattern(st) {
+    let tok = peek(st)
+    if tok["type"] == "IDENT" {
+        if tok["value"] == "_" {
+            advance(st)
+            return match_pattern_node("wildcard", tok, "", null, null, [], [])
+        }
+        if in_types(TYPE_NAMES, tok["value"]) {
+            advance(st)
+            return match_pattern_node("type", tok, "", tok["value"], null, [], [])
+        }
+        advance(st)
+        return match_pattern_node("binding", tok, tok["value"], null, null, [], [])
+    }
+    if tok["type"] == "LBRACKET" {
+        advance(st)
+        let items = []
+        var tail = null
+        if !check(st, "RBRACKET") {
+            while true {
+                if check(st, "STAR") {
+                    // A tail: the rest of the list, bound to a name.
+                    advance(st)
+                    let name = expect(st, "IDENT", "expected a name after '*' in a match pattern")
+                    tail = match_pattern_node("binding", name, name["value"], null, null, [], [])
+                } else {
+                    items.push(match_pattern(st))
+                }
+                if match_token(st, ["COMMA"]) == null {
+                    break
+                }
+                if check(st, "RBRACKET") {
+                    break
+                }
+                if tail != null {
+                    throw "'*' must be the last item of a match pattern"
+                }
+            }
+        }
+        expect(st, "RBRACKET", "expected ']' after a match pattern")
+        let node = match_pattern_node("list", tok, "", null, null, items, [])
+        node["tail"] = tail
+        return node
+    }
+    if tok["type"] == "LBRACE" {
+        advance(st)
+        let entries = []
+        if !check(st, "RBRACE") {
+            let key = expect(st, "STRING", "expected a string key in a match pattern")
+            expect(st, "COLON", "expected ':' after a match pattern key")
+            entries.push([key["value"], match_pattern(st)])
+            while match_token(st, ["COMMA"]) != null {
+                if check(st, "RBRACE") {
+                    break
+                }
+                let more = expect(st, "STRING", "expected a string key in a match pattern")
+                expect(st, "COLON", "expected ':' after a match pattern key")
+                entries.push([more["value"], match_pattern(st)])
+            }
+        }
+        expect(st, "RBRACE", "expected '}' after a match pattern")
+        return match_pattern_node("dict", tok, "", null, null, [], entries)
+    }
+    let value = literal_pattern_value(st)
+    if check(st, "IDENT") and peek(st)["value"] == "to" {
+        advance(st)
+        let high = literal_pattern_value(st)
+        return match_pattern_node("range", tok, "", value, high, [], [])
+    }
+    return match_pattern_node("literal", tok, "", value, null, [], [])
+}
+
+fn match_pattern_node(kind, tok, name, value, high, items, entries) {
+    return {"kind": "MatchPattern", "pattern_kind": kind, "name": name, "value": value, "high": high, "items": items, "entries": entries, "tail": null, "guard": null, "line": tok["line"], "col": tok["col"]}
+}
+
+fn literal_pattern_value(st) {
+    let tok = peek(st)
+    if tok["type"] == "INT" or tok["type"] == "FLOAT" {
+        advance(st)
+        return tok["value"]
+    }
+    if tok["type"] == "STRING" {
+        advance(st)
+        return tok["value"]
+    }
+    if tok["type"] == "TRUE" {
+        advance(st)
+        return true
+    }
+    if tok["type"] == "FALSE" {
+        advance(st)
+        return false
+    }
+    if tok["type"] == "NULL" {
+        advance(st)
+        return null
+    }
+    throw "expected a pattern, found " + tok["type"]
+}
+
+fn return_stmt(st) {
+    let kw = advance(st)
+    var value = null
+    if !check(st, "RBRACE") and !check(st, "EOF") and peek(st)["line"] == kw["line"] {
+        value = expression(st)
+    }
+    return {"kind": "ReturnStmt", "value": value, "line": kw["line"], "col": kw["col"]}
+}
+
+fn try_stmt(st) {
+    let kw = advance(st)
+    let try_block = block(st)
+    let params = []
+    var catch_block = null
+    if match_token(st, ["CATCH"]) != null {
+        if match_token(st, ["LPAREN"]) != null {
+            let name = expect(st, "IDENT", "expected exception name")
+            expect(st, "RPAREN", "expected ')' after exception name")
+            params.push(name["value"])
+        } else {
+            if check(st, "IDENT") {
+                params.push(advance(st)["value"])
+            }
+        }
+        catch_block = block(st)
+    }
+    var finally_body = null
+    if match_token(st, ["FINALLY"]) != null {
+        finally_body = block(st)
+    }
+    if catch_block == null and finally_body == null {
+        throw "expected 'catch' or 'finally' after 'try' block"
+    }
+    return {"kind": "TryStmt", "try_block": try_block, "catch_params": params, "catch_block": catch_block, "finally_body": finally_body, "line": kw["line"], "col": kw["col"]}
+}
+
+fn with_stmt(st) {
+    let kw = advance(st)
+    let items = [with_item(st)]
+    while match_token(st, ["COMMA"]) != null {
+        items.push(with_item(st))
+    }
+    let body = block(st)
+    return {"kind": "WithStmt", "items": items, "body": body, "line": kw["line"], "col": kw["col"]}
+}
+
+fn scope_stmt(st) {
+    let kw = advance(st)
+    let body = block(st)
+    return {"kind": "ScopeStmt", "body": body, "line": kw["line"], "col": kw["col"]}
+}
+
+fn with_item(st) {
+    let expr = expression(st)
+    expect(st, "AS", "expected 'as' after 'with' expression")
+    let tok = peek(st)
+    var name = ""
+    if tok["type"] == "IDENT" {
+        advance(st)
+        name = tok["value"]
+    } else if tok["type"] == "AS" {
+        advance(st)
+        name = "as"
+    } else {
+        throw "expected variable name after 'as'"
+    }
+    return {"kind": "WithItem", "expr": expr, "name": name, "line": expr["line"], "col": expr["col"]}
+}
+
+fn throw_stmt(st) {
+    let kw = advance(st)
+    let value = expression(st)
+    var cause = null
+    if match_token(st, ["COMMA"]) != null {
+        cause = expression(st)
+    }
+    return {"kind": "ThrowStmt", "value": value, "cause": cause, "line": kw["line"], "col": kw["col"]}
+}
+
+fn expr_stmt(st) {
+    let start = peek(st)
+    let expr = expression(st)
+    if check(st, "COMMA") and st["match_body_depth"] == 0 {
+        let targets = [unpack_target(st, expr)]
+        while match_token(st, ["COMMA"]) != null {
+            if check(st, "ASSIGN") {
+                break
+            }
+            targets.push(unpack_target(st, expression(st)))
+        }
+        expect(st, "ASSIGN", "expected '=' in assignment")
+        let value = expression(st)
+        let target = {"kind": "UnpackTarget", "target_kind": "tuple", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
+        return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
+    }
+    if match_token(st, ["ASSIGN"]) != null {
+        let value = expression(st)
+        let kind = expr["kind"]
+        if kind == "ListLiteral" {
+            let elements = expr["elements"]
+            let targets = []
+            var i = 0
+            while i < elements.len() {
+                targets.push(unpack_target(st, elements[i]))
+                i = i + 1
+            }
+            let target = {"kind": "UnpackTarget", "target_kind": "list", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
+            return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
+        }
+        if !(kind == "Identifier" or kind == "Index") {
+            throw "invalid assignment target"
+        }
+        return {"kind": "AssignStmt", "target": expr, "value": value, "line": start["line"], "col": start["col"]}
+    }
+    return {"kind": "ExprStmt", "expr": expr, "line": start["line"], "col": start["col"]}
+}
+
+fn unpack_target(st, expr) {
+    let kind = expr["kind"]
+    if kind == "Identifier" or kind == "Index" {
+        return expr
+    }
+    throw "invalid assignment target"
+}
+
+fn block(st) {
+    let lbrace = expect(st, "LBRACE", "expected '{'")
+    let statements = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        statements.push(statement(st))
+    }
+    expect(st, "RBRACE", "expected '}'")
+    return {"kind": "Block", "statements": statements, "line": lbrace["line"], "col": lbrace["col"]}
+}
+
+fn expression(st) {
+    return or_expr(st)
+}
+
+fn or_expr(st) {
+    var expr = and_expr(st)
+    while check(st, "OR") {
+        let op = advance(st)
+        expr = {"kind": "Logical", "left": expr, "op": "or", "right": and_expr(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn and_expr(st) {
+    var expr = not_expr(st)
+    while check(st, "AND") {
+        let op = advance(st)
+        expr = {"kind": "Logical", "left": expr, "op": "and", "right": not_expr(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn not_expr(st) {
+    // The word form of the negation. It sits between "and" and the
+    // comparisons, as in Python, so "not a == b" is "not (a == b)".
+    if check(st, "NOT") {
+        let op = advance(st)
+        return {"kind": "Unary", "op": "!", "operand": not_expr(st), "line": op["line"], "col": op["col"]}
+    }
+    return equality(st)
+}
+
+fn equality(st) {
+    var expr = comparison(st)
+    while in_types(["EQ", "NEQ"], peek(st)["type"]) {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": comparison(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn comparison(st) {
+    var expr = bit_or(st)
+    while in_types(["LT", "LTE", "GT", "GTE"], peek(st)["type"]) {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": bit_or(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn bit_or(st) {
+    var expr = bit_xor(st)
+    while check(st, "PIPE") {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": bit_xor(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn bit_xor(st) {
+    var expr = bit_and(st)
+    while check(st, "CARET") {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": bit_and(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn bit_and(st) {
+    var expr = shift(st)
+    while check(st, "AMP") {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": shift(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn shift(st) {
+    var expr = term(st)
+    while in_types(["LSHIFT", "RSHIFT"], peek(st)["type"]) {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": term(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn term(st) {
+    var expr = factor(st)
+    while in_types(["PLUS", "MINUS"], peek(st)["type"]) {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": factor(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn factor(st) {
+    var expr = unary(st)
+    while in_types(["STAR", "SLASH", "PERCENT"], peek(st)["type"]) {
+        let op = advance(st)
+        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": unary(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn unary(st) {
+    if in_types(["MINUS", "BANG", "TILDE"], peek(st)["type"]) {
+        let op = advance(st)
+        return {"kind": "Unary", "op": op["value"], "operand": unary(st), "line": op["line"], "col": op["col"]}
+    }
+    return power(st)
+}
+
+// The power operator. It binds tighter than the multiplication, and
+// its right hand side may hold a unary sign, as in Python. The right
+// hand side is a whole term, so `2 ** 3 * 4` is `2 ** (3 * 4)`, which
+// is what Python does.
+fn power(st) {
+    let expr = postfix(st)
+    if check(st, "DOUBLE_STAR") {
+        let op = advance(st)
+        return {"kind": "Binary", "left": expr, "op": "**", "right": factor(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
+}
+
+fn postfix(st) {
+    var expr = primary(st)
+    var looping = true
+    while looping {
+        if peek(st)["line"] != prev_line(st) {
+            looping = false
+            continue
+        }
+        if check(st, "LPAREN") {
+            advance(st)
+            let args = []
+            let kwargs = []
+            if !check(st, "RPAREN") {
+                while true {
+                    if check(st, "IDENT") and peek_token(st, 1)["type"] == "ASSIGN" {
+                        let kw_name = advance(st)
+                        advance(st)
+                        kwargs.push([kw_name["value"], expression(st)])
+                    } else {
+                        args.push(expression(st))
+                    }
+                    if match_token(st, ["COMMA"]) == null {
+                        break
+                    }
+                    if check(st, "RPAREN") {
+                        break
+                    }
+                }
+            }
+            expect(st, "RPAREN", "expected ')' after arguments")
+            expr = {"kind": "Call", "callee": expr, "args": args, "line": expr["line"], "col": expr["col"], "kwargs": kwargs}
+        } else {
+            if check(st, "LBRACKET") {
+                advance(st)
+                let index = subscript(st)
+                expect(st, "RBRACKET", "expected ']' after index")
+                expr = {"kind": "Index", "target": expr, "index": index, "line": expr["line"], "col": expr["col"]}
+            } else {
+                if check(st, "DOT") {
+                    advance(st)
+                    let name = expect(st, "IDENT", "expected method name after '.'")
+                    expect(st, "LPAREN", "expected '(' after method name")
+                    let args = []
+                    if !check(st, "RPAREN") {
+                        args.push(expression(st))
+                        while match_token(st, ["COMMA"]) != null {
+                            args.push(expression(st))
+                        }
+                    }
+                    expect(st, "RPAREN", "expected ')' after arguments")
+                    expr = {"kind": "MethodCall", "receiver": expr, "method": name["value"], "args": args, "line": expr["line"], "col": expr["col"]}
+                } else {
+                    if check(st, "LBRACE") and expr["kind"] == "Identifier" and expr["name"] == "spawn" {
+                        // `spawn { ... }` is sugar for `spawn(fn() { ... })`.
+                        let body = block(st)
+                        let function = {"kind": "FnDecl", "name": "", "params": [], "body": body, "line": expr["line"], "col": expr["col"], "exported": false, "return_type": null, "decorators": []}
+                        expr = {"kind": "Call", "callee": expr, "args": [function], "line": expr["line"], "col": expr["col"], "kwargs": []}
+                    } else {
+                        looping = false
+                    }
+                }
+            }
+        }
+    }
+    return expr
+}
+
+fn primary(st) {
+    let tok = peek(st)
+    let t = tok["type"]
+    if t == "INT" or t == "FLOAT" or t == "STRING" {
+        advance(st)
+        return {"kind": "Literal", "value": tok["value"], "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "FSTRING" {
+        advance(st)
+        let parts = fstring_parts(tok["value"], tok["line"], tok["col"])
+        return {"kind": "FString", "parts": parts, "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "TRUE" {
+        advance(st)
+        return {"kind": "Literal", "value": true, "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "FALSE" {
+        advance(st)
+        return {"kind": "Literal", "value": false, "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "NULL" {
+        advance(st)
+        return {"kind": "Literal", "value": null, "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "YIELD" {
+        // `yield` is an expression too: its value is the value that the
+        // program sends back into the generator.
+        return yield_expr(st)
+    }
+    if t == "IDENT" {
+        advance(st)
+        return {"kind": "Identifier", "name": tok["value"], "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "FROM" {
+        // `from` is a soft keyword: usable as an ordinary identifier
+        // outside of import statements, exactly like Python.
+        advance(st)
+        return {"kind": "Identifier", "name": "from", "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "AS" {
+        // `as` is a soft keyword for the same reason.
+        advance(st)
+        return {"kind": "Identifier", "name": "as", "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "FN" {
+        advance(st)
+        expect(st, "LPAREN", "expected '(' after 'fn'")
+        let params = param_list(st)
+        var return_type = null
+        if match_token(st, ["ARROW"]) != null {
+            return_type = type_name(st)
+        }
+        let body = block(st)
+        return {"kind": "FnDecl", "name": "", "params": params, "body": body, "line": tok["line"], "col": tok["col"], "exported": false, "return_type": return_type, "decorators": []}
+    }
+    if t == "LPAREN" {
+        advance(st)
+        let expr = expression(st)
+        expect(st, "RPAREN", "expected ')' after expression")
+        return expr
+    }
+    if t == "LBRACE" {
+        advance(st)
+        if check(st, "RBRACE") {
+            advance(st)
+            return {"kind": "DictLiteral", "entries": [], "line": tok["line"], "col": tok["col"]}
+        }
+        let key = expression(st)
+        expect(st, "COLON", "expected ':' after dict key")
+        let value = expression(st)
+        if check(st, "FOR") {
+            let comp_clauses = comprehension_clauses(st)
+            expect(st, "RBRACE", "expected '}' after comprehension")
+            return {"kind": "Comprehension", "element": null, "key": key, "value": value, "clauses": comp_clauses, "is_dict": true, "line": tok["line"], "col": tok["col"]}
+        }
+        let entries = [[key, value]]
+        var more = true
+        while more and match_token(st, ["COMMA"]) != null {
+            if check(st, "RBRACE") {
+                more = false
+            } else {
+                let next_key = expression(st)
+                expect(st, "COLON", "expected ':' after dict key")
+                let next_value = expression(st)
+                entries.push([next_key, next_value])
+            }
+        }
+        expect(st, "RBRACE", "expected '}' after dict entries")
+        return {"kind": "DictLiteral", "entries": entries, "line": tok["line"], "col": tok["col"]}
+    }
+    if t == "LBRACKET" {
+        advance(st)
+        if check(st, "RBRACKET") {
+            advance(st)
+            return {"kind": "ListLiteral", "elements": [], "line": tok["line"], "col": tok["col"]}
+        }
+        let element = expression(st)
+        if check(st, "FOR") {
+            let comp_clauses = comprehension_clauses(st)
+            expect(st, "RBRACKET", "expected ']' after comprehension")
+            return {"kind": "Comprehension", "element": element, "key": null, "value": null, "clauses": comp_clauses, "is_dict": false, "line": tok["line"], "col": tok["col"]}
+        }
+        let elements = [element]
+        while match_token(st, ["COMMA"]) != null {
+            if check(st, "RBRACKET") {
+                break
+            }
+            elements.push(expression(st))
+        }
+        expect(st, "RBRACKET", "expected ']' after list elements")
+        return {"kind": "ListLiteral", "elements": elements, "line": tok["line"], "col": tok["col"]}
+    }
+    throw "unexpected token " + t
+}
+
+// Parse one or more `for ... in ... [if ...]` comprehension clauses.
+fn comprehension_clauses(st) {
+    let clauses = []
+    var more = true
+    while more {
+        let tok = expect(st, "FOR", "expected 'for' in comprehension")
+        let name = expect(st, "IDENT", "expected loop variable name in comprehension")
+        expect(st, "IN", "expected 'in' after loop variable")
+        let iterable = expression(st)
+        var condition = null
+        if match_token(st, ["IF"]) != null {
+            condition = expression(st)
+        }
+        clauses.push({"kind": "ComprehensionClause", "target": name["value"], "iterable": iterable, "condition": condition, "line": tok["line"], "col": tok["col"]})
+        if !check(st, "FOR") {
+            more = false
+        }
+    }
+    return clauses
+}
+
+// Parse a subscript: either a plain index or a slice.
+fn subscript(st) {
+    var start = null
+    if !check(st, "COLON") {
+        start = expression(st)
+    }
+    if !check(st, "COLON") {
+        return start
+    }
+    let tok = advance(st)
+    var stop = null
+    var step = null
+    if !check(st, "COLON") and !check(st, "RBRACKET") {
+        stop = expression(st)
+    }
+    if match_token(st, ["COLON"]) != null {
+        if !check(st, "RBRACKET") {
+            step = expression(st)
+        }
+    }
+    return {"kind": "Slice", "start": start, "stop": stop, "step": step, "line": tok["line"], "col": tok["col"]}
+}
+
+export fn parse(tokens) {
+    let st = {"tokens": tokens, "pos": 0, "match_body_depth": 0}
+    let statements = []
+    while !check(st, "EOF") {
+        statements.push(statement(st))
+    }
+    return {"kind": "Program", "statements": statements}
+}
+
+// ------------------------------------------------------------------
+// f-strings
+// ------------------------------------------------------------------
+
+let FSTRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0", "\"": "\"", "'": "'", "\\": "\\"}
+
+fn is_space(ch) {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+// Split the raw body of an f-string into literal and expression parts.
+fn fstring_parts(raw, line, col) {
+    let parts = []
+    var literal = ""
+    var index = 0
+    while index < raw.len() {
+        let ch = raw[index]
+        if ch == "{" {
+            if index + 1 < raw.len() and raw[index + 1] == "{" {
+                literal = literal + "{"
+                index = index + 2
+            } else {
+                let scanned = scan_fstring_expr(raw, index, line, col)
+                if literal != "" {
+                    parts.push({"kind": "FStringPart", "literal": unescape(literal, line, col), "expr": null, "spec": null, "conv": null, "source_text": null})
+                    literal = ""
+                }
+                let expr = fstring_expression(scanned[0], line, col)
+                var display = null
+                if scanned[3] == true {
+                    display = scanned[4]
+                }
+                parts.push({"kind": "FStringPart", "literal": null, "expr": expr, "spec": scanned[1], "conv": scanned[2], "source_text": display})
+                index = scanned[5]
+            }
+        } else {
+            if ch == "}" {
+                if index + 1 < raw.len() and raw[index + 1] == "}" {
+                    literal = literal + "}"
+                    index = index + 2
+                } else {
+                    throw "single '}' in f-string"
+                }
+            } else {
+                literal = literal + ch
+                index = index + 1
+            }
+        }
+    }
+    if literal != "" {
+        parts.push({"kind": "FStringPart", "literal": unescape(literal, line, col), "expr": null, "spec": null, "conv": null, "source_text": null})
+    }
+    return parts
+}
+
+// Find the closing brace of an interpolated expression.
+// Returns [source, spec, conv, self_documenting, display, end].
+fn scan_fstring_expr(raw, start, line, col) {
+    var index = start + 1
+    var depth = 0
+    var quote = ""
+    var found = false
+    while found == false {
+        if index >= raw.len() {
+            throw "unterminated expression in f-string"
+        }
+        let ch = raw[index]
+        if quote != "" {
+            if ch == "\\" {
+                index = index + 2
+            } else {
+                if ch == quote {
+                    quote = ""
+                }
+                index = index + 1
+            }
+        } else {
+            if ch == "\"" or ch == "'" {
+                quote = ch
+                index = index + 1
+            } else {
+                if ch == "(" or ch == "[" or ch == "{" {
+                    depth = depth + 1
+                    index = index + 1
+                } else {
+                    if ch == ")" or ch == "]" {
+                        depth = depth - 1
+                        index = index + 1
+                    } else {
+                        if ch == "}" {
+                            if depth == 0 {
+                                found = true
+                            } else {
+                                depth = depth - 1
+                                index = index + 1
+                            }
+                        } else {
+                            index = index + 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let content = raw.slice(start + 1, index)
+    let split = split_fstring_content(content, line, col)
+    return [split[0], split[1], split[2], split[3], split[4], index + 1]
+}
+
+// Split `{expr!conv:spec}` into its parts.
+fn split_fstring_content(content, line, col) {
+    var colon = -1
+    var bang = -1
+    var depth = 0
+    var quote = ""
+    var index = 0
+    while index < content.len() {
+        let ch = content[index]
+        if quote != "" {
+            if ch == "\\" {
+                index = index + 2
+            } else {
+                if ch == quote {
+                    quote = ""
+                }
+                index = index + 1
+            }
+        } else {
+            if ch == "\"" or ch == "'" {
+                quote = ch
+                index = index + 1
+            } else {
+                if ch == "(" or ch == "[" or ch == "{" {
+                    depth = depth + 1
+                    index = index + 1
+                } else {
+                    if ch == ")" or ch == "]" or ch == "}" {
+                        depth = depth - 1
+                        index = index + 1
+                    } else {
+                        if ch == ":" and depth == 0 and colon == -1 {
+                            colon = index
+                            index = index + 1
+                        } else {
+                            if ch == "!" and depth == 0 and bang == -1 {
+                                if index + 1 < content.len() and content[index + 1] == "=" {
+                                    index = index + 2
+                                } else {
+                                    bang = index
+                                    index = index + 1
+                                }
+                            } else {
+                                index = index + 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    var spec = null
+    var head = content
+    if colon != -1 {
+        spec = content.slice(colon + 1, content.len())
+        head = content.slice(0, colon)
+    }
+    var conv = null
+    var source = head
+    if bang != -1 {
+        conv = head.slice(bang + 1, head.len())
+        source = head.slice(0, bang)
+    }
+    if conv != null and conv != "r" and conv != "s" {
+        throw "invalid f-string conversion '" + conv + "'"
+    }
+    var self_doc = false
+    var display = null
+    let stripped = rstrip(source)
+    if stripped.len() >= 2 and stripped[stripped.len() - 1] == "=" {
+        let previous = stripped[stripped.len() - 2]
+        if previous != "=" and previous != "<" and previous != ">" and previous != "!" {
+            self_doc = true
+            let equals = stripped.len() - 1
+            source = rstrip(stripped.slice(0, equals))
+            display = head.slice(0, equals + 1)
+        }
+    }
+    return [source, spec, conv, self_doc, display]
+}
+
+fn rstrip(text) {
+    var end = text.len()
+    while end > 0 and is_space(text[end - 1]) {
+        end = end - 1
+    }
+    return text.slice(0, end)
+}
+
+fn fstring_expression(source, line, col) {
+    if rstrip(source).len() == 0 {
+        throw "empty expression in f-string"
+    }
+    let sub = {"tokens": tokenize(source), "pos": 0}
+    return expression(sub)
+}
+
+fn unescape(text, line, col) {
+    if text.index_of("\\") == -1 {
+        return text
+    }
+    var out = ""
+    var index = 0
+    while index < text.len() {
+        let ch = text[index]
+        if ch == "\\" {
+            index = index + 1
+            if index >= text.len() {
+                throw "invalid escape in f-string"
+            }
+            let nxt = text[index]
+            if !FSTRING_ESCAPES.has(nxt) {
+                throw "invalid escape '\\" + nxt + "' in f-string"
+            }
+            out = out + FSTRING_ESCAPES.get(nxt)
+            index = index + 1
+        } else {
+            out = out + ch
+            index = index + 1
+        }
+    }
+    return out
+}

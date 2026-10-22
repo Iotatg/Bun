@@ -1,0 +1,42 @@
+import { tokenize } from "./lexer"
+import { parse } from "./parser"
+import { compile_program } from "./compiler"
+import { check_program } from "./checker"
+import { DOCS } from "./docs"
+
+fn argv_get(list: any, index: int) -> string {
+    if index < 0 or index >= list.len() { return "" }
+    return list[index]
+}
+
+let argv = args()
+let path = argv_get(argv, 0)
+let mode = argv_get(argv, 1)
+let should_check = mode == "check" or argv_get(argv, 2) == "1"
+let base_dir = argv_get(argv, 3)
+if mode == "docs" {
+    print(dump(DOCS))
+} else {
+let source = read_file(path)
+let tokens = tokenize(source)
+if mode == "lex" {
+    print(dump(tokens))
+} else {
+    let program = parse(tokens)
+    if mode == "ast" {
+        print(dump(program))
+    } else {
+        if should_check {
+            check_program(program, base_dir)
+        }
+        if mode != "check" {
+            let code = compile_program(path, source, program)
+            if mode == "dump" {
+                print(dump(code))
+            } else {
+                run_code(code)
+            }
+        }
+    }
+}
+}

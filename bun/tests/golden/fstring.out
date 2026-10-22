@@ -1,0 +1,22 @@
+hello world!
+42 items at 3.14159
+escaped {literal} braces
+expr is 84
+sum 43 and 41
+n =42
+n=42
+pi to 2dp: 3.14
+padded: [   42]
+padded0: [00042]
+comma: 1,234,567
+hex: ff
+upper hex: FF
+oct: 100
+bin: 101
+pct: 50.0%
+repr: "quoted"
+str: 42
+list: [a, b]
+nested inner 42
+call: 2
+multipart

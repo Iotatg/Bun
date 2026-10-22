@@ -1,0 +1,26 @@
+print(str(bool(0)))
+print(str(bool([])))
+print(str(bool("bun")))
+
+print(str(abs(-4)))
+print(str(abs(2.5)))
+
+print(str(sum([1, 2, 3])))
+print(str(sum([])))
+
+print(str(any([0, 0, 2])))
+print(str(all([1, 2])))
+
+print(str(min([4, 2, 9])))
+print(str(max([4, 2, 9])))
+
+for number, word in zip([1, 2], ["one", "two"]) {
+    print(str(number) + "=" + word)
+}
+
+for index, letter in enumerate(["a", "b"]) {
+    print(str(index) + ":" + letter)
+}
+
+print(str(sorted([5, 3, 1])))
+print(str(reversed([1, 2, 3])))

@@ -1,0 +1,45 @@
+// Break and continue across nested scopes and loops.
+
+fn classify(n: int) -> string {
+    var out = ""
+    for i in range(0, 10) {
+        if i == n {
+            break
+        }
+        if i % 2 == 0 {
+            continue
+        }
+        out = out + str(i)
+    }
+    return out
+}
+
+var total = 0
+var i = 0
+while i < 20 {
+    i = i + 1
+    if i == 5 {
+        continue
+    }
+    if i == 15 {
+        break
+    }
+    total = total + i
+}
+
+var nested = 0
+for a in range(0, 3) {
+    for b in range(0, 3) {
+        if b == 1 {
+            break
+        }
+        nested = nested + 1
+    }
+    if a == 2 {
+        break
+    }
+}
+
+print(classify(4))
+print(total)
+print(nested)

@@ -1,0 +1,885 @@
+// bun:web — the web stack of Bun.
+//
+// The stack has four parts:
+//
+//   the router     matches a method and a path to a handler
+//   the templates  fill a template with escaped values
+//   the server     serves the router over HTTP
+//   the sockets    the websocket frames of RFC 6455
+//
+// A request is a plain dictionary:
+//
+//   "method"   "GET"
+//   "path"     "/users/7"
+//   "query"    {"page": "2"}
+//   "params"   {"id": "7"}
+//   "headers"  {"host": "localhost"}
+//   "body"     ""
+//
+// A response is a plain dictionary as well:
+//
+//   "status"   200
+//   "headers"  {"Content-Type": "text/html"}
+//   "body"     "<h1>Hello</h1>"
+//
+// A response that streams sends its pieces instead of a body:
+//
+//   "pieces"   ["first ", "second"]
+//
+// The server speaks HTTP/1.1 and keeps the connection open for the next
+// request, unless the request or the answer asks for the close. A streamed
+// answer uses the chunked encoding of HTTP/1.1.
+//
+// The templates escape every value, so a value that comes from a user can
+// never become markup. The raw() function is the way to say that a value
+// is already safe.
+
+// The value that the websocket handshake appends to the client key.
+let WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+let math = ffi_load("math")
+let floor = math["floor"]
+
+// The status texts of the codes that are used the most.
+let STATUS_TEXT = {
+    "200": "OK",
+    "201": "Created",
+    "202": "Accepted",
+    "204": "No Content",
+    "301": "Moved Permanently",
+    "302": "Found",
+    "304": "Not Modified",
+    "400": "Bad Request",
+    "401": "Unauthorized",
+    "403": "Forbidden",
+    "404": "Not Found",
+    "405": "Method Not Allowed",
+    "408": "Request Timeout",
+    "413": "Payload Too Large",
+    "429": "Too Many Requests",
+    "500": "Internal Server Error",
+    "501": "Not Implemented",
+    "502": "Bad Gateway",
+    "503": "Service Unavailable"
+}
+
+// ---------------------------------------------------------------------------
+// The small helpers
+// ---------------------------------------------------------------------------
+
+// The status text of a status code.
+export fn status_text(status: int) -> string {
+    let key = str(status)
+    if STATUS_TEXT.has(key) {
+        return STATUS_TEXT.get(key)
+    }
+    return "Unknown"
+}
+
+// Escape the text, so it is safe inside HTML.
+export fn escape_html(text: string) -> string {
+    var out = text.replace("&", "&amp;")
+    out = out.replace("<", "&lt;")
+    out = out.replace(">", "&gt;")
+    out = out.replace("\"", "&quot;")
+    out = out.replace("'", "&#39;")
+    return out
+}
+
+// Mark the text as safe HTML. The templates do not escape it.
+export fn raw(text: string) -> any {
+    return { "__raw": true, "value": text }
+}
+
+// The query string as a dictionary.
+export fn parse_query(text: string) -> any {
+    let result = {}
+    if text == "" {
+        return result
+    }
+    for part in text.split("&") {
+        if part == "" {
+            continue
+        }
+        let mark = part.index_of("=")
+        if mark < 0 {
+            result[url_decode(part)] = ""
+        } else {
+            let name = url_decode(part.slice(0, mark))
+            let value = url_decode(part.slice(mark + 1, part.len()))
+            result[name] = value
+        }
+    }
+    return result
+}
+
+// The query of a path as a dictionary.
+export fn parse_path(path: string) -> any {
+    let mark = path.index_of("?")
+    if mark < 0 {
+        return { "path": path, "query": {} }
+    }
+    return {
+        "path": path.slice(0, mark),
+        "query": parse_query(path.slice(mark + 1, path.len()))
+    }
+}
+
+// The hexadecimal form of a number, in lower case.
+export fn to_hex(value: int) -> string {
+    if value == 0 {
+        return "0"
+    }
+    let digits = "0123456789abcdef"
+    var rest = value
+    var out = ""
+    while rest > 0 {
+        out = digits[rest % 16] + out
+        rest = rest / 16
+    }
+    return out
+}
+
+// The value of a header, whatever the case of its name is.
+export fn header_value(headers: any, name: string) -> any {
+    if headers == null {
+        return null
+    }
+    if headers.has(name) {
+        return headers.get(name)
+    }
+    let lower = name.lower()
+    for key in headers.keys() {
+        if key.lower() == lower {
+            return headers.get(key)
+        }
+    }
+    return null
+}
+
+// The index of a byte list inside another byte list, or -1.
+export fn index_of_bytes(haystack: any, needle: any) -> int {
+    if needle.len() == 0 {
+        return 0
+    }
+    var start = 0
+    let limit = haystack.len() - needle.len()
+    while start <= limit {
+        var offset = 0
+        var same = true
+        while offset < needle.len() {
+            if haystack[start + offset] != needle[offset] {
+                same = false
+                break
+            }
+            offset = offset + 1
+        }
+        if same {
+            return start
+        }
+        start = start + 1
+    }
+    return -1
+}
+
+// ---------------------------------------------------------------------------
+// The requests and the responses
+// ---------------------------------------------------------------------------
+
+// Build a request.
+export fn request(method: string, path: string, body: string, headers: any) -> any {
+    let clean = {}
+    for key in headers.keys() {
+        clean[key.lower()] = headers.get(key)
+    }
+    let parts = parse_path(path)
+    return {
+        "method": method.upper(),
+        "path": parts["path"],
+        "query": parts["query"],
+        "params": {},
+        "headers": clean,
+        "body": body
+    }
+}
+
+// Build a response.
+export fn response(status: int, body: string, headers: any) -> any {
+    return { "status": status, "body": body, "headers": headers }
+}
+
+// A response with a plain text body.
+export fn text(body: string) -> any {
+    return {
+        "status": 200,
+        "body": body,
+        "headers": { "Content-Type": "text/plain; charset=utf-8" }
+    }
+}
+
+// A response with an HTML body.
+export fn page(body: string) -> any {
+    return {
+        "status": 200,
+        "body": body,
+        "headers": { "Content-Type": "text/html; charset=utf-8" }
+    }
+}
+
+// A response with a JSON body.
+export fn json(value: any) -> any {
+    return {
+        "status": 200,
+        "body": json_stringify(value),
+        "headers": { "Content-Type": "application/json" }
+    }
+}
+
+// A response that sends the browser somewhere else.
+export fn redirect(location: string) -> any {
+    return { "status": 302, "body": "", "headers": { "Location": location } }
+}
+
+// A response that is sent in pieces, with the chunked encoding.
+//
+// The length of the body is not known when the head is written, so the
+// body is sent as a series of chunks and the last one has the length
+// zero.
+export fn chunked(pieces: any) -> any {
+    return { "status": 200, "body": null, "headers": {}, "pieces": pieces }
+}
+
+// ---------------------------------------------------------------------------
+// The templates
+// ---------------------------------------------------------------------------
+
+// Fill a template. The name in {{ name }} is replaced by the value of the
+// context. The value is escaped, unless raw() was used for it.
+export fn html(template: string, context: any) -> string {
+    var out = ""
+    var rest = template
+    while true {
+        let open = rest.index_of("{{")
+        if open < 0 {
+            out = out + rest
+            break
+        }
+        out = out + rest.slice(0, open)
+        let after = rest.slice(open + 2, rest.len())
+        let close = after.index_of("}}")
+        if close < 0 {
+            out = out + rest
+            break
+        }
+        let name = after.slice(0, close).trim()
+        var piece = ""
+        if context.has(name) {
+            let value = context.get(name)
+            if value != null {
+                if type_of(value) == "dict" and value.get("__raw") == true {
+                    piece = str(value.get("value"))
+                } else {
+                    piece = escape_html(str(value))
+                }
+            }
+        }
+        out = out + piece
+        rest = after.slice(close + 2, after.len())
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// The router
+// ---------------------------------------------------------------------------
+
+// A new router.
+export fn Router() -> any {
+    return { "routes": [] }
+}
+
+// Add a route. The path can hold a name (":id") or a tail ("*rest").
+export fn route(router: any, method: string, path: string, handler: any) {
+    router["routes"].push({
+        "method": method.upper(),
+        "path": path,
+        "handler": handler
+    })
+}
+
+// Add a route for the GET method.
+export fn get(router: any, path: string, handler: any) {
+    route(router, "GET", path, handler)
+}
+
+// Add a route for the POST method.
+export fn post(router: any, path: string, handler: any) {
+    route(router, "POST", path, handler)
+}
+
+// Add a route for the PUT method.
+export fn put(router: any, path: string, handler: any) {
+    route(router, "PUT", path, handler)
+}
+
+// Add a route for the DELETE method.
+export fn delete(router: any, path: string, handler: any) {
+    route(router, "DELETE", path, handler)
+}
+
+// Add a route for the PATCH method.
+export fn patch(router: any, path: string, handler: any) {
+    route(router, "PATCH", path, handler)
+}
+
+// Match a path against a pattern. The result is the names of the path, or
+// null when the path does not match.
+export fn match_path(pattern: string, path: string) -> any {
+    let params = {}
+    let pattern_parts = pattern.split("/")
+    let path_parts = path.split("/")
+    var index = 0
+    while index < pattern_parts.len() {
+        let part = pattern_parts[index]
+        if part.starts_with("*") {
+            let rest = []
+            var j = index
+            while j < path_parts.len() {
+                rest.push(path_parts[j])
+                j = j + 1
+            }
+            params[part.slice(1, part.len())] = rest.join("/")
+            return params
+        }
+        if index >= path_parts.len() {
+            return null
+        }
+        if part.starts_with(":") {
+            params[part.slice(1, part.len())] = url_decode(path_parts[index])
+        } else if part != path_parts[index] {
+            return null
+        }
+        index = index + 1
+    }
+    if path_parts.len() != pattern_parts.len() {
+        return null
+    }
+    return params
+}
+
+// Turn what a handler returned into a response.
+fn to_response(result: any) -> any {
+    if type_of(result) == "string" {
+        return page(result)
+    }
+    if type_of(result) == "dict" {
+        if !result.has("status") {
+            result["status"] = 200
+        }
+        if !result.has("body") {
+            result["body"] = ""
+        }
+        if !result.has("headers") {
+            result["headers"] = {}
+        }
+        return result
+    }
+    return page(str(result))
+}
+
+// Let the router answer a request.
+export fn handle(router: any, method: string, path: string, body: string, headers: any) -> any {
+    let req = request(method, path, body, headers)
+    for entry in router["routes"] {
+        if entry["method"] != req["method"] {
+            continue
+        }
+        let params = match_path(entry["path"], req["path"])
+        if params == null {
+            continue
+        }
+        req["params"] = params
+        return to_response(entry["handler"](req))
+    }
+    return {
+        "status": 404,
+        "body": "not found",
+        "headers": { "Content-Type": "text/plain; charset=utf-8" }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The HTTP messages
+// ---------------------------------------------------------------------------
+
+// Read the head of a request. The result has the method, the path and the
+// headers.
+export fn parse_head(head: string) -> any {
+    let lines = head.split("\r\n")
+    let start = lines[0].split(" ")
+    if start.len() < 2 {
+        return null
+    }
+    var version = "HTTP/1.1"
+    if start.len() > 2 {
+        version = start[2]
+    }
+    let headers = {}
+    var index = 1
+    while index < lines.len() {
+        let line = lines[index]
+        let colon = line.index_of(":")
+        if colon > 0 {
+            let name = line.slice(0, colon).trim().lower()
+            headers[name] = line.slice(colon + 1, line.len()).trim()
+        }
+        index = index + 1
+    }
+    return {
+        "method": start[0],
+        "path": start[1],
+        "version": version,
+        "headers": headers
+    }
+}
+
+// Build the bytes of a response.
+//
+// A response with pieces is sent with the chunked encoding, and a
+// response that is not keep-alive closes the connection.
+export fn build_response(response: any, keep_alive: bool = false) -> any {
+    var body = response["body"]
+    if body == null {
+        body = ""
+    }
+    let body_bytes = utf8_bytes(str(body))
+    let status = response["status"]
+    var head = "HTTP/1.1 " + str(status) + " " + status_text(status) + "\r\n"
+    let headers = response["headers"]
+    if headers != null {
+        for key in headers.keys() {
+            head = head + key + ": " + str(headers.get(key)) + "\r\n"
+        }
+    }
+    if response.has("pieces") {
+        head = head + "Transfer-Encoding: chunked\r\n"
+    } else {
+        head = head + "Content-Length: " + str(body_bytes.len()) + "\r\n"
+    }
+    if header_value(headers, "connection") == null {
+        if keep_alive {
+            head = head + "Connection: keep-alive\r\n\r\n"
+        } else {
+            head = head + "Connection: close\r\n\r\n"
+        }
+    } else {
+        head = head + "\r\n"
+    }
+    var out = utf8_bytes(head)
+    if response.has("pieces") {
+        for piece in response["pieces"] {
+            let data = utf8_bytes(str(piece))
+            for byte in utf8_bytes(to_hex(data.len())) {
+                out.push(byte)
+            }
+            out.push(13)
+            out.push(10)
+            for byte in data {
+                out.push(byte)
+            }
+            out.push(13)
+            out.push(10)
+        }
+        out.push(48)
+        out.push(13)
+        out.push(10)
+        out.push(13)
+        out.push(10)
+        return out
+    }
+    for byte in body_bytes {
+        out.push(byte)
+    }
+    return out
+}
+
+// The length of the body of a request, or zero.
+export fn content_length(headers: any) -> int {
+    if !headers.has("content-length") {
+        return 0
+    }
+    let text = headers.get("content-length")
+    let number = int(text)
+    if number < 0 {
+        return 0
+    }
+    return number
+}
+
+// ---------------------------------------------------------------------------
+// The websocket
+// ---------------------------------------------------------------------------
+
+// The value of the Sec-WebSocket-Accept header.
+export fn websocket_accept(key: string) -> string {
+    return base64_encode(sha1(key + WS_GUID))
+}
+
+// The bytes of a websocket frame.
+export fn ws_frame(payload: string, opcode: int) -> any {
+    let data = utf8_bytes(payload)
+    let frame = []
+    frame.push(128 + opcode)
+    let length = data.len()
+    if length < 126 {
+        frame.push(length)
+    } else if length < 65536 {
+        frame.push(126)
+        frame.push(floor(length / 256) % 256)
+        frame.push(length % 256)
+    } else {
+        frame.push(127)
+        frame.push(0)
+        frame.push(0)
+        frame.push(0)
+        frame.push(0)
+        frame.push(floor(length / 16777216) % 256)
+        frame.push(floor(length / 65536) % 256)
+        frame.push(floor(length / 256) % 256)
+        frame.push(length % 256)
+    }
+    for byte in data {
+        frame.push(byte)
+    }
+    return frame
+}
+
+// The exclusive or of two bytes. The language has the bit operators, so
+// this is one operation.
+export fn xor_byte(a: int, b: int) -> int {
+    return a ^ b
+}
+
+// Read a websocket frame. The result has the opcode, the payload and the
+// number of the bytes that the frame took.
+export fn ws_parse(data: any, offset: int) -> any {
+    if data.len() < offset + 2 {
+        return null
+    }
+    let first = data[offset]
+    let second = data[offset + 1]
+    let opcode = first % 16
+    let masked = second >= 128
+    var length = second % 128
+    var cursor = offset + 2
+    if length == 126 {
+        if data.len() < cursor + 2 {
+            return null
+        }
+        length = data[cursor] * 256 + data[cursor + 1]
+        cursor = cursor + 2
+    } else if length == 127 {
+        if data.len() < cursor + 8 {
+            return null
+        }
+        length = 0
+        var index = 0
+        while index < 8 {
+            length = length * 256 + data[cursor + index]
+            index = index + 1
+        }
+        cursor = cursor + 8
+    }
+    var mask = []
+    if masked {
+        if data.len() < cursor + 4 {
+            return null
+        }
+        mask = data.slice(cursor, cursor + 4)
+        cursor = cursor + 4
+    }
+    if data.len() < cursor + length {
+        return null
+    }
+    let payload = []
+    var index = 0
+    while index < length {
+        var byte = data[cursor + index]
+        if masked {
+            byte = xor_byte(byte, mask[index % 4])
+        }
+        payload.push(byte)
+        index = index + 1
+    }
+    return {
+        "opcode": opcode,
+        "payload": payload,
+        "size": cursor + length - offset
+    }
+}
+
+// The handshake of a websocket.
+export fn websocket_handshake(key: string) -> any {
+    let accept = websocket_accept(key)
+    var head = "HTTP/1.1 101 Switching Protocols\r\n"
+    head = head + "Upgrade: websocket\r\n"
+    head = head + "Connection: Upgrade\r\n"
+    head = head + "Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+    return utf8_bytes(head)
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+// A new server for a router.
+export fn serve(router: any, port: int, host: string) -> any {
+    var bind = host
+    if bind == "" {
+        bind = "0.0.0.0"
+    }
+    let listener = tcp_listen(bind, port)
+    return {
+        "router": router,
+        "listener": listener,
+        "host": listener["host"],
+        "port": listener["port"],
+        "running": true
+    }
+}
+
+// Accept a connection. The result is null when the wait timed out.
+fn accept_or_null(server: any) -> any {
+    try {
+        return tcp_accept(server["listener"], 30.0)
+    } catch (err) {
+        return null
+    }
+}
+
+// Read a request from a connection.
+//
+// The buffer holds the bytes that were read but not used yet, so a
+// client that sends two requests in a row is served both. The result
+// holds the request and the bytes that are left over.
+fn read_request(conn: any, buffer: any) -> any {
+    let mark = utf8_bytes("\r\n\r\n")
+    var head_end = index_of_bytes(buffer, mark)
+    while head_end < 0 {
+        let chunk = tcp_read(conn, 65536)
+        if chunk.len() == 0 {
+            return null
+        }
+        for byte in chunk {
+            buffer.push(byte)
+        }
+        head_end = index_of_bytes(buffer, mark)
+        if head_end < 0 and buffer.len() > 1048576 {
+            return null
+        }
+    }
+    let head = utf8_string(buffer.slice(0, head_end))
+    let parsed = parse_head(head)
+    if parsed == null {
+        return null
+    }
+    let length = content_length(parsed["headers"])
+    let body_start = head_end + 4
+    while buffer.len() - body_start < length {
+        let chunk = tcp_read(conn, 65536)
+        if chunk.len() == 0 {
+            break
+        }
+        for byte in chunk {
+            buffer.push(byte)
+        }
+    }
+    let body = buffer.slice(body_start, body_start + length)
+    var rest = []
+    var index = body_start + length
+    while index < buffer.len() {
+        rest.push(buffer[index])
+        index = index + 1
+    }
+    return { "parsed": parsed, "body": utf8_string(body), "rest": rest }
+}
+
+// Answer a request with a response.
+fn write_response(conn: any, response: any, keep_alive: bool) {
+    tcp_write(conn, build_response(response, keep_alive))
+}
+
+// Report whether the connection stays open after the response.
+fn should_keep_alive(parsed: any, response: any) -> bool {
+    let headers = parsed["headers"]
+    let version = parsed["version"]
+    let asked = header_value(headers, "connection")
+    if asked != null and asked.lower() == "close" {
+        return false
+    }
+    if version == "HTTP/1.0" {
+        return asked != null and asked.lower() == "keep-alive"
+    }
+    let own = header_value(response["headers"], "connection")
+    if own != null and own.lower() == "close" {
+        return false
+    }
+    return true
+}
+
+// Serve one connection. The connection is kept open for the next
+// request, until the client asks to close it or the answer says so.
+fn serve_connection(server: any, conn: any) {
+    var buffer = []
+    while true {
+        let request = read_request(conn, buffer)
+        if request == null {
+            tcp_close(conn)
+            return
+        }
+        buffer = request["rest"]
+        let parsed = request["parsed"]
+        let headers = parsed["headers"]
+        let upgrade = headers.get("upgrade")
+        if upgrade != null and upgrade.lower() == "websocket" {
+            websocket_serve(server, conn, parsed)
+            return
+        }
+        let response = handle(
+            server["router"],
+            parsed["method"],
+            parsed["path"],
+            request["body"],
+            headers
+        )
+        let keep_alive = should_keep_alive(parsed, response)
+        write_response(conn, response, keep_alive)
+        if !keep_alive {
+            tcp_close(conn)
+            return
+        }
+    }
+}
+
+// Serve the requests of a websocket.
+fn websocket_serve(server: any, conn: any, parsed: any) {
+    let key = parsed["headers"].get("sec-websocket-key")
+    if key == null {
+        tcp_close(conn)
+        return
+    }
+    tcp_write(conn, websocket_handshake(key))
+    var buffer = []
+    while true {
+        let frame = ws_parse(buffer, 0)
+        if frame == null {
+            let chunk = tcp_read(conn, 65536)
+            if chunk.len() == 0 {
+                break
+            }
+            for byte in chunk {
+                buffer.push(byte)
+            }
+            continue
+        }
+        let payload = utf8_string(frame["payload"])
+        if frame["opcode"] == 8 {
+            break
+        }
+        if frame["opcode"] == 9 {
+            tcp_write(conn, ws_frame(payload, 10))
+        } else {
+            let reply = websocket_message(server, parsed, payload)
+            if reply != null {
+                tcp_write(conn, ws_frame(str(reply), 1))
+            }
+        }
+        var rest = []
+        var index = frame["size"]
+        while index < buffer.len() {
+            rest.push(buffer[index])
+            index = index + 1
+        }
+        buffer = rest
+    }
+    tcp_close(conn)
+}
+
+// The answer of a websocket message. The server can hold a route for
+// "/ws"; the route gets the message and returns the answer.
+fn websocket_message(server: any, parsed: any, payload: string) -> any {
+    let router = server["router"]
+    for entry in router["routes"] {
+        if entry["path"] != "/ws" {
+            continue
+        }
+        let req = request("WS", parsed["path"], payload, parsed["headers"])
+        return entry["handler"](req)
+    }
+    return null
+}
+
+// Serve the requests. It never returns.
+export fn serve_forever(server: any) {
+    while server["running"] {
+        let conn = accept_or_null(server)
+        if conn == null {
+            continue
+        }
+        spawn(fn () { serve_connection(server, conn) })
+    }
+}
+
+// Stop the server.
+export fn stop(server: any) {
+    server["running"] = false
+    tcp_close(server["listener"])
+}
+
+// ---------------------------------------------------------------------------
+// The proxy
+// ---------------------------------------------------------------------------
+
+// Forward a request to another server.
+export fn proxy_request(target: string, req: any) -> any {
+    let url = target + req["path"]
+    let headers = {}
+    for key in req["headers"].keys() {
+        headers[key] = req["headers"].get(key)
+    }
+    var result = null
+    if req["method"] == "GET" {
+        result = http_get(url, headers, 30.0)
+    } else {
+        result = http_post(url, headers, req["body"], 30.0)
+    }
+    if result == null {
+        return { "status": 502, "body": "bad gateway", "headers": {} }
+    }
+    let out_headers = {}
+    let reply = result.get("headers")
+    if reply != null {
+        for key in reply.keys() {
+            let name = key.lower()
+            if name == "content-length" or name == "transfer-encoding" {
+                continue
+            }
+            out_headers[key] = reply.get(key)
+        }
+    }
+    return {
+        "status": result.get("status"),
+        "body": result.get("body"),
+        "headers": out_headers
+    }
+}
+
+// Forward every path that starts with the prefix to another server.
+export fn proxy(router: any, prefix: string, target: string) {
+    route(router, "GET", prefix + "/*rest", fn (req) {
+        return proxy_request(target, req)
+    })
+    route(router, "POST", prefix + "/*rest", fn (req) {
+        return proxy_request(target, req)
+    })
+}

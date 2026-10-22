@@ -1,0 +1,221 @@
+// bun:sec — the security layer.
+//
+// A capability manifest says what a piece of code may do. The runtime
+// checks the manifest before every network call, every file access and
+// every process spawn, so a sandbox is a rule that the runtime keeps and
+// not a promise in the documentation.
+//
+// A manifest grants, it does not forbid. A capability that is not named
+// is not allowed.
+
+// ---------------------------------------------------------------------------
+// The manifest
+// ---------------------------------------------------------------------------
+
+// Build a capability manifest.
+//
+// The manifest is a dictionary with four keys:
+//
+//   "net"   the hosts the code may reach
+//   "fs"    the paths the code may touch
+//   "exec"  true when the code may start a process
+//   "clock" true when the code may read the clock
+export fn capability(manifest: any) -> any {
+    if type_of(manifest) != "dict" {
+        throw "capability() expects a dict"
+    }
+    var policy = { "net": [], "fs": [], "exec": false, "clock": false }
+    if manifest.has("net") {
+        policy.set("net", string_list(manifest.get("net"), "net"))
+    }
+    if manifest.has("fs") {
+        policy.set("fs", string_list(manifest.get("fs"), "fs"))
+    }
+    if manifest.has("exec") {
+        policy.set("exec", manifest.get("exec") == true)
+    }
+    if manifest.has("clock") {
+        policy.set("clock", manifest.get("clock") == true)
+    }
+    return policy
+}
+
+fn string_list(value: any, name: string) -> any {
+    if type_of(value) == "string" {
+        return [value]
+    }
+    if type_of(value) != "array" {
+        throw "capability() expects a list of strings for '" + name + "'"
+    }
+    var result = []
+    for item in value {
+        if type_of(item) != "string" {
+            throw "capability() expects a list of strings for '" + name + "'"
+        }
+        result.push(item)
+    }
+    return result
+}
+
+// Run a closure under a capability manifest.
+//
+// The manifest is removed when the closure returns, and also when it
+// fails, so a sandbox never outlives the code it was written for.
+export fn sandbox(policy: any, action: any) -> any {
+    if type_of(policy) != "dict" {
+        throw "sandbox() expects a capability"
+    }
+    if type_of(action) != "fn" {
+        throw "sandbox() expects a function"
+    }
+    sandbox_enter(policy)
+    var result = null
+    var failed = false
+    try {
+        result = action()
+    } catch e {
+        failed = true
+        sandbox_exit()
+        throw e
+    }
+    sandbox_exit()
+    if failed {
+        throw "sandbox() failed"
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+
+// The patterns that look like a secret.
+//
+// The patterns are deliberately narrow. A redactor that removes too much
+// is a redactor that hides the bug you are looking for.
+let REDACTED = "[redacted]"
+
+// The start of a key that looks like an OpenAI style API key.
+fn is_api_key_start(text: string, index: int) -> bool {
+    if index + 3 > text.len() {
+        return false
+    }
+    return text.slice(index, index + 3) == "sk-"
+}
+
+// The start of an AWS access key id.
+fn is_aws_key_start(text: string, index: int) -> bool {
+    if index + 4 > text.len() {
+        return false
+    }
+    return text.slice(index, index + 4) == "AKIA"
+}
+
+// The start of a bearer token.
+fn is_bearer_start(text: string, index: int) -> bool {
+    if index + 7 > text.len() {
+        return false
+    }
+    return text.slice(index, index + 7) == "Bearer "
+}
+
+// A private key block.
+fn is_private_key_start(text: string, index: int) -> bool {
+    if index + 11 > text.len() {
+        return false
+    }
+    let head = text.slice(index, index + 11)
+    if head != "-----BEGIN " {
+        return false
+    }
+    return text.contains("PRIVATE KEY")
+}
+
+// The end of a run of characters that can be part of a secret.
+fn secret_end(text: string, index: int) -> int {
+    var end = index
+    while end < text.len() {
+        let ch = text[end]
+        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r" or ch == "\"" {
+            break
+        }
+        end = end + 1
+    }
+    return end
+}
+
+// Remove the values that look like secrets from a text.
+//
+// The result is safe to put in a log: the shape of an API key, an AWS
+// key, a bearer token and a private key block are replaced.
+export fn redact(text: any) -> string {
+    if type_of(text) != "string" {
+        throw "redact() expects a string"
+    }
+    var result = ""
+    var index = 0
+    while index < text.len() {
+        var replaced = false
+        if is_api_key_start(text, index) or is_aws_key_start(text, index) {
+            let end = secret_end(text, index)
+            result = result + REDACTED
+            index = end
+            replaced = true
+        }
+        if !replaced and is_bearer_start(text, index) {
+            let end = secret_end(text, index + 7)
+            result = result + "Bearer " + REDACTED
+            index = end
+            replaced = true
+        }
+        if !replaced and is_private_key_start(text, index) {
+            let stop = text.index_of("-----END")
+            if stop < 0 {
+                result = result + REDACTED
+                index = text.len()
+                replaced = true
+            } else {
+                var end = text.index_of("-----", stop + 5)
+                if end < 0 {
+                    end = text.len()
+                } else {
+                    end = end + 5
+                }
+                result = result + REDACTED
+                index = end
+                replaced = true
+            }
+        }
+        if !replaced {
+            result = result + text[index]
+            index = index + 1
+        }
+    }
+    return result
+}
+
+// Redact a value of any shape.
+//
+// A string is redacted as a string. A list is redacted element by
+// element. A dictionary is redacted value by value, and the keys are
+// left alone.
+export fn redact_value(value: any) -> any {
+    if type_of(value) == "string" {
+        return redact(value)
+    }
+    if type_of(value) == "array" {
+        var result = []
+        for item in value {
+            result.push(redact_value(item))
+        }
+        return result
+    }
+    if type_of(value) == "dict" {
+        var result = {}
+        for key in value.keys() {
+            result.set(key, redact_value(value.get(key)))
+        }
+        return result
+    }
+    return value
+}

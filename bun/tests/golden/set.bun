@@ -1,0 +1,23 @@
+// The set of the language: the values that are not equal to each other.
+let s = set([1, 2, 3, 2])
+print(s.len())
+print(s.contains(2))
+print(s.contains(9))
+
+s.add(4)
+s.remove(1)
+print(s.values().join(","))
+
+let other = set(["a", "b"])
+print((s | other).len())
+print((s & other).len())
+print((s - other).values().join(","))
+
+print(type_of(s))
+print(s)
+
+var total = 0
+for value in s {
+    total = total + value
+}
+print(total)

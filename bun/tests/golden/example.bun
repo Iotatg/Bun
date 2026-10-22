@@ -1,0 +1,17 @@
+// Converted from the example() driver in
+// bun-runtime/misctools/unicode-generator.ts (range truncated to 1024).
+import { generate, write_zig } from "../../tools/unicode/unicode_generator"
+
+var ctx = {}
+ctx["get"] = fn(cp) {
+    return "Lu"
+}
+ctx["eql"] = fn(a, b) {
+    return a == b
+}
+
+let tables = generate(ctx, 1024)
+let code = write_zig("unicode_categories", tables, fn(elem) {
+    return "\"" + elem + "\""
+})
+print(code)

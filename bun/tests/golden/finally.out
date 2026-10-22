@@ -1,0 +1,7 @@
+try,catch boom,finally
+no error
+finally only
+value
+try,catch boom,finally,return finally,body 1,loop finally 1,loop finally 2,loop finally 3
+try,catch boom,finally,return finally,body 1,loop finally 1,loop finally 2,loop finally 3,inner finally,outer catch inner,outer finally
+caught outer

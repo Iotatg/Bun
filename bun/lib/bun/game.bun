@@ -1,0 +1,568 @@
+// bun:game — the game engine core.
+//
+// The mathematics is plain arithmetic on lists, so a vector is a list and
+// a shape is a dictionary. The simulation advances in steps of a fixed
+// size, so a replay of the same inputs is the same every time: a
+// variable step would make the physics depend on how fast the machine
+// happens to be.
+//
+// The entity storage is a struct of arrays: the data of the entities
+// lives in flat lists, one list per field, and an entity is an index into
+// those lists. A tight loop over the entities is then a tight loop over a
+// flat list.
+
+let math = ffi_load("math")
+let sqrt = math["sqrt"]
+let sin = math["sin"]
+let cos = math["cos"]
+let atan2 = math["atan2"]
+let fabs = math["fabs"]
+
+// The step of the simulation, in seconds.
+let FIXED_STEP = 1.0 / 60.0
+
+// ---------------------------------------------------------------------------
+// Vectors
+// ---------------------------------------------------------------------------
+
+export fn vec2(x: float, y: float) -> any {
+    return [x, y]
+}
+
+export fn vec3(x: float, y: float, z: float) -> any {
+    return [x, y, z]
+}
+
+export fn vec4(x: float, y: float, z: float, w: float) -> any {
+    return [x, y, z, w]
+}
+
+export fn vec2_add(a: any, b: any) -> any {
+    return [a[0] + b[0], a[1] + b[1]]
+}
+
+export fn vec2_sub(a: any, b: any) -> any {
+    return [a[0] - b[0], a[1] - b[1]]
+}
+
+export fn vec2_scale(a: any, factor: float) -> any {
+    return [a[0] * factor, a[1] * factor]
+}
+
+export fn vec2_dot(a: any, b: any) -> float {
+    return a[0] * b[0] + a[1] * b[1]
+}
+
+export fn vec2_cross(a: any, b: any) -> float {
+    return a[0] * b[1] - a[1] * b[0]
+}
+
+export fn vec2_len(a: any) -> float {
+    return sqrt(a[0] * a[0] + a[1] * a[1])
+}
+
+export fn vec2_len_squared(a: any) -> float {
+    return a[0] * a[0] + a[1] * a[1]
+}
+
+export fn vec2_dist(a: any, b: any) -> float {
+    let dx = a[0] - b[0]
+    let dy = a[1] - b[1]
+    return sqrt(dx * dx + dy * dy)
+}
+
+export fn vec2_normalize(a: any) -> any {
+    let length = vec2_len(a)
+    if length == 0.0 {
+        return [0.0, 0.0]
+    }
+    return [a[0] / length, a[1] / length]
+}
+
+export fn vec2_lerp(a: any, b: any, t: float) -> any {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+export fn vec2_rotate(a: any, angle: float) -> any {
+    let c = cos(angle)
+    let s = sin(angle)
+    return [a[0] * c - a[1] * s, a[0] * s + a[1] * c]
+}
+
+export fn vec3_add(a: any, b: any) -> any {
+    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+export fn vec3_sub(a: any, b: any) -> any {
+    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+export fn vec3_scale(a: any, factor: float) -> any {
+    return [a[0] * factor, a[1] * factor, a[2] * factor]
+}
+
+export fn vec3_dot(a: any, b: any) -> float {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+export fn vec3_len(a: any) -> float {
+    return sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+}
+
+export fn vec3_normalize(a: any) -> any {
+    let length = vec3_len(a)
+    if length == 0.0 {
+        return [0.0, 0.0, 0.0]
+    }
+    return [a[0] / length, a[1] / length, a[2] / length]
+}
+
+export fn vec4_add(a: any, b: any) -> any {
+    return [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+}
+
+export fn vec4_scale(a: any, factor: float) -> any {
+    return [a[0] * factor, a[1] * factor, a[2] * factor, a[3] * factor]
+}
+
+// The angle of a vector, in radians.
+export fn vec2_angle(a: any) -> float {
+    return atan2(a[1], a[0])
+}
+
+// ---------------------------------------------------------------------------
+// Rotations
+// ---------------------------------------------------------------------------
+
+// A quaternion, as a list of four numbers.
+export fn quat_identity() -> any {
+    return [0.0, 0.0, 0.0, 1.0]
+}
+
+// A quaternion from an axis and an angle in radians.
+export fn quat_from_axis_angle(axis: any, angle: float) -> any {
+    let half = angle / 2.0
+    let s = sin(half)
+    let length = vec3_len(axis)
+    if length == 0.0 {
+        return quat_identity()
+    }
+    return [axis[0] / length * s, axis[1] / length * s, axis[2] / length * s, cos(half)]
+}
+
+// The product of two quaternions.
+export fn quat_mul(a: any, b: any) -> any {
+    let ax = a[0]
+    let ay = a[1]
+    let az = a[2]
+    let aw = a[3]
+    let bx = b[0]
+    let by = b[1]
+    let bz = b[2]
+    let bw = b[3]
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
+// The quaternion of a 2D rotation, in radians.
+export fn quat_from_angle(angle: float) -> any {
+    let half = angle / 2.0
+    return [0.0, 0.0, sin(half), cos(half)]
+}
+
+// ---------------------------------------------------------------------------
+// Shapes
+// ---------------------------------------------------------------------------
+
+export fn point(x: float, y: float) -> any {
+    return { "kind": "point", "x": x, "y": y }
+}
+
+export fn rect(x: float, y: float, width: float, height: float) -> any {
+    return { "kind": "rect", "x": x, "y": y, "w": width, "h": height }
+}
+
+export fn circle(x: float, y: float, radius: float) -> any {
+    return { "kind": "circle", "x": x, "y": y, "r": radius }
+}
+
+export fn segment(ax: float, ay: float, bx: float, by: float) -> any {
+    return { "kind": "segment", "ax": ax, "ay": ay, "bx": bx, "by": by }
+}
+
+export fn ray(ox: float, oy: float, dx: float, dy: float) -> any {
+    return { "kind": "ray", "ox": ox, "oy": oy, "dx": dx, "dy": dy }
+}
+
+export fn point_in_rect(p: any, r: any) -> bool {
+    return p["x"] >= r["x"] and p["x"] <= r["x"] + r["w"] and
+        p["y"] >= r["y"] and p["y"] <= r["y"] + r["h"]
+}
+
+export fn point_in_circle(p: any, c: any) -> bool {
+    let dx = p["x"] - c["x"]
+    let dy = p["y"] - c["y"]
+    return dx * dx + dy * dy <= c["r"] * c["r"]
+}
+
+export fn rect_overlaps(a: any, b: any) -> bool {
+    if a["x"] + a["w"] < b["x"] {
+        return false
+    }
+    if b["x"] + b["w"] < a["x"] {
+        return false
+    }
+    if a["y"] + a["h"] < b["y"] {
+        return false
+    }
+    if b["y"] + b["h"] < a["y"] {
+        return false
+    }
+    return true
+}
+
+export fn circle_overlaps(a: any, b: any) -> bool {
+    let dx = a["x"] - b["x"]
+    let dy = a["y"] - b["y"]
+    let reach = a["r"] + b["r"]
+    return dx * dx + dy * dy <= reach * reach
+}
+
+export fn rect_circle_overlaps(r: any, c: any) -> bool {
+    // The closest point of the rectangle to the centre of the circle.
+    var closest_x = c["x"]
+    var closest_y = c["y"]
+    if closest_x < r["x"] {
+        closest_x = r["x"]
+    }
+    if closest_x > r["x"] + r["w"] {
+        closest_x = r["x"] + r["w"]
+    }
+    if closest_y < r["y"] {
+        closest_y = r["y"]
+    }
+    if closest_y > r["y"] + r["h"] {
+        closest_y = r["y"] + r["h"]
+    }
+    let dx = closest_x - c["x"]
+    let dy = closest_y - c["y"]
+    return dx * dx + dy * dy <= c["r"] * c["r"]
+}
+
+// Do the two segments cross?
+export fn segment_intersects(a: any, b: any) -> bool {
+    let rx = a["bx"] - a["ax"]
+    let ry = a["by"] - a["ay"]
+    let sx = b["bx"] - b["ax"]
+    let sy = b["by"] - b["ay"]
+    let denominator = rx * sy - ry * sx
+    if denominator == 0.0 {
+        return false
+    }
+    let qpx = b["ax"] - a["ax"]
+    let qpy = b["ay"] - a["ay"]
+    let t = (qpx * sy - qpy * sx) / denominator
+    let u = (qpx * ry - qpy * rx) / denominator
+    return t >= 0.0 and t <= 1.0 and u >= 0.0 and u <= 1.0
+}
+
+// Does the ray reach the circle?
+export fn ray_circle(r: any, c: any) -> bool {
+    let mx = r["ox"] - c["x"]
+    let my = r["oy"] - c["y"]
+    let a = r["dx"] * r["dx"] + r["dy"] * r["dy"]
+    if a == 0.0 {
+        return mx * mx + my * my <= c["r"] * c["r"]
+    }
+    let b = 2.0 * (mx * r["dx"] + my * r["dy"])
+    let cc = mx * mx + my * my - c["r"] * c["r"]
+    let discriminant = b * b - 4.0 * a * cc
+    if discriminant < 0.0 {
+        return false
+    }
+    let root = sqrt(discriminant)
+    let first = (-b - root) / (2.0 * a)
+    let second = (-b + root) / (2.0 * a)
+    return first >= 0.0 or second >= 0.0
+}
+
+// ---------------------------------------------------------------------------
+// Entities
+// ---------------------------------------------------------------------------
+
+// The entity store.
+//
+// The data lives in one list per field, and an entity is an index into
+// those lists. A dead entity is put on a free list, and the next spawn
+// takes it, so the lists do not grow forever.
+export fn Entities() -> any {
+    return { "columns": {}, "free": [], "dead": [], "count": 0, "alive": 0 }
+}
+
+// Add a new entity and return its id.
+export fn spawn_entity(entities: any) -> int {
+    if entities["free"].len() > 0 {
+        let id = entities["free"].shift()
+        entities["dead"][id] = false
+        entities["alive"] = entities["alive"] + 1
+        return id
+    }
+    let id = entities["count"]
+    entities["count"] = entities["count"] + 1
+    entities["alive"] = entities["alive"] + 1
+    entities["dead"].push(false)
+    return id
+}
+
+// Is the entity alive?
+export fn entity_alive(entities: any, id: int) -> bool {
+    if id < 0 or id >= entities["count"] {
+        return false
+    }
+    if id >= entities["dead"].len() {
+        return true
+    }
+    return entities["dead"][id] == false
+}
+
+// The number of the living entities.
+export fn entity_count(entities: any) -> int {
+    return entities["alive"]
+}
+
+// Set a field of an entity.
+export fn entity_set(entities: any, id: int, field: string, value: any) {
+    var columns = entities["columns"]
+    if !columns.has(field) {
+        var fresh = []
+        var i = 0
+        while i < entities["count"] {
+            fresh.push(false)
+            i = i + 1
+        }
+        columns.set(field, fresh)
+    }
+    let column = columns.get(field)
+    while column.len() <= id {
+        column.push(false)
+    }
+    column[id] = value
+}
+
+// The value of a field of an entity.
+export fn entity_get(entities: any, id: int, field: string) -> any {
+    let columns = entities["columns"]
+    if !columns.has(field) {
+        return null
+    }
+    let column = columns.get(field)
+    if id < 0 or id >= column.len() {
+        return null
+    }
+    return column[id]
+}
+
+// Kill an entity. The id can be used again.
+export fn kill_entity(entities: any, id: int) {
+    if !entity_alive(entities, id) {
+        return
+    }
+    entities["alive"] = entities["alive"] - 1
+    entities["dead"][id] = true
+    entities["free"].push(id)
+}
+
+// The ids of the living entities.
+export fn entity_ids(entities: any) -> any {
+    var result = []
+    for id in range(0, entities["count"]) {
+        if entity_alive(entities, id) {
+            result.push(id)
+        }
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The broadphase
+// ---------------------------------------------------------------------------
+
+// A uniform grid.
+//
+// The grid divides the world into cells of a fixed size and remembers
+// which entity is in which cell, so the collision test only looks at the
+// entities that can possibly touch.
+export fn Grid(width: float, height: float, cell: float) -> any {
+    return {
+        "width": width,
+        "height": height,
+        "cell": cell,
+        "columns": width / cell,
+        "rows": height / cell,
+        "buckets": {},
+    }
+}
+
+fn bucket_key(grid: any, column: int, row: int) -> string {
+    return str(column) + ":" + str(row)
+}
+
+fn cell_of(grid: any, value: float, limit: float, count: int) -> int {
+    let index = int(value / grid["cell"])
+    if index < 0 {
+        return 0
+    }
+    if index >= count {
+        return count - 1
+    }
+    return index
+}
+
+// Put an entity into the grid.
+export fn grid_insert(grid: any, id: int, x: float, y: float) {
+    let column = cell_of(grid, x, grid["width"], int(grid["columns"]))
+    let row = cell_of(grid, y, grid["height"], int(grid["rows"]))
+    let key = bucket_key(grid, column, row)
+    if !grid["buckets"].has(key) {
+        grid["buckets"].set(key, [])
+    }
+    let bucket = grid["buckets"].get(key)
+    bucket.push(id)
+}
+
+// The entities near a point.
+export fn grid_query(grid: any, x: float, y: float, radius: float) -> any {
+    let first_column = cell_of(grid, x - radius, grid["width"], int(grid["columns"]))
+    let last_column = cell_of(grid, x + radius, grid["width"], int(grid["columns"]))
+    let first_row = cell_of(grid, y - radius, grid["height"], int(grid["rows"]))
+    let last_row = cell_of(grid, y + radius, grid["height"], int(grid["rows"]))
+    var seen = {}
+    var result = []
+    var row = first_row
+    while row <= last_row {
+        var column = first_column
+        while column <= last_column {
+            let key = bucket_key(grid, column, row)
+            if grid["buckets"].has(key) {
+                for id in grid["buckets"].get(key) {
+                    let name = str(id)
+                    if !seen.has(name) {
+                        seen.set(name, true)
+                        result.push(id)
+                    }
+                }
+            }
+            column = column + 1
+        }
+        row = row + 1
+    }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// The loop
+// ---------------------------------------------------------------------------
+
+// The game.
+//
+// The simulation advances in steps of FIXED_STEP seconds. The time of a
+// frame goes into an accumulator, and the simulation runs as many whole
+// steps as the accumulator holds. The remainder is kept for the next
+// frame, so no time is lost and the step size never changes.
+export fn Game(settings: any) -> any {
+    if type_of(settings) != "dict" {
+        throw "Game() expects a dict of settings"
+    }
+    return {
+        "width": 800.0,
+        "height": 600.0,
+        "step": FIXED_STEP,
+        "accumulator": 0.0,
+        "time": 0.0,
+        "frames": 0,
+        "running": false,
+        "update": null,
+        "draw": null,
+    }
+}
+
+// The size of the game window.
+export fn game_size(game: any) -> any {
+    return [game["width"], game["height"]]
+}
+
+// The callback that advances the simulation.
+export fn on_update(game: any, callback: any) {
+    if type_of(callback) != "fn" {
+        throw "on_update() expects a function"
+    }
+    game["update"] = callback
+}
+
+// The callback that draws a frame.
+export fn on_draw(game: any, callback: any) {
+    if type_of(callback) != "fn" {
+        throw "on_draw() expects a function"
+    }
+    game["draw"] = callback
+}
+
+// Advance the simulation by the steps that the frame time holds.
+//
+// The number of steps that were run is returned.
+export fn advance(game: any, frame_time: float) -> int {
+    if frame_time < 0.0 {
+        frame_time = 0.0
+    }
+    game["accumulator"] = game["accumulator"] + frame_time
+    var steps = 0
+    while game["accumulator"] >= game["step"] {
+        game["accumulator"] = game["accumulator"] - game["step"]
+        game["time"] = game["time"] + game["step"]
+        game["frames"] = game["frames"] + 1
+        steps = steps + 1
+        if game["update"] != null {
+            game["update"](game["step"])
+        }
+    }
+    return steps
+}
+
+// Draw a frame.
+export fn draw(game: any) {
+    if game["draw"] != null {
+        game["draw"](game)
+    }
+}
+
+// Run the game.
+//
+// The number of frames is the number of frames to run. A number of zero
+// or less runs until stop() is called.
+export fn run(game: any, frames: int) {
+    game["running"] = true
+    var count = 0
+    while game["running"] {
+        if frames > 0 and count >= frames {
+            break
+        }
+        advance(game, game["step"])
+        draw(game)
+        count = count + 1
+    }
+    game["running"] = false
+}
+
+// Stop the game.
+export fn stop(game: any) {
+    game["running"] = false
+}
+
+// The time of the simulation, in seconds.
+export fn game_time(game: any) -> float {
+    return game["time"]
+}

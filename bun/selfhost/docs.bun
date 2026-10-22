@@ -1,0 +1,623 @@
+// Docstrings for the Bun standard library.
+//
+// This file mirrors `bun/docs.py`; the parity suite checks that both
+// registries describe the same symbols with the same content.
+
+export let DOCS = {
+    "abs": {
+        "signature": "abs(value: number) -> number",
+        "summary": "Return the size of a number, without its sign.",
+        "example": "print(abs(-3))\n",
+    },
+    "aes_ctr_crypt": {
+        "signature": "aes_ctr_crypt(data: list, key: list, iv: list) -> list",
+        "summary": "Encrypt data with AES in counter mode.",
+        "details": "The counter is the whole 16 byte block, counted up in big endian. The mode is its own inverse, so the same function both encrypts and decrypts.",
+        "example": "var key = utf8_bytes(\"0123456789abcdef0123456789abcdef\")\nvar iv = utf8_bytes(\"fedcba9876543210\")\nvar data = utf8_bytes(\"0123456789abcdef\")\nprint(utf8_string(aes_ctr_crypt(aes_ctr_crypt(data, key, iv), key, iv)))\n",
+    },
+    "aes_ige_decrypt": {
+        "signature": "aes_ige_decrypt(data: list, key: list, iv: list) -> list",
+        "summary": "Decrypt data with AES in IGE mode.",
+        "details": "The data length has to be a multiple of 16 bytes.",
+        "example": "var key = utf8_bytes(\"0123456789abcdef0123456789abcdef\")\nvar iv = utf8_bytes(\"fedcba9876543210fedcba9876543210\")\nvar data = utf8_bytes(\"0123456789abcdef\")\nprint(utf8_string(aes_ige_decrypt(aes_ige_encrypt(data, key, iv), key, iv)))\n",
+    },
+    "aes_ige_encrypt": {
+        "signature": "aes_ige_encrypt(data: list, key: list, iv: list) -> list",
+        "summary": "Encrypt data with AES in IGE mode.",
+        "details": "The data length has to be a multiple of 16 bytes.",
+        "example": "var key = utf8_bytes(\"0123456789abcdef0123456789abcdef\")\nvar iv = utf8_bytes(\"fedcba9876543210fedcba9876543210\")\nvar data = utf8_bytes(\"0123456789abcdef\")\nprint(aes_ige_encrypt(data, key, iv).len())\n",
+    },
+    "all": {
+        "signature": "all(values: list) -> bool",
+        "summary": "Return true when every value of a list is true.",
+        "example": "print(all([1, 1]))\n",
+    },
+    "any": {
+        "signature": "any(values: list) -> bool",
+        "summary": "Return true when at least one value of a list is true.",
+        "example": "print(any([0, 1]))\n",
+    },
+    "append_file": {
+        "signature": "append_file(path: string, data: string)",
+        "summary": "Append text to a file, creating it when needed.",
+        "example": "append_file(\"out.txt\", \"line\\n\")\n",
+    },
+    "args": {
+        "signature": "args() -> list",
+        "summary": "Return the command line arguments of the program.",
+        "details": "The first element is the script path.",
+    },
+    "base64_decode": {
+        "signature": "base64_decode(text: string) -> list",
+        "summary": "Decode base64 text into a list of byte values.",
+    },
+    "base64_encode": {
+        "signature": "base64_encode(data: list) -> string",
+        "summary": "Encode some bytes as base64 text.",
+    },
+    "bigint_add": {
+        "signature": "bigint_add(left: list, right: list) -> list",
+        "summary": "Add two big integers.",
+        "example": "print(bigint_to_int(bigint_add(bigint_from_int(20), bigint_from_int(22))))\n",
+    },
+    "bigint_cmp": {
+        "signature": "bigint_cmp(left: list, right: list) -> int",
+        "summary": "Compare two big integers.",
+        "example": "print(bigint_cmp(bigint_from_int(1), bigint_from_int(2)))\n",
+    },
+    "bigint_div": {
+        "signature": "bigint_div(value: list, divisor: list) -> list",
+        "summary": "Return the quotient of a big integer division.",
+        "example": "print(bigint_to_int(bigint_div(bigint_from_int(22), bigint_from_int(5))))\n",
+    },
+    "bigint_factorize": {
+        "signature": "bigint_factorize(value: list) -> list",
+        "summary": "Return the two factors of a semiprime.",
+        "example": "print(bigint_to_int(bigint_factorize(bigint_from_int(21))[0]))\n",
+    },
+    "bigint_from_bytes": {
+        "signature": "bigint_from_bytes(data: list) -> list",
+        "summary": "Read a big integer from a little endian byte list.",
+        "example": "print(bigint_to_int(bigint_from_bytes([1, 0, 0])))\n",
+    },
+    "bigint_from_int": {
+        "signature": "bigint_from_int(value: int) -> list",
+        "summary": "Convert an integer into a big integer byte list.",
+        "example": "print(bigint_to_int(bigint_from_int(258)))\n",
+    },
+    "bigint_gcd": {
+        "signature": "bigint_gcd(left: list, right: list) -> list",
+        "summary": "Return the greatest common divisor of two big integers.",
+        "example": "print(bigint_to_int(bigint_gcd(bigint_from_int(12), bigint_from_int(18))))\n",
+    },
+    "bigint_mod": {
+        "signature": "bigint_mod(value: list, modulus: list) -> list",
+        "summary": "Return the remainder of a big integer division.",
+        "example": "print(bigint_to_int(bigint_mod(bigint_from_int(22), bigint_from_int(5))))\n",
+    },
+    "bigint_mul": {
+        "signature": "bigint_mul(left: list, right: list) -> list",
+        "summary": "Multiply two big integers.",
+        "example": "print(bigint_to_int(bigint_mul(bigint_from_int(6), bigint_from_int(7))))\n",
+    },
+    "bigint_mul_mod": {
+        "signature": "bigint_mul_mod(left: int, right: int, modulus: int) -> int",
+        "summary": "Multiply two integers modulo a modulus without overflow.",
+        "example": "print(bigint_mul_mod(1000000007, 1000000009, 1000000007))\n",
+    },
+    "bigint_mul_mod_bytes": {
+        "signature": "bigint_mul_mod_bytes(left: list, right: list, modulus: list) -> list",
+        "summary": "Multiply two big integers modulo a modulus.",
+        "example": "print(bigint_mul_mod_bytes(bigint_from_int(3), bigint_from_int(4), bigint_from_int(5)))\n",
+    },
+    "bigint_pow_mod": {
+        "signature": "bigint_pow_mod(base: list, exponent: list, modulus: list) -> list",
+        "summary": "Raise a big integer to a power modulo another big integer.",
+        "example": "print(bigint_to_int(bigint_pow_mod(bigint_from_int(2), bigint_from_int(10), bigint_from_int(1000))))\n",
+    },
+    "bigint_sub": {
+        "signature": "bigint_sub(left: list, right: list) -> list",
+        "summary": "Subtract two big integers.",
+        "example": "print(bigint_to_int(bigint_sub(bigint_from_int(22), bigint_from_int(20))))\n",
+    },
+    "bigint_to_bytes": {
+        "signature": "bigint_to_bytes(value: list, size: int) -> list",
+        "summary": "Write a big integer as a little endian byte list.",
+        "details": "The size argument is optional and pads the result to that many bytes.",
+        "example": "print(bigint_to_bytes(bigint_from_int(258), 4))\n",
+    },
+    "bigint_to_int": {
+        "signature": "bigint_to_int(value: list) -> int",
+        "summary": "Convert a small big integer byte list into an integer.",
+        "example": "print(bigint_to_int(bigint_from_int(258)))\n",
+    },
+    "bool": {
+        "signature": "bool(value: any) -> bool",
+        "summary": "Return the truth of a value: an empty list, an empty string, a zero and a null are false.",
+        "example": "print(bool([]))\n",
+    },
+    "bun:ai": {
+        "signature": "bun:ai",
+        "summary": "The model stack: layers, attention, models, losses, training and tokenisers.",
+        "details": "A model is a dictionary with the weights, the layers and the seed it was trained with. The gradient is the reverse-mode tape of bun:tensor, and the random generator is seeded, so a training run is the same on every machine. The attention and the block of a transformer are layers of this stack, so a transformer trains with one backward pass.",
+        "example": "import { word_tokenizer } from \"bun:ai\"\nlet t = word_tokenizer(\"the cat sat\")\nprint(str(t[\"ids\"].len()))\n",
+    },
+    "bun:game": {
+        "signature": "bun:game",
+        "summary": "The game engine core: vectors, shapes, collisions and the loop.",
+        "details": "The simulation advances in steps of a fixed size, so a replay of the same inputs is the same every time.",
+        "example": "import { vec2, vec2_add } from \"bun:game\"\nprint(str(vec2_add(vec2(1.0, 2.0), vec2(3.0, 4.0))[0]))\n",
+    },
+    "bun:math": {
+        "signature": "bun:math",
+        "summary": "The mathematics of the language: the square root, the exponential, the logarithm, the circle and the rounding.",
+        "details": "The module is written in Bun, so a program that uses the mathematics needs nothing but the language. The argument is made small, a series is summed, and the result is put back together; the answer is right to about fifteen digits.",
+        "example": "import { sqrt, pi } from \"bun:math\"\nprint(sqrt(2.0))\nprint(pi)\n",
+    },
+    "bun:sec": {
+        "signature": "bun:sec",
+        "summary": "The security layer: the capability manifest and the sandbox.",
+        "details": "A manifest grants, it does not forbid. A capability that is not named is not allowed.",
+        "example": "import { capability } from \"bun:sec\"\nlet m = capability({ \"net\": [\"example.com\"] })\nprint(str(m[\"net\"].len()))\n",
+    },
+    "bun:tensor": {
+        "signature": "bun:tensor",
+        "summary": "The numerical core: tensors, matrix products and a tape.",
+        "details": "A tensor is a plain dictionary with a flat list of numbers and a shape. The reductions use a fixed order, so the same tensor gives the same number on every run.",
+        "example": "import { tensor, shape_str } from \"bun:tensor\"\nprint(shape_str(tensor([[1.0, 2.0], [3.0, 4.0]])))\n",
+    },
+    "bun:web": {
+        "signature": "bun:web",
+        "summary": "The web stack: the router, the templates and the HTTP server.",
+        "details": "The value of a template is escaped, so a value that comes from a user can never become markup.",
+        "example": "import { html } from \"bun:web\"\nprint(html(\"<p>{{ name }}</p>\", { \"name\": \"bun\" }))\n",
+    },
+    "bytes_append": {
+        "signature": "bytes_append(data: list, payload: list) -> int",
+        "summary": "Append a list of byte values to another list of byte values.",
+        "details": "The first list grows in place, so the caller keeps the same list. The result holds the number of the bytes that were appended.",
+        "example": "var data = utf8_bytes(\"01\")\nbytes_append(data, utf8_bytes(\"23\"))\nprint(utf8_string(data))\n",
+    },
+    "bytes_slice": {
+        "signature": "bytes_slice(data: list, start: int, end: int) -> list",
+        "summary": "Take a part of a list of byte values.",
+        "details": "The part begins at the start and ends before the end. An end beyond the length of the data is held at the length.",
+        "example": "var data = utf8_bytes(\"0123456789\")\nprint(utf8_string(bytes_slice(data, 2, 5)))\n",
+    },
+    "cancel": {
+        "signature": "cancel(task: dict)",
+        "summary": "Request the cancellation of a task.",
+        "example": "let t = spawn(fn() { return 1 })\ncancel(t)\n",
+    },
+    "chr": {
+        "signature": "chr(code: int) -> string",
+        "summary": "Return the character for a Unicode code point.",
+        "example": "print(chr(65))\n",
+    },
+    "double_from_bits": {
+        "signature": "double_from_bits(bits: int) -> float",
+        "summary": "The number that the bits of a double hold.",
+        "example": "print(double_from_bits(4607182418800017408))\n",
+    },
+    "double_to_bits": {
+        "signature": "double_to_bits(value: float) -> int",
+        "summary": "The bits of a double.",
+        "example": "print(double_to_bits(1.5))\n",
+    },
+    "dump": {
+        "signature": "dump(value: any) -> string",
+        "summary": "Render a value as canonical JSON with sorted keys.",
+        "details": "Secrets are redacted.",
+        "example": "print(dump({\"b\": 1, \"a\": 2}))\n",
+    },
+    "ends_with": {
+        "signature": "ends_with(text: string, suffix: string) -> bool",
+        "summary": "Report whether a string ends with a suffix.",
+        "example": "print(ends_with(\"bun\", \"un\"))\n",
+    },
+    "enumerate": {
+        "signature": "enumerate(values: list) -> list",
+        "summary": "Return the pairs of a list and the numbers of its values.",
+        "example": "print(str(enumerate([\"a\", \"b\"])))\n",
+    },
+    "eval": {
+        "signature": "eval(source: string) -> any",
+        "summary": "Run a piece of Bun source and return the value of its last expression.",
+        "details": "The source is checked before it runs, so a name that does not exist is an error. The source runs in a fresh scope with the builtins available; the variables of the caller are not visible.",
+        "example": "print(eval(\"1 + 1\"))\n",
+    },
+    "exec": {
+        "signature": "exec(command: list, timeout: number) -> dict",
+        "summary": "Run a command and return its status, stdout and stderr.",
+        "details": "The timeout is optional and counts the seconds the command may run.",
+        "example": "var result = exec([\"echo\", \"hi\"], 10)\nprint(result[\"status\"])\n",
+    },
+    "exit": {
+        "signature": "exit(code: int)",
+        "summary": "Stop the program with an exit code.",
+    },
+    "ffi_load": {
+        "signature": "ffi_load(module: string) -> dict",
+        "summary": "Load an allow-listed standard library module for FFI.",
+    },
+    "file_exists": {
+        "signature": "file_exists(path: string) -> bool",
+        "summary": "Report whether a path exists.",
+    },
+    "float": {
+        "signature": "float(value: any) -> float",
+        "summary": "Convert a value to a float.",
+        "example": "print(float(\"1.5\"))\n",
+    },
+    "getenv": {
+        "signature": "getenv(name: string) -> any",
+        "summary": "Return an environment variable, or null when it is unset.",
+    },
+    "getenv_or": {
+        "signature": "getenv_or(name: string, fallback: string) -> string",
+        "summary": "Return an environment variable, or a fallback value.",
+    },
+    "gzip_decompress": {
+        "signature": "gzip_decompress(data: list) -> list",
+        "summary": "Open a gzip stream and return its bytes.",
+    },
+    "h2_close": {
+        "signature": "h2_close(connection: dict) -> bool",
+        "summary": "Close an HTTP/2 connection.",
+    },
+    "h2_connect": {
+        "signature": "h2_connect(host: string, port: int, sni: string, alpn: list) -> dict",
+        "summary": "Open an HTTP/2 connection over TLS.",
+        "details": "The sni and alpn arguments are optional. The connection negotiates the h2 protocol by default and returns a handle used by h2_request.",
+    },
+    "h2_request": {
+        "signature": "h2_request(connection: dict, method: string, path: string, payload: any) -> dict",
+        "summary": "Send an HTTP/2 request and return the response.",
+        "details": "The payload is either a list of bytes to send as the body or a dict of extra headers. A dict with a headers or a body key holds both, the headers and the body of the request. The result holds the status, the headers and the body.",
+    },
+    "http_get": {
+        "signature": "http_get(url: string, headers: dict, timeout: any) -> dict",
+        "summary": "Perform an HTTP GET request and return status and body.",
+    },
+    "http_get_bytes": {
+        "signature": "http_get_bytes(url: string, headers: dict, timeout: int) -> dict",
+        "summary": "Perform an HTTP GET request and return the raw body.",
+        "details": "The result holds the status and the body as a list of byte values.",
+    },
+    "http_post": {
+        "signature": "http_post(url: string, headers: dict, body: string, timeout: any) -> dict",
+        "summary": "Perform an HTTP POST request and return status and body.",
+    },
+    "http_post_multipart": {
+        "signature": "http_post_multipart(url: string, headers: dict, parts: list, timeout: any) -> dict",
+        "summary": "Post a multipart body with fields and files.",
+        "details": "Every part is a dict. A part with a `value` is a field, and a part with a `path` is a file: its bytes are read from the disk.",
+    },
+    "index_of": {
+        "signature": "index_of(text: string, needle: string) -> int",
+        "summary": "Return the index of a substring, or -1 when it is absent.",
+        "example": "print(index_of(\"bun\", \"u\"))\n",
+    },
+    "input": {
+        "signature": "input(prompt: string) -> string",
+        "summary": "Read one line from the standard input.",
+        "details": "The prompt is optional. The line is returned without the line break.",
+    },
+    "int": {
+        "signature": "int(value: any) -> int\nint(value: any, base: int) -> int",
+        "summary": "Convert a value to an integer, optionally in a given base.",
+        "example": "print(int(\"ff\", 16))\n",
+    },
+    "join": {
+        "signature": "join(items: list, separator: string) -> string",
+        "summary": "Join the items of a list into a string.",
+        "example": "print(join([\"a\", \"b\"], \", \"))\n",
+    },
+    "json_parse": {
+        "signature": "json_parse(text: string) -> any",
+        "summary": "Parse a JSON document.",
+        "example": "print(json_parse(\"[1, 2]\")[0])\n",
+    },
+    "json_stringify": {
+        "signature": "json_stringify(value: any) -> string",
+        "summary": "Render a value as a JSON document.",
+        "example": "print(json_stringify([1, 2]))\n",
+    },
+    "len": {
+        "signature": "len(value: any) -> int",
+        "summary": "Return the length of a string, list or dict.",
+        "example": "print(len(\"bun\"))\n",
+    },
+    "list_dir": {
+        "signature": "list_dir(path: string) -> list",
+        "summary": "List the entries of a directory.",
+    },
+    "lock": {
+        "signature": "lock(mutex: dict)",
+        "summary": "Lock a mutex, waiting until it is available.",
+    },
+    "lower": {
+        "signature": "lower(text: string) -> string",
+        "summary": "Convert a string to lower case.",
+        "example": "print(lower(\"BUN\"))\n",
+    },
+    "make_dir": {
+        "signature": "make_dir(path: string)",
+        "summary": "Create a directory, including its parents.",
+    },
+    "max": {
+        "signature": "max(values: list) -> number",
+        "summary": "Return the largest value of a list.",
+        "example": "print(max([3, 1, 2]))\n",
+    },
+    "md5": {
+        "signature": "md5(data: list) -> string",
+        "summary": "Return the MD5 digest of some bytes as hex digits.",
+        "details": "The result holds thirty two hex digits, the digest of the bytes in the order of the bytes.",
+        "example": "print(md5(utf8_bytes(\"abc\")))\n",
+    },
+    "min": {
+        "signature": "min(values: list) -> number",
+        "summary": "Return the smallest value of a list.",
+        "example": "print(min([3, 1, 2]))\n",
+    },
+    "mutex": {
+        "signature": "mutex() -> dict",
+        "summary": "Create a mutex that tasks can lock and unlock.",
+    },
+    "next": {
+        "signature": "next(generator: any) -> any\nnext(generator: any, default: any) -> any",
+        "summary": "Give the next value of a generator.",
+        "details": "A generator gives its values one at a time. This builtin asks for the next one. A generator that is over has no next value, and the second form gives the value to use instead of the error.",
+        "example": "fn counter() {\n    yield 1\n    yield 2\n}\nlet g = counter()\nprint(next(g))\n",
+    },
+    "now": {
+        "signature": "now() -> float",
+        "summary": "Return the current time as a Unix timestamp.",
+    },
+    "ord": {
+        "signature": "ord(text: string) -> int",
+        "summary": "Return the Unicode code point of a character.",
+        "example": "print(ord(\"A\"))\n",
+    },
+    "pbkdf2_sha512": {
+        "signature": "pbkdf2_sha512(password: list, salt: list, rounds: int, size: int) -> list",
+        "summary": "Derive a key from a password with PBKDF2 over HMAC-SHA512.",
+        "details": "The password holds the bytes of the password, the salt holds the bytes of the salt, the rounds holds the number of the rounds and the size holds the number of the bytes of the key. The size is sixty four when the program does not give it. The result holds the bytes of the key.",
+        "example": "print(len(pbkdf2_sha512(utf8_bytes(\"abc\"), utf8_bytes(\"salt\"), 10, 32)))\n",
+    },
+    "pow_mod": {
+        "signature": "pow_mod(base: int, exponent: int, modulus: int) -> int",
+        "summary": "Raise a base to a power modulo a modulus.",
+    },
+    "print": {
+        "signature": "print(value: any)",
+        "summary": "Print a value followed by a newline.",
+        "details": "Exactly one argument is accepted; build strings to join several values.",
+        "example": "print(\"hello\")\n",
+    },
+    "random": {
+        "signature": "random() -> float",
+        "summary": "Return a random number between zero and one.",
+        "example": "print(random() < 1.0)\n",
+    },
+    "random_bytes": {
+        "signature": "random_bytes(count: int) -> list",
+        "summary": "Return cryptographically secure random bytes.",
+    },
+    "random_int": {
+        "signature": "random_int(low: int, high: int) -> int",
+        "summary": "Return a random integer between two bounds.",
+        "details": "Both bounds belong to the range, the order of the bounds does not matter.",
+        "example": "print(random_int(1, 6))\n",
+    },
+    "range": {
+        "signature": "range(stop: int) -> list\nrange(start: int, stop: int) -> list\nrange(start: int, stop: int, step: int) -> list",
+        "summary": "Build a list of integers, optionally with a step.",
+        "example": "print(range(3))\n",
+    },
+    "read_bytes": {
+        "signature": "read_bytes(path: string) -> list",
+        "summary": "Read a file and return its bytes as a list of byte values.",
+    },
+    "read_file": {
+        "signature": "read_file(path: string) -> string",
+        "summary": "Read a whole file as text.",
+    },
+    "replace": {
+        "signature": "replace(text: string, needle: string, replacement: string) -> string",
+        "summary": "Replace every occurrence of a substring.",
+        "example": "print(replace(\"a-b\", \"-\", \"+\"))\n",
+    },
+    "reversed": {
+        "signature": "reversed(values: list) -> list",
+        "summary": "Return a new list with the values of a list backwards.",
+        "example": "print(str(reversed([1, 2, 3])))\n",
+    },
+    "rsa_encrypt": {
+        "signature": "rsa_encrypt(data: list, modulus: string, exponent: int) -> list",
+        "summary": "Encrypt data with RSA.",
+        "details": "The modulus is a hexadecimal string and the exponent is the public exponent.",
+    },
+    "sandbox_enter": {
+        "signature": "sandbox_enter(manifest: dict)",
+        "summary": "Install a capability manifest for the code that follows.",
+        "details": "The manifest names what the code may do: the hosts it may reach under \"net\", the paths it may touch under \"fs\", and the flags \"exec\" and \"clock\". A capability that is not named is not allowed.",
+    },
+    "sandbox_exit": {
+        "signature": "sandbox_exit()",
+        "summary": "Remove the capability manifest that is in force.",
+    },
+    "secret": {
+        "signature": "secret(value: any) -> secret",
+        "summary": "Wrap a value so that it is redacted in every output.",
+        "details": "Only `reveal()` returns the wrapped value.",
+        "example": "var token = secret(\"hunter2\")\nprint(token)\n",
+    },
+    "send": {
+        "signature": "send(generator: any, value: any) -> any",
+        "summary": "Send a value into a generator and give its next value.",
+        "details": "The value is the answer of the `yield` that waits, and the answer of the generator is the next value it gives.",
+        "example": "fn echo() {\n    let answer = yield 1\n    yield answer\n}\nlet g = echo()\nprint(next(g))\nprint(send(g, 7))\n",
+    },
+    "set": {
+        "signature": "set(values: list) -> set",
+        "summary": "Return a set of the values that are not equal to each other.",
+        "details": "A set holds numbers, strings and null. A set has the methods \"len\", \"add\", \"remove\", \"contains\", \"values\", \"union\", \"intersection\" and \"difference\".",
+        "example": "let s = set([1, 2, 2])\nprint(s.len())\n",
+    },
+    "sha1": {
+        "signature": "sha1(data: list) -> list",
+        "summary": "Return the SHA-1 digest of some bytes.",
+    },
+    "sha256": {
+        "signature": "sha256(data: list) -> list",
+        "summary": "Return the SHA-256 digest of some bytes.",
+    },
+    "sleep": {
+        "signature": "sleep(seconds: float)",
+        "summary": "Pause the program for a number of seconds.",
+    },
+    "sorted": {
+        "signature": "sorted(values: list) -> list",
+        "summary": "Return a new list with the values of a list in order.",
+        "example": "print(str(sorted([3, 1, 2])))\n",
+    },
+    "spawn": {
+        "signature": "spawn(function: fn) -> dict",
+        "summary": "Run a function in a new task and return a task handle.",
+    },
+    "split": {
+        "signature": "split(text: string, separator: string) -> list",
+        "summary": "Split a string into a list of parts.",
+        "example": "print(split(\"a,b\", \",\"))\n",
+    },
+    "starts_with": {
+        "signature": "starts_with(text: string, prefix: string) -> bool",
+        "summary": "Report whether a string starts with a prefix.",
+        "example": "print(starts_with(\"bun\", \"b\"))\n",
+    },
+    "str": {
+        "signature": "str(value: any) -> string",
+        "summary": "Convert a value to its string form.",
+        "example": "print(str(12))\n",
+    },
+    "substring": {
+        "signature": "substring(text: string, start: int, end: int) -> string",
+        "summary": "Return the part of a string between two indexes.",
+        "example": "print(substring(\"bun\", 0, 2))\n",
+    },
+    "sum": {
+        "signature": "sum(values: list) -> number",
+        "summary": "Return the total of a list of numbers.",
+        "example": "print(sum([1, 2, 3]))\n",
+    },
+    "task_cancelled": {
+        "signature": "task_cancelled(task: dict) -> bool",
+        "summary": "Report whether a task was asked to stop. Without an argument the running task is asked.",
+    },
+    "task_done": {
+        "signature": "task_done(task: dict) -> bool",
+        "summary": "Report whether a task has finished.",
+    },
+    "task_join": {
+        "signature": "task_join(task: dict) -> any",
+        "summary": "Wait for a task and return its result.",
+    },
+    "tcp_accept": {
+        "signature": "tcp_accept(listener: dict, timeout: number) -> dict",
+        "summary": "Wait for a connection on a listener and return its handle.",
+        "details": "The timeout is in seconds. The call gives an error when no connection came in time.",
+    },
+    "tcp_close": {
+        "signature": "tcp_close(socket: dict) -> bool",
+        "summary": "Close a socket or a listener.",
+    },
+    "tcp_connect": {
+        "signature": "tcp_connect(host: string, port: int) -> dict",
+        "summary": "Open a TCP connection to a host and port.",
+    },
+    "tcp_listen": {
+        "signature": "tcp_listen(host: string, port: int) -> dict",
+        "summary": "Listen on a port and return the handle of the listener.",
+        "details": "The port may be zero, then the system picks a free port. The port that was taken is in the port key of the handle.",
+    },
+    "tcp_read": {
+        "signature": "tcp_read(socket: dict, count: int) -> list",
+        "summary": "Read bytes from a socket as a list of byte values.",
+    },
+    "tcp_set_timeout": {
+        "signature": "tcp_set_timeout(socket: dict, milliseconds: int) -> bool",
+        "summary": "Set the timeout of a socket.",
+        "details": "A read that waits longer than the timeout gives an error.",
+    },
+    "tcp_tls_connect": {
+        "signature": "tcp_tls_connect(host: string, port: int, alpn: list, sni: string) -> dict",
+        "summary": "Open a TLS connection to a host and port.",
+        "details": "The alpn and sni arguments are optional. alpn lists the protocols to negotiate and sni overrides the server name used for the handshake.",
+    },
+    "tcp_write": {
+        "signature": "tcp_write(socket: dict, data: list) -> bool",
+        "summary": "Write bytes to a socket.",
+    },
+    "trim": {
+        "signature": "trim(text: string) -> string",
+        "summary": "Remove leading and trailing whitespace.",
+        "example": "print(trim(\"  bun  \"))\n",
+    },
+    "type_of": {
+        "signature": "type_of(value: any) -> string",
+        "summary": "Return the runtime type name of a value.",
+        "example": "print(type_of([1]))\n",
+    },
+    "unlock": {
+        "signature": "unlock(mutex: dict)",
+        "summary": "Release a mutex.",
+    },
+    "upper": {
+        "signature": "upper(text: string) -> string",
+        "summary": "Convert a string to upper case.",
+        "example": "print(upper(\"bun\"))\n",
+    },
+    "url_decode": {
+        "signature": "url_decode(text: string) -> string",
+        "summary": "Decode percent-encoded text.",
+        "example": "print(url_decode(\"a%20b\"))\n",
+    },
+    "url_encode": {
+        "signature": "url_encode(text: string) -> string",
+        "summary": "Percent-encode text for use in a URL.",
+        "example": "print(url_encode(\"a b\"))\n",
+    },
+    "utf8_bytes": {
+        "signature": "utf8_bytes(text: string) -> list",
+        "summary": "Encode a string as UTF-8 bytes.",
+        "example": "print(utf8_bytes(\"bun\"))\n",
+    },
+    "utf8_string": {
+        "signature": "utf8_string(data: list) -> string",
+        "summary": "Decode UTF-8 bytes into a string.",
+        "example": "print(utf8_string([98, 117, 110]))\n",
+    },
+    "write_bytes": {
+        "signature": "write_bytes(path: string, data: list) -> int",
+        "summary": "Write bytes to a file and return the number of bytes written.",
+    },
+    "write_file": {
+        "signature": "write_file(path: string, data: string)",
+        "summary": "Write text to a file, replacing its contents.",
+    },
+    "zip": {
+        "signature": "zip(left: list, right: list) -> list",
+        "summary": "Return the pairs of two lists, as long as the shorter one lasts.",
+        "example": "print(str(zip([1, 2], [\"a\", \"b\"])))\n",
+    },
+}
+
+export fn doc_names() -> list {
+    var names = []
+    for name in DOCS.keys() {
+        names.push(name)
+    }
+    return names
+}

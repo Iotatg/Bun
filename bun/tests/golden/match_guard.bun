@@ -1,0 +1,17 @@
+// The guard of a case: a condition that has to hold for the case to
+// match.  It sees the names the pattern binds.
+match 5 {
+    n if n > 10 => print("big " + str(n)),
+    n if n > 3 => print("medium " + str(n)),
+    _ => print("small"),
+}
+
+match "text" {
+    s if s == "text" => print("the word"),
+    _ => print("another word"),
+}
+
+match [1, 2] {
+    [a, b] if a < b => print("in order"),
+    _ => print("not in order"),
+}

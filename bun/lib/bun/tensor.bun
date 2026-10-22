@@ -1,0 +1,1045 @@
+// bun:tensor — the numerical core of Bun.
+//
+// A tensor is a plain dictionary with two keys:
+//
+//   "data"   the flat list of numbers, row-major
+//   "shape"  the list of dimensions
+//
+// Bun has no classes, so the marker key "kind" is what says "this is a
+// tensor". The operations check the marker and raise a clear error for
+// anything else.
+//
+// The reductions use a fixed order, so the same tensor gives the same
+// number on every run. A training run is only comparable with another
+// training run if the arithmetic is reproducible.
+
+let math = ffi_load("math")
+let exp = math["exp"]
+let log = math["log"]
+let sqrt = math["sqrt"]
+let pow = math["pow"]
+let tanh = math["tanh"]
+let floor = math["floor"]
+let ceil = math["ceil"]
+let fabs = math["fabs"]
+
+// The block size of the reduction tree. A block is summed from left to
+// right; the block sums are combined in a pairwise tree.
+let REDUCTION_BLOCK = 64
+
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
+// The shape of a nested list, inferred from the data.
+fn infer_shape(data: any) -> any {
+    if type_of(data) != "array" {
+        return []
+    }
+    if data.len() == 0 {
+        return [0]
+    }
+    let inner = infer_shape(data[0])
+    var shape = [data.len()]
+    for size in inner {
+        shape.push(size)
+    }
+    return shape
+}
+
+// The flat list of a nested list, row-major.
+fn flatten(data: any) -> any {
+    if type_of(data) != "array" {
+        return [data]
+    }
+    var flat = []
+    for item in data {
+        for value in flatten(item) {
+            flat.push(value)
+        }
+    }
+    return flat
+}
+
+fn make_tensor(data: any, shape: any) -> any {
+    return { "kind": "tensor", "data": data, "shape": shape }
+}
+
+// A tensor from a nested list, for example [[1.0, 2.0], [3.0, 4.0]].
+export fn tensor(data: any) -> any {
+    return make_tensor(flatten(data), infer_shape(data))
+}
+
+// A tensor from a flat list and a shape.
+export fn from_list(data: any, shape: any) -> any {
+    if type_of(data) != "array" {
+        throw "from_list() expects a list of numbers"
+    }
+    if type_of(shape) != "array" {
+        throw "from_list() expects a list of dimensions"
+    }
+    var count = 1
+    for size in shape {
+        count = count * size
+    }
+    if count != data.len() {
+        throw "from_list() expects " + str(count) + " values for the shape " + str(shape)
+    }
+    var values = []
+    for value in data {
+        values.push(float(value))
+    }
+    return make_tensor(values, shape)
+}
+
+// A tensor of the given shape, filled with zeros.
+export fn zeros(shape: any) -> any {
+    return full(shape, 0.0)
+}
+
+// A tensor of the given shape, filled with ones.
+export fn ones(shape: any) -> any {
+    return full(shape, 1.0)
+}
+
+// A tensor of the given shape, filled with one value.
+export fn full(shape: any, value: float) -> any {
+    if type_of(shape) != "array" {
+        throw "full() expects a list of dimensions"
+    }
+    var count = 1
+    for size in shape {
+        count = count * size
+    }
+    var values = []
+    var i = 0
+    while i < count {
+        values.push(value)
+        i = i + 1
+    }
+    return make_tensor(values, shape)
+}
+
+// A tensor of the given shape, filled with random values in [low, high).
+export fn random_tensor(shape: any, low: float, high: float) -> any {
+    if type_of(shape) != "array" {
+        throw "random_tensor() expects a list of dimensions"
+    }
+    var count = 1
+    for size in shape {
+        count = count * size
+    }
+    var values = []
+    var i = 0
+    while i < count {
+        values.push(low + (high - low) * random())
+        i = i + 1
+    }
+    return make_tensor(values, shape)
+}
+
+// ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
+
+export fn is_tensor(value: any) -> bool {
+    if type_of(value) != "dict" {
+        return false
+    }
+    if !value.has("kind") {
+        return false
+    }
+    return value["kind"] == "tensor"
+}
+
+fn check_tensor(value: any, name: string) {
+    if !is_tensor(value) {
+        throw name + "() expects a tensor"
+    }
+}
+
+// The shape of a tensor.
+export fn shape(t: any) -> any {
+    check_tensor(t, "shape")
+    return t["shape"]
+}
+
+// The flat data of a tensor.
+export fn data(t: any) -> any {
+    check_tensor(t, "data")
+    return t["data"]
+}
+
+// The number of elements of a tensor.
+export fn size(t: any) -> int {
+    check_tensor(t, "size")
+    return t["data"].len()
+}
+
+// The number of dimensions of a tensor.
+export fn rank(t: any) -> int {
+    check_tensor(t, "rank")
+    return t["shape"].len()
+}
+
+// The shape of a tensor as a string, for example "[2, 3]".
+export fn shape_str(t: any) -> string {
+    check_tensor(t, "shape_str")
+    var text = "["
+    var first = true
+    for size in t["shape"] {
+        if !first {
+            text = text + ", "
+        }
+        text = text + str(size)
+        first = false
+    }
+    return text + "]"
+}
+
+// ---------------------------------------------------------------------------
+// Elementwise arithmetic
+// ---------------------------------------------------------------------------
+
+// The shape of a rank-1 vector against a rank-2 matrix.
+fn same_shape(a: any, b: any) -> bool {
+    let shape_a = a["shape"]
+    let shape_b = b["shape"]
+    if shape_a.len() != shape_b.len() {
+        return false
+    }
+    for i in range(0, shape_a.len()) {
+        if shape_a[i] != shape_b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+// The elementwise operation on two tensors.
+//
+// Two tensors of the same shape are combined element by element. A rank-1
+// vector and a rank-2 matrix are combined with the vector broadcast over
+// the rows of the matrix.
+fn elementwise(a: any, b: any, name: string, op: any) -> any {
+    check_tensor(a, name)
+    check_tensor(b, name)
+    if same_shape(a, b) {
+        var values = []
+        for i in range(0, a["data"].len()) {
+            values.push(op(a["data"][i], b["data"][i]))
+        }
+        return make_tensor(values, a["shape"])
+    }
+    let shape_a = a["shape"]
+    let shape_b = b["shape"]
+    var matrix = a
+    var vector = b
+    if shape_a.len() == 1 and shape_b.len() == 2 {
+        matrix = b
+        vector = a
+    } else if !(shape_a.len() == 2 and shape_b.len() == 1) {
+        throw "cannot broadcast " + shape_str(a) + " and " + shape_str(b)
+    }
+    let height = matrix["shape"][0]
+    let width = matrix["shape"][1]
+    if vector["shape"][0] != width {
+        throw "cannot broadcast " + shape_str(a) + " and " + shape_str(b)
+    }
+    var values = []
+    for row in range(0, height) {
+        for column in range(0, width) {
+            values.push(op(matrix["data"][row * width + column],
+                           vector["data"][column]))
+        }
+    }
+    return make_tensor(values, matrix["shape"])
+}
+
+fn same_shape(a: any, b: any) -> bool {
+    let shape_a = a["shape"]
+    let shape_b = b["shape"]
+    if shape_a.len() != shape_b.len() {
+        return false
+    }
+    for i in range(0, shape_a.len()) {
+        if shape_a[i] != shape_b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+export fn add(a: any, b: any) -> any {
+    let result = elementwise(a, b, "add", fn (x, y) { return x + y })
+    if taping {
+        let input_a = a
+        let input_b = b
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            accumulate(input_a, g)
+            accumulate(input_b, g)
+        })
+    }
+    return result
+}
+
+export fn sub(a: any, b: any) -> any {
+    let result = elementwise(a, b, "sub", fn (x, y) { return x - y })
+    if taping {
+        let input_a = a
+        let input_b = b
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            accumulate(input_a, g)
+            accumulate(input_b, negate(g))
+        })
+    }
+    return result
+}
+
+export fn mul(a: any, b: any) -> any {
+    let result = elementwise(a, b, "mul", fn (x, y) { return x * y })
+    if taping {
+        let input_a = a
+        let input_b = b
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            if !same_shape(input_a, input_b) {
+                throw "the gradient of a broadcast mul() is not defined"
+            }
+            accumulate(input_a, elementwise(g, input_b, "mul", fn (x, y) { return x * y }))
+            accumulate(input_b, elementwise(g, input_a, "mul", fn (x, y) { return x * y }))
+        })
+    }
+    return result
+}
+
+export fn div(a: any, b: any) -> any {
+    return elementwise(a, b, "div", fn (x, y) {
+        if y == 0.0 {
+            throw "div() divides by zero"
+        }
+        return x / y
+    })
+}
+
+// The tensor plus a number.
+export fn add_scalar(t: any, value: float) -> any {
+    check_tensor(t, "add_scalar")
+    var values = []
+    for item in t["data"] {
+        values.push(item + value)
+    }
+    return make_tensor(values, t["shape"])
+}
+
+// The tensor times a number.
+export fn scale(t: any, value: float) -> any {
+    check_tensor(t, "scale")
+    var values = []
+    for item in t["data"] {
+        values.push(item * value)
+    }
+    return make_tensor(values, t["shape"])
+}
+
+// The tensor with every element negated.
+export fn negate(t: any) -> any {
+    check_tensor(t, "negate")
+    var values = []
+    for item in t["data"] {
+        values.push(0.0 - item)
+    }
+    return make_tensor(values, t["shape"])
+}
+
+// ---------------------------------------------------------------------------
+// Matrix operations
+// ---------------------------------------------------------------------------
+
+// The matrix product of two rank-2 tensors.
+export fn matmul(a: any, b: any) -> any {
+    let result = matmul_raw(a, b)
+    if taping {
+        let input_a = a
+        let input_b = b
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            accumulate(input_a, matmul_raw(g, transpose_raw(input_b)))
+            accumulate(input_b, matmul_raw(transpose_raw(input_a), g))
+        })
+    }
+    return result
+}
+
+// The matrix product, without the tape.
+fn matmul_raw(a: any, b: any) -> any {
+    check_tensor(a, "matmul")
+    check_tensor(b, "matmul")
+    let shape_a = a["shape"]
+    let shape_b = b["shape"]
+    if shape_a.len() != 2 or shape_b.len() != 2 {
+        throw "matmul() expects two rank-2 tensors"
+    }
+    let rows = shape_a[0]
+    let inner = shape_a[1]
+    let columns = shape_b[1]
+    if inner != shape_b[0] {
+        throw "matmul() cannot multiply " + shape_str(a) + " and " + shape_str(b)
+    }
+    let data_a = a["data"]
+    let data_b = b["data"]
+    var values = []
+    var row = 0
+    while row < rows {
+        var column = 0
+        while column < columns {
+            var total = 0.0
+            var k = 0
+            while k < inner {
+                total = total + data_a[row * inner + k] * data_b[k * columns + column]
+                k = k + 1
+            }
+            values.push(total)
+            column = column + 1
+        }
+        row = row + 1
+    }
+    return make_tensor(values, [rows, columns])
+}
+
+// The transpose of a rank-2 tensor.
+export fn transpose(t: any) -> any {
+    return transpose_raw(t)
+}
+
+// The transpose, without the tape.
+fn transpose_raw(t: any) -> any {
+    check_tensor(t, "transpose")
+    let shape = t["shape"]
+    if shape.len() != 2 {
+        throw "transpose() expects a rank-2 tensor"
+    }
+    let rows = shape[0]
+    let columns = shape[1]
+    let data = t["data"]
+    var values = []
+    var column = 0
+    while column < columns {
+        var row = 0
+        while row < rows {
+            values.push(data[row * columns + column])
+            row = row + 1
+        }
+        column = column + 1
+    }
+    return make_tensor(values, [columns, rows])
+}
+
+// A tensor with the same data and a new shape.
+export fn reshape(t: any, shape: any) -> any {
+    check_tensor(t, "reshape")
+    var count = 1
+    for size in shape {
+        count = count * size
+    }
+    if count != t["data"].len() {
+        throw "reshape() cannot reshape " + shape_str(t) + " into " + str(shape)
+    }
+    return make_tensor(t["data"], shape)
+}
+
+// The tensor of a single row, for example [[1.0, 2.0]].
+export fn row(t: any, index: int) -> any {
+    check_tensor(t, "row")
+    let shape = t["shape"]
+    if shape.len() != 2 {
+        throw "row() expects a rank-2 tensor"
+    }
+    let width = shape[1]
+    var values = []
+    for i in range(0, width) {
+        values.push(t["data"][index * width + i])
+    }
+    return make_tensor(values, [1, width])
+}
+
+// The tensor of a single column, for example [[1.0], [2.0]].
+export fn column(t: any, index: int) -> any {
+    check_tensor(t, "column")
+    let shape = t["shape"]
+    if shape.len() != 2 {
+        throw "column() expects a rank-2 tensor"
+    }
+    let rows = shape[0]
+    var values = []
+    for i in range(0, rows) {
+        values.push(t["data"][i * shape[1] + index])
+    }
+    return make_tensor(values, [rows, 1])
+}
+
+// ---------------------------------------------------------------------------
+// Activations
+// ---------------------------------------------------------------------------
+
+export fn relu(t: any) -> any {
+    let result = relu_raw(t)
+    if taping {
+        let input = t
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            for i in range(0, input["data"].len()) {
+                if input["data"][i] > 0.0 {
+                    values.push(g["data"][i])
+                } else {
+                    values.push(0.0)
+                }
+            }
+            accumulate(input, make_tensor(values, input["shape"]))
+        })
+    }
+    return result
+}
+
+// The rectified linear unit, without the tape.
+fn relu_raw(t: any) -> any {
+    check_tensor(t, "relu")
+    var values = []
+    for item in t["data"] {
+        if item > 0.0 {
+            values.push(item)
+        } else {
+            values.push(0.0)
+        }
+    }
+    return make_tensor(values, t["shape"])
+}
+
+export fn sigmoid(t: any) -> any {
+    check_tensor(t, "sigmoid")
+    var values = []
+    for item in t["data"] {
+        values.push(1.0 / (1.0 + exp(0.0 - item)))
+    }
+    return make_tensor(values, t["shape"])
+}
+
+export fn tanh_tensor(t: any) -> any {
+    check_tensor(t, "tanh_tensor")
+    var values = []
+    for item in t["data"] {
+        values.push(tanh(item))
+    }
+    return make_tensor(values, t["shape"])
+}
+
+// The softmax of a tensor along an axis.
+//
+// The maximum of the axis is subtracted before the exponential, so a large
+// value cannot overflow.
+export fn softmax(t: any, axis: int) -> any {
+    let result = softmax_raw(t, axis)
+    if taping {
+        let input = t
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            accumulate(input, softmax_grad(input, output, g, axis))
+        })
+    }
+    return result
+}
+
+// The gradient of a softmax.
+//
+// For a row y = softmax(x) and an incoming gradient g, the gradient of x
+// is y * (g - sum(g * y)).
+fn softmax_grad(input: any, output: any, g: any, axis: int) -> any {
+    let shape = input["shape"]
+    var values = []
+    if shape.len() == 1 {
+        var total = 0.0
+        for i in range(0, g["data"].len()) {
+            total = total + g["data"][i] * output["data"][i]
+        }
+        for i in range(0, g["data"].len()) {
+            values.push(output["data"][i] * (g["data"][i] - total))
+        }
+        return make_tensor(values, shape)
+    }
+    if axis != 1 {
+        throw "the gradient of a softmax is only defined on the last axis"
+    }
+    let rows = shape[0]
+    let columns = shape[1]
+    var row = 0
+    while row < rows {
+        var total = 0.0
+        for column in range(0, columns) {
+            total = total + g["data"][row * columns + column] * output["data"][row * columns + column]
+        }
+        for column in range(0, columns) {
+            let index = row * columns + column
+            values.push(output["data"][index] * (g["data"][index] - total))
+        }
+        row = row + 1
+    }
+    return make_tensor(values, shape)
+}
+
+// The softmax, without the tape.
+fn softmax_raw(t: any, axis: int) -> any {
+    check_tensor(t, "softmax")
+    let shape = t["shape"]
+    let data = t["data"]
+    if axis < 0 or axis >= shape.len() {
+        throw "softmax() axis out of range"
+    }
+    var values = []
+    if shape.len() == 1 {
+        var maximum = data[0]
+        for item in data {
+            if item > maximum {
+                maximum = item
+            }
+        }
+        var total = 0.0
+        for item in data {
+            total = total + exp(item - maximum)
+        }
+        for item in data {
+            values.push(exp(item - maximum) / total)
+        }
+        return make_tensor(values, shape)
+    }
+    if shape.len() != 2 {
+        throw "softmax() expects a rank-1 or rank-2 tensor"
+    }
+    let rows = shape[0]
+    let columns = shape[1]
+    var row = 0
+    while row < rows {
+        var maximum = data[row * columns]
+        var column = 1
+        while column < columns {
+            let item = data[row * columns + column]
+            if item > maximum {
+                maximum = item
+            }
+            column = column + 1
+        }
+        var total = 0.0
+        column = 0
+        while column < columns {
+            total = total + exp(data[row * columns + column] - maximum)
+            column = column + 1
+        }
+        column = 0
+        while column < columns {
+            values.push(exp(data[row * columns + column] - maximum) / total)
+            column = column + 1
+        }
+        row = row + 1
+    }
+    return make_tensor(values, shape)
+}
+
+// The softmax along the last axis of a rank-2 tensor.
+export fn softmax_last(t: any) -> any {
+    return softmax(t, 1)
+}
+
+// ---------------------------------------------------------------------------
+// Reductions
+// ---------------------------------------------------------------------------
+
+// The sum of a range of values, in the fixed reduction order.
+//
+// A block of REDUCTION_BLOCK values is summed from left to right, and the
+// block sums are combined in a pairwise tree. The order depends only on
+// the length of the range, so the result is the same on every run.
+fn pairwise_sum(values: any) -> float {
+    let count = values.len()
+    if count == 0 {
+        return 0.0
+    }
+    if count <= REDUCTION_BLOCK {
+        var total = 0.0
+        for value in values {
+            total = total + value
+        }
+        return total
+    }
+    var blocks = []
+    var start = 0
+    while start < count {
+        var stop = start + REDUCTION_BLOCK
+        if stop > count {
+            stop = count
+        }
+        var total = 0.0
+        for i in range(start, stop) {
+            total = total + values[i]
+        }
+        blocks.push(total)
+        start = stop
+    }
+    return pairwise_sum(blocks)
+}
+
+// The sum of every element of a tensor.
+export fn sum(t: any) -> float {
+    check_tensor(t, "sum")
+    return pairwise_sum(t["data"])
+}
+
+// The sum of every element of a tensor, as a tensor.
+//
+// This is the loss of a training run: a tensor with one element, so that
+// the backward pass has a tensor to start from.
+export fn sum_tensor(t: any) -> any {
+    let result = make_tensor([pairwise_sum(t["data"])], [1])
+    if taping {
+        let input = t
+        let output = result
+        record(fn () {
+            let g = take_grad(output)
+            if g == null { return }
+            var values = []
+            for i in range(0, input["data"].len()) {
+                values.push(g["data"][0])
+            }
+            accumulate(input, make_tensor(values, input["shape"]))
+        })
+    }
+    return result
+}
+
+// The mean of every element of a tensor.
+export fn mean(t: any) -> float {
+    check_tensor(t, "mean")
+    let count = t["data"].len()
+    if count == 0 {
+        throw "mean() of an empty tensor"
+    }
+    return pairwise_sum(t["data"]) / count
+}
+
+// The largest element of a tensor.
+export fn max(t: any) -> float {
+    check_tensor(t, "max")
+    let data = t["data"]
+    if data.len() == 0 {
+        throw "max() of an empty tensor"
+    }
+    var largest = data[0]
+    for value in data {
+        if value > largest {
+            largest = value
+        }
+    }
+    return largest
+}
+
+// The smallest element of a tensor.
+export fn min(t: any) -> float {
+    check_tensor(t, "min")
+    let data = t["data"]
+    if data.len() == 0 {
+        throw "min() of an empty tensor"
+    }
+    var smallest = data[0]
+    for value in data {
+        if value < smallest {
+            smallest = value
+        }
+    }
+    return smallest
+}
+
+// The sum of the tensor along an axis.
+export fn sum_axis(t: any, axis: int) -> any {
+    check_tensor(t, "sum_axis")
+    let shape = t["shape"]
+    if axis < 0 or axis >= shape.len() {
+        throw "sum_axis() axis out of range"
+    }
+    if shape.len() != 2 {
+        throw "sum_axis() expects a rank-2 tensor"
+    }
+    let rows = shape[0]
+    let columns = shape[1]
+    if axis == 0 {
+        var values = []
+        var column = 0
+        while column < columns {
+            var total = 0.0
+            for row in range(0, rows) {
+                total = total + t["data"][row * columns + column]
+            }
+            values.push(total)
+            column = column + 1
+        }
+        return make_tensor(values, [columns])
+    }
+    var values = []
+    var row = 0
+    while row < rows {
+        var total = 0.0
+        for column in range(0, columns) {
+            total = total + t["data"][row * columns + column]
+        }
+        values.push(total)
+        row = row + 1
+    }
+    return make_tensor(values, [rows])
+}
+
+// ---------------------------------------------------------------------------
+// The optimiser
+// ---------------------------------------------------------------------------
+
+// The state of the Adam optimiser: the first and second moment of every
+// parameter.
+export fn adam_state(t: any) -> any {
+    check_tensor(t, "adam_state")
+    let count = t["data"].len()
+    var first = []
+    var second = []
+    var i = 0
+    while i < count {
+        first.push(0.0)
+        second.push(0.0)
+        i = i + 1
+    }
+    return { "m": first, "v": second, "step": 0 }
+}
+
+// One step of Adam.
+//
+// The parameters are updated in place and the new values are returned, so
+// the caller can keep the state of the model in one place.
+export fn adam(params: any, grads: any, state: any, rate: float,
+               beta1: float, beta2: float, epsilon: float) -> any {
+    check_tensor(params, "adam")
+    check_tensor(grads, "adam")
+    if params["data"].len() != grads["data"].len() {
+        throw "adam() expects the gradient of the parameters"
+    }
+    let step = state["step"] + 1
+    let first = state["m"]
+    let second = state["v"]
+    let param_data = params["data"]
+    let grad_data = grads["data"]
+    var values = []
+    var i = 0
+    while i < param_data.len() {
+        let gradient = grad_data[i]
+        let m = beta1 * first[i] + (1.0 - beta1) * gradient
+        let v = beta2 * second[i] + (1.0 - beta2) * gradient * gradient
+        first[i] = m
+        second[i] = v
+        let m_hat = m / (1.0 - pow(beta1, step))
+        let v_hat = v / (1.0 - pow(beta2, step))
+        values.push(param_data[i] - rate * m_hat / (sqrt(v_hat) + epsilon))
+        i = i + 1
+    }
+    state["step"] = step
+    return make_tensor(values, params["shape"])
+}
+
+// ---------------------------------------------------------------------------
+// Printing
+// ---------------------------------------------------------------------------
+
+// The tensor as a string, for example "[[1.0, 2.0], [3.0, 4.0]]".
+export fn to_string(t: any) -> string {
+    check_tensor(t, "to_string")
+    let shape = t["shape"]
+    let data = t["data"]
+    if shape.len() == 1 {
+        var text = "["
+        for i in range(0, data.len()) {
+            if i > 0 {
+                text = text + ", "
+            }
+            text = text + str(data[i])
+        }
+        return text + "]"
+    }
+    if shape.len() == 2 {
+        let rows = shape[0]
+        let columns = shape[1]
+        var text = "["
+        var row = 0
+        while row < rows {
+            if row > 0 {
+                text = text + ", "
+            }
+            text = text + "["
+            var column = 0
+            while column < columns {
+                if column > 0 {
+                    text = text + ", "
+                }
+                text = text + str(data[row * columns + column])
+                column = column + 1
+            }
+            text = text + "]"
+            row = row + 1
+        }
+        return text + "]"
+    }
+    var text = "["
+    for i in range(0, data.len()) {
+        if i > 0 {
+            text = text + ", "
+        }
+        text = text + str(data[i])
+    }
+    return text + "]"
+}
+
+// ---------------------------------------------------------------------------
+// The backward pass
+// ---------------------------------------------------------------------------
+//
+// The tape is a list of backward rules, in the order the operations were
+// recorded. A rule is a closure that takes the gradient of its output
+// and pushes it into the gradients of its inputs.
+//
+// The tape is a module-level list, so a program that records two tapes at
+// the same time has to interleave them. That is a deliberate limit: the
+// alternative is a thread-local tape, and the tape is not worth a thread
+// local in a language that has no threads of its own.
+
+var tape = []
+var taping = false
+
+// Start recording the operations for a backward pass.
+export fn start_tape() {
+    tape = []
+    taping = true
+}
+
+// Stop recording and return the recorded rules.
+export fn stop_tape() -> any {
+    taping = false
+    return tape
+}
+
+// Is the tape recording?
+export fn recording() -> bool {
+    return taping
+}
+
+fn record(rule: any) {
+    if taping {
+        tape.push(rule)
+    }
+}
+
+// Record a backward rule on the tape.
+//
+// A layer that lives outside this stack — the one of bun:ai, for
+// example — records its rule with this function, so every layer of a
+// model shares the one tape and the one backward pass.
+export fn record_rule(rule: any) {
+    record(rule)
+}
+
+// The gradient of a tensor, or null when the tensor has no gradient.
+export fn grad(t: any) -> any {
+    if !is_tensor(t) {
+        return null
+    }
+    if !t.has("grad") {
+        return null
+    }
+    return t["grad"]
+}
+
+// Take the gradient of a tensor and clear it.
+//
+// Every rule takes the gradient of its output once. Clearing it keeps a
+// second backward pass from counting the same gradient twice.
+export fn take_grad(t: any) -> any {
+    if !t.has("grad") {
+        return null
+    }
+    let value = t["grad"]
+    t["grad"] = null
+    return value
+}
+
+// Add a gradient to a tensor.
+fn accumulate(t: any, g: any) {
+    if !t.has("grad") or t["grad"] == null {
+        t["grad"] = g
+        return
+    }
+    let current = t["grad"]
+    var values = []
+    for i in range(0, current["data"].len()) {
+        values.push(current["data"][i] + g["data"][i])
+    }
+    t["grad"] = make_tensor(values, current["shape"])
+}
+
+// Add a gradient to a tensor.
+//
+// The layer of another stack uses this to push the gradient of its
+// output into the tensor it took as its input.
+export fn accumulate_grad(t: any, g: any) {
+    accumulate(t, g)
+}
+
+// The backward pass of a loss.
+//
+// The loss is a tensor with one element. Its gradient is one, and the
+// rules of the tape are run from the last operation to the first.
+export fn backward(loss: any) -> any {
+    if !is_tensor(loss) {
+        throw "backward() expects a tensor"
+    }
+    if loss["shape"].len() != 1 or loss["shape"][0] != 1 {
+        throw "backward() expects a loss with one element"
+    }
+    if !taping {
+        throw "backward() needs a tape (call start_tape() first)"
+    }
+    accumulate(loss, make_tensor([1.0], [1]))
+    var index = tape.len() - 1
+    while index >= 0 {
+        let rule = tape[index]
+        rule()
+        index = index - 1
+    }
+    return tape
+}
+
+// The gradients of the named tensors.
+//
+// The names are the keys of the dictionary, so the caller decides what a
+// gradient is called.
+export fn gradients(leaves: any) -> any {
+    var result = {}
+    for name in leaves.keys() {
+        result.set(name, grad(leaves[name]))
+    }
+    return result
+}

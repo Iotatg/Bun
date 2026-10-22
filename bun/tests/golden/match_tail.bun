@@ -1,0 +1,21 @@
+// The tail of a list pattern: the rest of the list, bound to a name.
+match [1, 2, 3, 4] {
+    [a, b] => print("two " + str(a) + " " + str(b)),
+    [a, b, c, d] => print("four " + str(a) + str(b) + str(c) + str(d)),
+    _ => print("other"),
+}
+
+match [1, 2, 3] {
+    [first, *rest] => print("first " + str(first) + " rest " + str(len(rest))),
+    _ => print("no match"),
+}
+
+match [1] {
+    [first, *rest] => print("first " + str(first) + " rest " + str(len(rest))),
+    _ => print("no match"),
+}
+
+match [1, 2] {
+    [*all] => print("all " + str(len(all))),
+    _ => print("no match"),
+}

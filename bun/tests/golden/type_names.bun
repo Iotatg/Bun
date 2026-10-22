@@ -1,0 +1,9 @@
+// The names of the types are the same under every engine.
+print(type_of(null))
+print(type_of(true))
+print(type_of(1))
+print(type_of(1.5))
+print(type_of("text"))
+print(type_of([1, 2]))
+print(type_of({"a": 1}))
+print(type_of(len))

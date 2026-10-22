@@ -1,0 +1,40 @@
+// The decorators of a function: each of them receives the function and
+// returns the value that the name of the function holds afterwards.
+fn tagged(f) {
+    return fn (a, b) {
+        return f(a, b) + 1
+    }
+}
+
+fn logged(f) {
+    return fn (a, b) {
+        print("calling")
+        return f(a, b)
+    }
+}
+
+@logged
+@tagged
+fn add(a, b) {
+    return a + b
+}
+
+print(add(1, 2))
+
+// A decorator that keeps the function and only counts the calls.
+var calls = 0
+
+fn counted(f) {
+    return fn (a, b) {
+        calls = calls + 1
+        return f(a, b)
+    }
+}
+
+@counted
+fn mul(a, b) {
+    return a * b
+}
+
+print(mul(3, 4))
+print(calls)

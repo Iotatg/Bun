@@ -1,0 +1,24 @@
+text/html
+text/css
+text/csv
+text/javascript
+application/json
+application/xml
+application/pdf
+application/octet-stream
+application/x-www-form-urlencoded
+application/x test
+image/png
+image/jpeg
+image/gif
+image/svg+xml
+audio/mpeg
+audio/ogg
+video/mp4
+video/webm
+font/ttf
+font/otf
+multipart/form-data
+application/json
+text/html
+image/png

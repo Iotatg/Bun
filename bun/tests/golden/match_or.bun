@@ -1,0 +1,24 @@
+// The alternatives of one case: the first pattern that matches wins.
+let code = 302
+match code {
+    200 => print("ok"),
+    301, 302 => print("moved"),
+    404 => print("not found"),
+    _ => print("something else"),
+}
+
+match 7 {
+    1, 2, 3 => print("small"),
+    n => print("other " + str(n)),
+}
+
+match "text" {
+    int, float => print("a number"),
+    string => print("a string"),
+    _ => print("neither"),
+}
+
+match [1, 2] {
+    [a, b] => print("pair " + str(a) + " " + str(b)),
+    _ => print("not a pair"),
+}

@@ -1,0 +1,9 @@
+// A friendly first Bun program.
+fn greet(name) {
+    return "Hello, " + name + "!"
+}
+
+let names = ["World", "Bun", "Coder"]
+for name in names {
+    print(greet(name))
+}

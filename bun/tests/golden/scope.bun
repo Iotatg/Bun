@@ -1,0 +1,28 @@
+scope {
+    let a = spawn {
+        return 1 + 1
+    }
+    let b = spawn {
+        return 2 + 2
+    }
+    print(task_join(a))
+    print(task_join(b))
+}
+print("after scope")
+
+try {
+    scope {
+        let bad = spawn {
+            throw "child failed"
+        }
+        let ok = spawn {
+            return 1
+        }
+    }
+    print("no error")
+} catch e {
+    print("caught " + e)
+}
+
+let scope = 7
+print(scope)
