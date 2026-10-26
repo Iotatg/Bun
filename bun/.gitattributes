@@ -1,0 +1,5 @@
+# The programs of the language are Bun.  GitHub Linguist counts a file
+# only when it knows the language, so the entry for Bun has to land in
+# `lib/linguist/languages.yml` first.  The pull request that adds it is
+# described in `docs/linguist/README.md`.
+*.bun linguist-language=Bun

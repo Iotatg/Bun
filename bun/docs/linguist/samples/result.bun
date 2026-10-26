@@ -1,0 +1,21 @@
+// A result holds either a success or a failure.
+fn parse(text: string) -> result {
+    if text == "" {
+        return Err("the text is empty")
+    }
+    return Ok(len(text))
+}
+
+// The `?` takes the value out of a success and passes a failure along.
+fn twice(text: string) -> result {
+    let n = parse(text)?
+    return Ok(n * 2)
+}
+
+let good = twice("bun")
+print(is_ok(good))
+print(good["ok"])
+
+let bad = twice("")
+print(is_err(bad))
+print(bad["err"])
