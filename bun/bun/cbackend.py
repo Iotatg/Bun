@@ -55,6 +55,8 @@ FAILING = frozenset([
     regcode.BUILD_DICT, regcode.DICT_SET,
     regcode.INDEX, regcode.STORE_INDEX, regcode.SLICE, regcode.STORE_SLICE,
     regcode.UNPACK_PLAN, regcode.FORMAT,
+    regcode.MAKE_STRUCT, regcode.GET_FIELD, regcode.SET_FIELD,
+    regcode.UNWRAP_OR_RETURN,
     regcode.CALL, regcode.METHOD_CALL,
     regcode.FOR_SETUP,
     regcode.THROW, regcode.ASSERT,
@@ -78,6 +80,7 @@ SUPPORTED_BUILTINS = frozenset([
     "zip", "enumerate", "sorted", "reversed",
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "set", "secret", "dump",
+    "Ok", "Err", "is_ok", "is_err",
 ])
 
 # The builtins of the language.  The list is checked against the runtime
@@ -109,6 +112,7 @@ LANGUAGE_BUILTINS = frozenset([
     "bigint_cmp", "bigint_pow_mod", "utf8_bytes", "utf8_string",
     "starts_with", "ends_with", "substring", "index_of", "split", "join",
     "replace", "trim", "lower", "upper",
+    "Ok", "Err", "is_ok", "is_err",
 ])
 
 
@@ -280,6 +284,9 @@ class CEmitter:
         # The code objects whose frame of names is a few variables and not
         # an array.  The emitter fills the table when it writes the frame.
         self.scalar_slots = {}
+        # The code objects of the methods of the structs.  The first
+        # argument of a method is the receiver, and it is borrowed.
+        self.methods = set()
 
     # -- the code objects ---------------------------------------------------
 
@@ -291,9 +298,16 @@ class CEmitter:
         self._index[id(code)] = index
         self.functions.append(code)
         self._module_of[index] = module_index
-        for value in code.get("consts", []):
+        consts = code.get("consts", [])
+        for value in consts:
             if isinstance(value, dict) and "code" in value:
                 self.collect(value, module_index)
+        for instruction in code.get("code", []):
+            op, a, b, c = instruction
+            if op == regcode.REGISTER_IMPL:
+                body = consts[c]
+                if isinstance(body, dict) and "code" in body:
+                    self.methods.add(id(body))
         for spec in code.get("param_defs", []):
             default = spec.get("default")
             if isinstance(default, dict) and "code" in default:
@@ -1231,7 +1245,8 @@ class CEmitter:
             if not site.binding.mutable:
                 return ["    bun_throw(\"cannot assign to immutable variable "
                         "'%s'\", %s);" % (consts[b], _c_string(consts[b]))]
-            return ["    %s = regs[%d];" % (self.slot_ref(code, site.slot), a)]
+            return ["    %s = bun_copy_value(regs[%d]);"
+                    % (self.slot_ref(code, site.slot), a)]
         if op == regcode.DEFINE_NAME:
             site = self.frames[id(code)].site_at(position)
             if site.dynamic:
@@ -1247,12 +1262,13 @@ class CEmitter:
                     # environment holds the environment the function closes
                     # over, so a later call of it does not look it up
                     # either.
-                    lines.append("    %s = regs[%d];"
+                    lines.append("    %s = bun_copy_value(regs[%d]);"
                                  % (self.static_globals[key], a))
                     lines.append("    %s = env;"
                                  % self.static_environments[key])
                 return lines
-            return ["    %s = regs[%d];" % (self.slot_ref(code, site.slot), a)]
+            return ["    %s = bun_copy_value(regs[%d]);"
+                    % (self.slot_ref(code, site.slot), a)]
         if op == regcode.POP:
             return []
         if op == regcode.DUP:
@@ -1361,6 +1377,34 @@ class CEmitter:
                 "    }",
                 "    bun_list_push(regs[%d].as.obj, regs[%d]);" % (a, a + 1),
             ]
+        if op == regcode.MAKE_STRUCT:
+            type_name, field_names = consts[b]
+            lines = ["    {",
+                     "        const char *names[%d];" % max(c, 1)]
+            for index, name in enumerate(field_names):
+                lines.append("        names[%d] = %s;"
+                             % (index, _c_string(name)))
+            lines.append("        BunValue values[%d];" % max(c, 1))
+            for index in range(c):
+                lines.append("        values[%d] = regs[%d];"
+                             % (index, a + index))
+            lines.extend([
+                "        regs[%d] = bun_struct_new(%s, names, values, %d);"
+                % (a, _c_string(type_name), c),
+                "    }",
+            ])
+            return lines
+        if op == regcode.GET_FIELD:
+            return ["    regs[%d] = bun_get_field(regs[%d], %s);"
+                    % (a, b, _c_string(consts[c]))]
+        if op == regcode.SET_FIELD:
+            return ["    bun_set_field(regs[%d], %s, regs[%d]);"
+                    % (a, _c_string(consts[c]), b)]
+        if op == regcode.REGISTER_IMPL:
+            body = consts[c]
+            return ["    bun_register_struct_method(%s, %s, %s, env);"
+                    % (_c_string(consts[a]), _c_string(consts[b]),
+                       self.function_name(body))]
         if op == regcode.DICT_SET:
             return [
                 "    if (regs[%d].tag != BUN_DICT) {" % a,
@@ -1506,8 +1550,19 @@ class CEmitter:
                 "    }",
             ])
             return lines
+        if op == regcode.UNWRAP_OR_RETURN:
+            return [
+                "    {",
+                "        BunValue tmp = regs[%d];" % a,
+                "        BunValue out;",
+                "        if (!bun_unwrap_result(tmp, &out)) {",
+                "            return bun_copy_value(tmp);",
+                "        }",
+                "        regs[%d] = out;" % a,
+                "    }",
+            ]
         if op == regcode.RETURN:
-            return ["    return regs[%d];" % a]
+            return ["    return bun_copy_value(regs[%d]);" % a]
         if op == regcode.HALT:
             # The value of the expression of the program is on the top of
             # the stack, one slot below the depth of the instruction.
@@ -1698,6 +1753,7 @@ class CEmitter:
                 continue
             name = "bun_params_%d" % index
             lines = []
+            method = id(code) in self.methods
             for position, spec in enumerate(defs):
                 kind = spec.get("param_kind", "positional")
                 if kind == "positional":
@@ -1708,17 +1764,20 @@ class CEmitter:
                     code_kind = 2
                 else:
                     code_kind = 3
+                # The first argument of a method is the receiver, and it
+                # is borrowed: the method changes the receiver itself.
+                borrowed = 1 if method and position == 0 else 0
                 default = spec.get("default")
                 if default is None:
-                    lines.append("    { %s, %d, 0, NULL, %d }," % (
+                    lines.append("    { %s, %d, 0, NULL, %d, %d }," % (
                         _c_string(spec["name"]), code_kind, self.param_slot(
-                            info, position)))
+                            info, position), borrowed))
                 else:
                     default_index = self._index[id(default)]
-                    lines.append("    { %s, %d, 1, %s, %d }," % (
+                    lines.append("    { %s, %d, 1, %s, %d, %d }," % (
                         _c_string(spec["name"]), code_kind,
                         self.function_name(default),
-                        self.param_slot(info, position)))
+                        self.param_slot(info, position), borrowed))
             self.param_tables[index] = (name, len(defs), lines)
 
     def param_slot(self, info, position):
@@ -1787,10 +1846,17 @@ class CEmitter:
             if slot < 0:
                 return slow("    ")
             slots.append(slot)
+        # The first argument of a method is the receiver, and it is
+        # borrowed: the other arguments are copied.
+        method = id(code) in self.methods
         lines = ["    if (kwargs.tag != BUN_DICT && argc == %d) {" % count]
         for position, slot in enumerate(slots):
-            lines.append("        %s = args[%d];"
-                         % (self.slot_ref(code, slot), position))
+            if method and position == 0:
+                lines.append("        %s = args[%d];"
+                             % (self.slot_ref(code, slot), position))
+            else:
+                lines.append("        %s = bun_copy_value(args[%d]);"
+                             % (self.slot_ref(code, slot), position))
         lines.append("    } else {")
         lines.extend(slow("        "))
         lines.append("    }")

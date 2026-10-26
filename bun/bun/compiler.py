@@ -59,6 +59,11 @@ OP_SCOPE_ENTER = "SCOPE_ENTER"
 OP_SCOPE_EXIT = "SCOPE_EXIT"
 OP_MATCH_TEST = "MATCH_TEST"
 OP_MATCH_FAIL = "MATCH_FAIL"
+OP_MAKE_STRUCT = "MAKE_STRUCT"
+OP_GET_FIELD = "GET_FIELD"
+OP_SET_FIELD = "SET_FIELD"
+OP_REGISTER_IMPL = "REGISTER_IMPL"
+OP_UNWRAP_OR_RETURN = "UNWRAP_OR_RETURN"
 
 MATCH_SUBJECT = "__match_subject"
 
@@ -75,6 +80,7 @@ def make_code(name, params, code, filename, source):
         "filename": filename,
         "source": source,
         "param_defs": [],
+        "type_params": [],
     }
 
 
@@ -121,13 +127,25 @@ class Compiler:
         self._try_contexts = []
         self._for_depth = 0
         self._loops = []
+        self.structs = {}
 
     def compile_program(self, program):
         code = []
+        self._collect_structs(program.statements)
         for statement in program.statements:
             self.compile_statement(statement, code)
         code.append((OP_HALT, None, 0, 0))
         return make_code("<module>", [], code, self.filename, self.source)
+
+    def _collect_structs(self, statements):
+        """Collect the struct declarations of the program.
+
+        The declarations are collected before the code is written, so a
+        constructor may be called before the declaration that names it.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.StructDecl):
+                self.structs[statement.name] = statement
 
     def compile_function(self, node):
         code = []
@@ -153,6 +171,8 @@ class Compiler:
                            [param.name for param in node.params], code,
                            self.filename, self.source)
         result["param_defs"] = [self._param_def(param) for param in node.params]
+        result["type_params"] = [{"name": param.name, "bound": param.bound}
+                                 for param in node.type_params]
         if has_yield(node.body):
             # A function that gives values is a generator, and the
             # runtime knows it before the program runs.
@@ -199,6 +219,10 @@ class Compiler:
                 else:
                     self.compile_expr(node.target.index, code)
                     emit(code, OP_STORE_INDEX, None, node)
+            elif isinstance(node.target, ast.Attribute):
+                self.compile_expr(node.target.object, code)
+                self.compile_expr(node.value, code)
+                emit(code, OP_SET_FIELD, node.target.name, node)
             else:
                 raise CompileError("invalid assignment target")
         elif isinstance(node, ast.ExprStmt):
@@ -313,6 +337,17 @@ class Compiler:
                 emit(code, OP_DEFINE_NAME, (node.name, False), node)
             if node.exported:
                 emit(code, OP_RECORD_EXPORT, node.name, node)
+        elif isinstance(node, ast.StructDecl):
+            self.structs[node.name] = node
+        elif isinstance(node, ast.ProtocolDecl):
+            # A protocol is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            pass
+        elif isinstance(node, ast.ImplDecl):
+            for method in node.methods:
+                emit(code, OP_REGISTER_IMPL,
+                     (node.type_name, method.name,
+                      self.compile_function(method)), node)
         elif isinstance(node, ast.ImportStmt):
             emit(code, OP_IMPORT, (node.path, list(node.names)), node)
         elif isinstance(node, ast.ReturnStmt):
@@ -734,6 +769,12 @@ class Compiler:
                          (part.spec, part.conv, part.source_text), node)
             emit(code, OP_BUILD_STRING, len(node.parts), node)
         elif isinstance(node, ast.Call):
+            declaration = None
+            if isinstance(node.callee, ast.Identifier):
+                declaration = self.structs.get(node.callee.name)
+            if declaration is not None:
+                self._compile_constructor(declaration, node, code)
+                return
             self.compile_expr(node.callee, code)
             for arg_node in node.args:
                 self.compile_expr(arg_node, code)
@@ -744,11 +785,35 @@ class Compiler:
                     self.compile_expr(value_node, code)
                     emit(code, OP_DICT_SET, None, node)
             emit(code, OP_CALL, (len(node.args), bool(node.kwargs)), node)
+        elif isinstance(node, ast.Attribute):
+            self.compile_expr(node.object, code)
+            emit(code, OP_GET_FIELD, node.name, node)
+        elif isinstance(node, ast.Unwrap):
+            self.compile_expr(node.expr, code)
+            emit(code, OP_UNWRAP_OR_RETURN, None, node)
         elif isinstance(node, ast.FnDecl):
             emit(code, OP_MAKE_FUNCTION, self.compile_function(node), node)
         else:
             raise CompileError(
                 "unknown expression: %s" % type(node).__name__)
+
+    def _compile_constructor(self, declaration, node, code):
+        """Compile a call of a struct name."""
+        fields = declaration.fields
+        if len(node.args) > len(fields):
+            raise CompileError(
+                "struct '%s' expects %d argument(s), got %d"
+                % (declaration.name, len(fields), len(node.args)))
+        for arg_node in node.args:
+            self.compile_expr(arg_node, code)
+        for field in fields[len(node.args):]:
+            if field.default is None:
+                raise CompileError(
+                    "struct '%s' is missing a value for field '%s'"
+                    % (declaration.name, field.name))
+            self.compile_expr(field.default, code)
+        emit(code, OP_MAKE_STRUCT,
+             (declaration.name, [field.name for field in fields]), node)
 
     def _compile_unpack_store(self, leaf, code, node, mutable=None):
         """Store one unpacked value into its target."""

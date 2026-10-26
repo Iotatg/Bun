@@ -51,6 +51,11 @@ from .compiler import (
     OP_MATCH_FAIL,
     OP_MATCH_TEST,
     OP_METHOD_CALL,
+    OP_MAKE_STRUCT,
+    OP_GET_FIELD,
+    OP_SET_FIELD,
+    OP_REGISTER_IMPL,
+    OP_UNWRAP_OR_RETURN,
     OP_PENDING_ERROR,
     OP_POP,
     OP_PROTOCOL_GET,
@@ -482,6 +487,40 @@ def _match_fail(self, arg, instruction):
     self.depth -= 1
 
 
+def _make_struct(self, arg, instruction):
+    # The values of the fields are in the slots below, and the struct
+    # takes their place.
+    type_name, field_names = arg
+    count = len(field_names)
+    self.emit(regcode.MAKE_STRUCT, self.depth - count,
+              self.constant((type_name, list(field_names))), count)
+    self.depth = self.depth - count + 1
+
+
+def _get_field(self, arg, instruction):
+    self.emit(regcode.GET_FIELD, self.depth - 1, self.depth - 1,
+              self.constant(arg))
+
+
+def _set_field(self, arg, instruction):
+    # The object is below the value.
+    self.emit(regcode.SET_FIELD, self.depth - 2, self.depth - 1,
+              self.constant(arg))
+    self.depth -= 2
+
+
+def _register_impl(self, arg, instruction):
+    type_name, method, body = arg
+    # The body of the method is lowered as well, so the register code of
+    # a program holds nothing but register code.
+    self.emit(regcode.REGISTER_IMPL, self.constant(type_name),
+              self.constant(method), self.constant(registerize(body)))
+
+
+def _unwrap_or_return(self, arg, instruction):
+    self.emit(regcode.UNWRAP_OR_RETURN, self.depth - 1)
+
+
 _HANDLERS = {
     OP_LOAD_CONST: _load_const,
     OP_LOAD_NAME: _load_name,
@@ -537,6 +576,11 @@ _HANDLERS = {
     OP_SCOPE_EXIT: _scope_exit,
     OP_MATCH_TEST: _match_test,
     OP_MATCH_FAIL: _match_fail,
+    OP_MAKE_STRUCT: _make_struct,
+    OP_GET_FIELD: _get_field,
+    OP_SET_FIELD: _set_field,
+    OP_REGISTER_IMPL: _register_impl,
+    OP_UNWRAP_OR_RETURN: _unwrap_or_return,
 }
 
 

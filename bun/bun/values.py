@@ -27,6 +27,30 @@ class Builtin:
     func: object
 
 
+class BunStruct:
+    """A value of a user-declared struct type.
+
+    Assignment copies nested structs. A method call borrows the same
+    object, so mutations through ``self`` are visible on the receiver.
+    """
+
+    def __init__(self, type_name, fields, field_order=None):
+        self.type_name = type_name
+        self.fields = fields
+        self.field_order = field_order if field_order is not None else list(fields)
+
+
+def copy_value(value):
+    """Copy a struct (recursively). Other values are shared."""
+    if isinstance(value, BunStruct):
+        return BunStruct(
+            value.type_name,
+            {name: copy_value(item) for name, item in value.fields.items()},
+            list(value.field_order),
+        )
+    return value
+
+
 class BunSecret:
     """A value that is redacted in every rendering.
 
@@ -117,6 +141,14 @@ def _stringify(value, seen):
         return "<fn %s>" % value.name
     if isinstance(value, Builtin):
         return "<builtin %s>" % value.name
+    if isinstance(value, BunStruct):
+        if id(value) in seen:
+            return "..."
+        nested = seen | {id(value)}
+        pairs = ", ".join(
+            "%s: %s" % (name, _stringify(value.fields[name], nested))
+            for name in value.field_order)
+        return "%s{%s}" % (value.type_name, pairs)
     return str(value)
 
 
@@ -149,6 +181,17 @@ def values_equal(a, b):
             return False
         for item in a.values():
             if not b.contains(item):
+                return False
+        return True
+    if isinstance(a, BunStruct) or isinstance(b, BunStruct):
+        if not isinstance(a, BunStruct) or not isinstance(b, BunStruct):
+            return False
+        if a.type_name != b.type_name:
+            return False
+        if a.field_order != b.field_order:
+            return False
+        for name in a.field_order:
+            if not values_equal(a.fields[name], b.fields[name]):
                 return False
         return True
     return False
@@ -189,6 +232,11 @@ def repr_value(value):
         return "<fn %s>" % value.name
     if isinstance(value, Builtin):
         return "<builtin %s>" % value.name
+    if isinstance(value, BunStruct):
+        pairs = ", ".join(
+            "%s: %s" % (name, repr_value(value.fields[name]))
+            for name in value.field_order)
+        return "%s{%s}" % (value.type_name, pairs)
     return str(value)
 
 

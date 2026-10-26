@@ -73,6 +73,15 @@ fn statement(st) {
     if t == "FN" {
         return fn_decl(st)
     }
+    if t == "STRUCT" {
+        return struct_decl(st)
+    }
+    if t == "IMPL" {
+        return impl_decl(st)
+    }
+    if t == "PROTOCOL" {
+        return protocol_decl(st)
+    }
     if t == "AT" {
         return decorated_decl(st)
     }
@@ -202,6 +211,7 @@ fn unpack_binding(st) {
 fn fn_decl(st) {
     let kw = advance(st)
     let name = expect(st, "IDENT", "expected function name")
+    let type_params = type_param_list(st)
     expect(st, "LPAREN", "expected '(' after function name")
     let params = param_list(st)
     var return_type = null
@@ -209,7 +219,90 @@ fn fn_decl(st) {
         return_type = type_name(st)
     }
     let body = block(st)
-    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": []}
+    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": type_params}
+}
+
+// Parse a struct: the name of the type and the fields it holds.
+fn struct_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected struct name")
+    expect(st, "LBRACE", "expected '{' after struct name")
+    let fields = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        fields.push(struct_field(st))
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after struct fields")
+    return {"kind": "StructDecl", "name": name["value"], "fields": fields, "line": kw["line"], "col": kw["col"]}
+}
+
+fn struct_field(st) {
+    let start = peek(st)
+    var mutable = true
+    if match_token(st, ["LET"]) != null {
+        mutable = false
+    } else {
+        if match_token(st, ["VAR"]) != null {
+            mutable = true
+        }
+    }
+    let name = expect(st, "IDENT", "expected field name")
+    let type_ann = opt_type(st)
+    var default = null
+    if match_token(st, ["ASSIGN"]) != null {
+        default = expression(st)
+    }
+    return {"kind": "StructField", "name": name["value"], "type_ann": type_ann, "mutable": mutable, "default": default, "line": start["line"], "col": start["col"]}
+}
+
+// Parse an impl block: the methods of a type.
+fn impl_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected type name after 'impl'")
+    expect(st, "LBRACE", "expected '{' after impl name")
+    let methods = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        if !check(st, "FN") {
+            throw "expected a method in an impl block"
+        }
+        methods.push(fn_decl(st))
+    }
+    expect(st, "RBRACE", "expected '}' after impl methods")
+    return {"kind": "ImplDecl", "type_name": name["value"], "methods": methods, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse a protocol: a set of method signatures.
+fn protocol_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected protocol name")
+    expect(st, "LBRACE", "expected '{' after protocol name")
+    let methods = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        if !check(st, "FN") {
+            throw "expected a method signature in a protocol block"
+        }
+        methods.push(method_signature(st))
+    }
+    expect(st, "RBRACE", "expected '}' after protocol methods")
+    return {"kind": "ProtocolDecl", "name": name["value"], "methods": methods, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse the signature of a method: the name, the parameters and the
+// return type, without a body.
+fn method_signature(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected method name")
+    expect(st, "LPAREN", "expected '(' after method name")
+    let params = param_list(st)
+    var return_type = null
+    if match_token(st, ["ARROW"]) != null {
+        return_type = type_name(st)
+    }
+    if params.len() == 0 or params[0]["name"] != "self" {
+        throw "expected 'self' as the first parameter of a protocol method"
+    }
+    let body = {"kind": "Block", "statements": [], "line": kw["line"], "col": kw["col"]}
+    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": []}
 }
 
 // Parse a function with decorators in front of it. The decorators are
@@ -297,10 +390,67 @@ fn opt_type(st) {
 }
 
 fn type_name(st) {
+    // A type is a name, or a name with type arguments: `list<T>`. A
+    // type argument is a plain type name or a type variable, so a type
+    // is never written `list<list<T>>`.
     if check(st, "FN") {
         return advance(st)["value"]
     }
-    return expect(st, "IDENT", "expected type name")["value"]
+    let name = expect(st, "IDENT", "expected type name")["value"]
+    if !check(st, "LT") {
+        return name
+    }
+    advance(st)
+    let args = []
+    while !check(st, "GT") {
+        args.push(type_argument(st))
+        if match_token(st, ["COMMA"]) == null {
+            break
+        }
+    }
+    expect(st, "GT", "expected '>' after type arguments")
+    return name + "<" + join_types(args) + ">"
+}
+
+fn type_argument(st) {
+    return expect(st, "IDENT", "expected type argument")["value"]
+}
+
+fn join_types(args) {
+    // The type arguments of a type are written with a comma and a
+    // space between them.
+    var out = ""
+    var i = 0
+    while i < args.len() {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + args[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Parse the type parameters of a function: `<T, U: Num>`.
+fn type_param_list(st) {
+    if !check(st, "LT") {
+        return []
+    }
+    advance(st)
+    let params = []
+    while !check(st, "GT") {
+        let tok = expect(st, "IDENT", "expected type parameter name")
+        var bound = null
+        if match_token(st, ["COLON"]) != null {
+            bound = expect(st, "IDENT", "expected bound of type parameter")["value"]
+        }
+        params.push({"kind": "TypeParam", "name": tok["value"], "bound": bound, "line": tok["line"], "col": tok["col"]})
+        if match_token(st, ["COMMA"]) == null {
+            break
+        }
+    }
+    expect(st, "GT", "expected '>' after type parameters")
+    return params
 }
 
 fn import_stmt(st) {
@@ -746,7 +896,7 @@ fn expr_stmt(st) {
             let target = {"kind": "UnpackTarget", "target_kind": "list", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
             return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
         }
-        if !(kind == "Identifier" or kind == "Index") {
+        if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
             throw "invalid assignment target"
         }
         return {"kind": "AssignStmt", "target": expr, "value": value, "line": start["line"], "col": start["col"]}
@@ -756,7 +906,7 @@ fn expr_stmt(st) {
 
 fn unpack_target(st, expr) {
     let kind = expr["kind"]
-    if kind == "Identifier" or kind == "Index" {
+    if kind == "Identifier" or kind == "Index" or kind == "Attribute" {
         return expr
     }
     throw "invalid assignment target"
@@ -937,25 +1087,34 @@ fn postfix(st) {
             } else {
                 if check(st, "DOT") {
                     advance(st)
-                    let name = expect(st, "IDENT", "expected method name after '.'")
-                    expect(st, "LPAREN", "expected '(' after method name")
-                    let args = []
-                    if !check(st, "RPAREN") {
-                        args.push(expression(st))
-                        while match_token(st, ["COMMA"]) != null {
+                    let name = expect(st, "IDENT", "expected name after '.'")
+                    if check(st, "LPAREN") {
+                        advance(st)
+                        let args = []
+                        if !check(st, "RPAREN") {
                             args.push(expression(st))
+                            while match_token(st, ["COMMA"]) != null {
+                                args.push(expression(st))
+                            }
                         }
-                    }
-                    expect(st, "RPAREN", "expected ')' after arguments")
-                    expr = {"kind": "MethodCall", "receiver": expr, "method": name["value"], "args": args, "line": expr["line"], "col": expr["col"]}
-                } else {
-                    if check(st, "LBRACE") and expr["kind"] == "Identifier" and expr["name"] == "spawn" {
-                        // `spawn { ... }` is sugar for `spawn(fn() { ... })`.
-                        let body = block(st)
-                        let function = {"kind": "FnDecl", "name": "", "params": [], "body": body, "line": expr["line"], "col": expr["col"], "exported": false, "return_type": null, "decorators": []}
-                        expr = {"kind": "Call", "callee": expr, "args": [function], "line": expr["line"], "col": expr["col"], "kwargs": []}
+                        expect(st, "RPAREN", "expected ')' after arguments")
+                        expr = {"kind": "MethodCall", "receiver": expr, "method": name["value"], "args": args, "line": expr["line"], "col": expr["col"]}
                     } else {
-                        looping = false
+                        expr = {"kind": "Attribute", "object": expr, "name": name["value"], "line": expr["line"], "col": expr["col"]}
+                    }
+                } else {
+                    if check(st, "QUESTION") {
+                        let op = advance(st)
+                        expr = {"kind": "Unwrap", "expr": expr, "line": op["line"], "col": op["col"]}
+                    } else {
+                        if check(st, "LBRACE") and expr["kind"] == "Identifier" and expr["name"] == "spawn" {
+                            // `spawn { ... }` is sugar for `spawn(fn() { ... })`.
+                            let body = block(st)
+                            let function = {"kind": "FnDecl", "name": "", "params": [], "body": body, "line": expr["line"], "col": expr["col"], "exported": false, "return_type": null, "decorators": [], "type_params": []}
+                            expr = {"kind": "Call", "callee": expr, "args": [function], "line": expr["line"], "col": expr["col"], "kwargs": []}
+                        } else {
+                            looping = false
+                        }
                     }
                 }
             }
@@ -1017,7 +1176,7 @@ fn primary(st) {
             return_type = type_name(st)
         }
         let body = block(st)
-        return {"kind": "FnDecl", "name": "", "params": params, "body": body, "line": tok["line"], "col": tok["col"], "exported": false, "return_type": return_type, "decorators": []}
+        return {"kind": "FnDecl", "name": "", "params": params, "body": body, "line": tok["line"], "col": tok["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": []}
     }
     if t == "LPAREN" {
         advance(st)

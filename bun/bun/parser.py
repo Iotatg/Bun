@@ -61,6 +61,12 @@ class Parser:
             return self._var_decl(True)
         if t == TokenType.FN:
             return self._fn_decl()
+        if t == TokenType.STRUCT:
+            return self._struct_decl()
+        if t == TokenType.IMPL:
+            return self._impl_decl()
+        if t == TokenType.PROTOCOL:
+            return self._protocol_decl()
         if t == TokenType.AT:
             return self._decorated_decl()
         if t == TokenType.IF:
@@ -165,9 +171,49 @@ class Parser:
             return "from"
         return self._expect(TokenType.IDENT, "expected variable name").value
 
+    def _struct_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected struct name")
+        self._expect(TokenType.LBRACE, "expected '{' after struct name")
+        fields = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            fields.append(self._struct_field())
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after struct fields")
+        return ast.StructDecl(name.value, fields, kw.line, kw.col)
+
+    def _struct_field(self):
+        start = self._peek()
+        mutable = True
+        if self._match(TokenType.LET):
+            mutable = False
+        elif self._match(TokenType.VAR):
+            mutable = True
+        name = self._expect(TokenType.IDENT, "expected field name")
+        type_ann = self._opt_type()
+        default = None
+        if self._match(TokenType.ASSIGN):
+            default = self._expression()
+        return ast.StructField(name.value, type_ann, mutable, default,
+                               start.line, start.col)
+
+    def _impl_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected type name after 'impl'")
+        self._expect(TokenType.LBRACE, "expected '{' after impl name")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            if not self._check(TokenType.FN):
+                raise ParseError("expected a method in an impl block",
+                                 self._peek().line, self._peek().col)
+            methods.append(self._fn_decl())
+        self._expect(TokenType.RBRACE, "expected '}' after impl methods")
+        return ast.ImplDecl(name.value, methods, kw.line, kw.col)
+
     def _fn_decl(self):
         kw = self._advance()
         name = self._expect(TokenType.IDENT, "expected function name")
+        type_params = self._type_params()
         self._expect(TokenType.LPAREN, "expected '(' after function name")
         params = self._param_list()
         return_type = None
@@ -175,7 +221,60 @@ class Parser:
             return_type = self._type_name()
         body = self._block()
         return ast.FnDecl(name.value, params, body, kw.line, kw.col,
-                          return_type=return_type)
+                          return_type=return_type, type_params=type_params)
+
+    def _type_params(self):
+        """Parse the type parameters of a function: `<T, U: Num>`.
+
+        The list is empty when the name of the function is followed by
+        anything else than a `<`.
+        """
+        if not self._check(TokenType.LT):
+            return []
+        self._advance()
+        params = []
+        while not self._check(TokenType.GT):
+            tok = self._expect(TokenType.IDENT, "expected type parameter name")
+            bound = None
+            if self._match(TokenType.COLON):
+                bound = self._expect(TokenType.IDENT,
+                                     "expected bound of type parameter").value
+            params.append(ast.TypeParam(tok.value, bound, tok.line, tok.col))
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.GT, "expected '>' after type parameters")
+        return params
+
+    def _protocol_decl(self):
+        """Parse a protocol: a set of method signatures."""
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected protocol name")
+        self._expect(TokenType.LBRACE, "expected '{' after protocol name")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            if not self._check(TokenType.FN):
+                raise ParseError("expected a method signature in a protocol block",
+                                 self._peek().line, self._peek().col)
+            methods.append(self._method_signature())
+        self._expect(TokenType.RBRACE, "expected '}' after protocol methods")
+        return ast.ProtocolDecl(name.value, methods, kw.line, kw.col)
+
+    def _method_signature(self):
+        """Parse the signature of a method: the name, the parameters and the
+        return type, without a body."""
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected method name")
+        self._expect(TokenType.LPAREN, "expected '(' after method name")
+        params = self._param_list()
+        return_type = None
+        if self._match(TokenType.ARROW):
+            return_type = self._type_name()
+        if not params or params[0].name != "self":
+            raise ParseError(
+                "expected 'self' as the first parameter of a protocol method",
+                kw.line, kw.col)
+        return ast.FnDecl(name.value, params, ast.Block([], kw.line, kw.col),
+                          kw.line, kw.col, return_type=return_type)
 
     def _decorated_decl(self):
         """Parse a function with decorators in front of it.
@@ -256,9 +355,28 @@ class Parser:
         return None
 
     def _type_name(self):
+        """Parse a type: a name, or a name with type arguments.
+
+        A type argument is a plain type name or a type variable, so a
+        type is written `list<T>` and never `list<list<T>>`.
+        """
         if self._check(TokenType.FN):
             return self._advance().value
-        return self._expect(TokenType.IDENT, "expected type name").value
+        name = self._expect(TokenType.IDENT, "expected type name").value
+        if not self._check(TokenType.LT):
+            return name
+        self._advance()
+        args = []
+        while not self._check(TokenType.GT):
+            args.append(self._type_argument())
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.GT, "expected '>' after type arguments")
+        return name + "<" + ", ".join(args) + ">"
+
+    def _type_argument(self):
+        """Parse one type argument: a type name or a type variable."""
+        return self._expect(TokenType.IDENT, "expected type argument").value
 
     def _import_stmt(self):
         kw = self._advance()
@@ -644,7 +762,7 @@ class Parser:
                 target = ast.UnpackTarget("list", targets, None, start.line,
                                           start.col)
                 return ast.AssignStmt(target, value, start.line, start.col)
-            if not isinstance(expr, (ast.Identifier, ast.Index)):
+            if not isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
                 raise ParseError("invalid assignment target", start.line, start.col)
             return ast.AssignStmt(expr, value, start.line, start.col)
         return ast.ExprStmt(expr, start.line, start.col)
@@ -808,15 +926,21 @@ class Parser:
                 expr = ast.Index(expr, index, expr.line, expr.col)
             elif self._check(TokenType.DOT):
                 self._advance()
-                name = self._expect(TokenType.IDENT, "expected method name after '.'")
-                self._expect(TokenType.LPAREN, "expected '(' after method name")
-                args = []
-                if not self._check(TokenType.RPAREN):
-                    args.append(self._expression())
-                    while self._match(TokenType.COMMA):
+                name = self._expect(TokenType.IDENT, "expected name after '.'")
+                if self._check(TokenType.LPAREN):
+                    self._advance()
+                    args = []
+                    if not self._check(TokenType.RPAREN):
                         args.append(self._expression())
-                self._expect(TokenType.RPAREN, "expected ')' after arguments")
-                expr = ast.MethodCall(expr, name.value, args, expr.line, expr.col)
+                        while self._match(TokenType.COMMA):
+                            args.append(self._expression())
+                    self._expect(TokenType.RPAREN, "expected ')' after arguments")
+                    expr = ast.MethodCall(expr, name.value, args, expr.line, expr.col)
+                else:
+                    expr = ast.Attribute(expr, name.value, expr.line, expr.col)
+            elif self._check(TokenType.QUESTION):
+                op = self._advance()
+                expr = ast.Unwrap(expr, op.line, op.col)
             else:
                 break
         return expr

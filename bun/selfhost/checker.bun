@@ -13,6 +13,8 @@ let TYPES = {
     "fn": true,
     "secret": true,
     "set": true,
+    "struct": true,
+    "result": true,
     "number": true,
     "text": true,
 }
@@ -147,10 +149,86 @@ let BUILTIN_SIGNATURES = {
     "trim": [[["string"], "string"]],
     "lower": [[["string"], "string"]],
     "upper": [[["string"], "string"]],
+    "Ok": [[["any"], "result"]],
+    "Err": [[["any"], "result"]],
+    "is_ok": [[["any"], "bool"]],
+    "is_err": [[["any"], "bool"]],
 }
 
 fn is_known_type(name) {
     return TYPES.has(name)
+}
+
+// The name of a type, without its type arguments: the type
+// `list<int>` has the base `list`.
+fn base_type(name) {
+    if name == null {
+        return null
+    }
+    let index = index_of(name, "<")
+    if index < 0 {
+        return name
+    }
+    return substring(name, 0, index)
+}
+
+// The type arguments of a type: the type `list<int>` has the argument
+// `int`, and the type `int` has no argument.
+fn type_args(name) {
+    if name == null {
+        return []
+    }
+    let index = index_of(name, "<")
+    if index < 0 {
+        return []
+    }
+    let inner = substring(name, index + 1, len(name) - 1)
+    let parts = split(inner, ",")
+    var result = []
+    var i = 0
+    while i < parts.len() {
+        result.push(trim(parts[i]))
+        i = i + 1
+    }
+    return result
+}
+
+// The bounds a type parameter may carry. A bound with an empty set is
+// satisfied by every type.
+fn bound_types(bound) {
+    if bound == "Num" {
+        return ["int", "float"]
+    }
+    if bound == "Ord" {
+        return ["int", "float", "string"]
+    }
+    if bound == "Hash" {
+        return ["int", "float", "string", "bool"]
+    }
+    return []
+}
+
+// Report whether a type satisfies a bound. The type `any` satisfies
+// every bound: it is the way out of the check of a type.
+fn satisfies_bound(name, bound) {
+    if bound == null {
+        return true
+    }
+    if name == "any" {
+        return true
+    }
+    let allowed = bound_types(bound)
+    if allowed.len() == 0 {
+        return true
+    }
+    var i = 0
+    while i < allowed.len() {
+        if allowed[i] == name {
+            return true
+        }
+        i = i + 1
+    }
+    return false
 }
 
 fn is_assignable(source, target) {
@@ -171,6 +249,14 @@ fn is_assignable(source, target) {
     }
     if source == "null" {
         return true
+    }
+    // A type with type arguments is a type with the same name: the
+    // arguments of a container are a promise of the program, not a
+    // check of the language.
+    let source_base = base_type(source)
+    let target_base = base_type(target)
+    if source_base != source or target_base != target {
+        return source_base == target_base
     }
     return false
 }
@@ -194,19 +280,19 @@ fn fail(message, node) {
 }
 
 fn make_binding(kind) {
-    return {"type": kind, "params": null, "return_type": null, "mutable": true}
+    return {"type": kind, "params": null, "return_type": null, "mutable": true, "type_params": null}
 }
 
 fn make_immutable_binding(kind) {
-    return {"type": kind, "params": null, "return_type": null, "mutable": false}
+    return {"type": kind, "params": null, "return_type": null, "mutable": false, "type_params": null}
 }
 
 fn make_fn_binding(params, ret) {
-    return {"type": "fn", "params": params, "return_type": ret, "mutable": true}
+    return {"type": "fn", "params": params, "return_type": ret, "mutable": true, "type_params": null}
 }
 
 fn make_immutable_fn_binding(params, ret) {
-    return {"type": "fn", "params": params, "return_type": ret, "mutable": false}
+    return {"type": "fn", "params": params, "return_type": ret, "mutable": false, "type_params": null}
 }
 
 fn param_specs(decl) {
@@ -237,19 +323,104 @@ fn copy_scope(scope) {
 }
 
 fn make_state(base_dir) {
-    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0}
+    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": []}
 }
 
-fn check_annotation(name, node) {
-    if name != null and !is_known_type(name) {
-        fail("unknown type '" + name + "'", node)
+fn check_annotation(state, name, node) {
+    if name == null {
+        return
     }
+    if is_type_var(state, name) {
+        return
+    }
+    let base = base_type(name)
+    if is_known_type(base) or state["structs"].has(base) {
+        let args = type_args(name)
+        var i = 0
+        while i < args.len() {
+            check_annotation(state, args[i], node)
+            i = i + 1
+        }
+        return
+    }
+    if state["protocols"].has(name) {
+        return
+    }
+    fail("unknown type '" + name + "'", node)
 }
 
-fn check_annotation_throw(name) {
-    if name != null and !is_known_type(name) {
-        throw "unknown type '" + name + "'"
+fn check_annotation_throw(state, name) {
+    if name == null {
+        return
     }
+    if is_type_var(state, name) {
+        return
+    }
+    let base = base_type(name)
+    if is_known_type(base) or state["structs"].has(base) {
+        return
+    }
+    if state["protocols"].has(name) {
+        return
+    }
+    throw "unknown type '" + name + "'"
+}
+
+// Make the type parameters of a function the types in scope. A type
+// parameter is a name of a type that is not known yet, so the body of
+// the function is checked with it in place of a type.
+fn push_type_vars(state, decl) {
+    let frame = {}
+    let seen = {}
+    let params = decl["type_params"]
+    var i = 0
+    while i < params.len() {
+        let param = params[i]
+        if seen.has(param["name"]) {
+            fail("duplicate type parameter '" + param["name"] + "'", param)
+        }
+        if param["bound"] != null and !is_known_bound(param["bound"]) {
+            fail("unknown bound '" + param["bound"] + "'", param)
+        }
+        seen[param["name"]] = true
+        frame[param["name"]] = param["bound"]
+        i = i + 1
+    }
+    state["type_vars"].push(frame)
+}
+
+fn pop_type_vars(state) {
+    state["type_vars"].pop()
+}
+
+// Report whether a name is a type parameter in scope.
+fn is_type_var(state, name) {
+    let frames = state["type_vars"]
+    var i = frames.len() - 1
+    while i >= 0 {
+        if frames[i].has(name) {
+            return true
+        }
+        i = i - 1
+    }
+    return false
+}
+
+// The bound of a type parameter in scope.
+fn type_var_bound(state, name) {
+    let frames = state["type_vars"]
+    var i = frames.len() - 1
+    while i >= 0 {
+        if frames[i].has(name) {
+            return frames[i][name]
+        }
+        i = i - 1
+    }
+    return null
+}
+
+fn is_known_bound(name) {
+    return name == "Num" or name == "Ord" or name == "Eq" or name == "Hash" or name == "Show"
 }
 
 fn collect_functions(statements, scope) {
@@ -257,10 +428,314 @@ fn collect_functions(statements, scope) {
     while i < statements.len() {
         let statement = statements[i]
         if statement["kind"] == "FnDecl" {
-            scope[statement["name"]] = make_immutable_fn_binding(param_specs(statement), statement["return_type"])
+            let binding = make_immutable_fn_binding(param_specs(statement), statement["return_type"])
+            binding["type_params"] = statement["type_params"]
+            scope[statement["name"]] = binding
         }
         i = i + 1
     }
+}
+
+// Collect the structs of the program and the methods of their impl
+// blocks. The declarations are collected before the statements are
+// checked, so a constructor may be called before the declaration that
+// names it.
+fn collect_structs(state, statements, scope) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "StructDecl" {
+            state["structs"][statement["name"]] = statement
+            scope[statement["name"]] = make_immutable_binding("struct")
+        } else {
+            if statement["kind"] == "ImplDecl" {
+                let methods = state["impls"]
+                let type_name = statement["type_name"]
+                if !methods.has(type_name) {
+                    methods[type_name] = {}
+                }
+                let table = methods[type_name]
+                let list = statement["methods"]
+                var k = 0
+                while k < list.len() {
+                    table[list[k]["name"]] = list[k]
+                    k = k + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Collect the protocols of the program. The protocols are collected
+// before the statements are checked, so a protocol may be used before
+// the declaration that names it.
+fn collect_protocols(state, statements) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "ProtocolDecl" {
+            let methods = {}
+            let list = statement["methods"]
+            var k = 0
+            while k < list.len() {
+                methods[list[k]["name"]] = list[k]
+                k = k + 1
+            }
+            state["protocols"][statement["name"]] = methods
+        }
+        i = i + 1
+    }
+}
+
+// The first method of a protocol that a type does not have. A protocol
+// is satisfied by a type that has every method of the protocol, so the
+// check of a protocol is a check of the methods.
+fn missing_method(state, source, protocol_name) {
+    if source == "any" {
+        return null
+    }
+    var methods = {}
+    if state["protocols"].has(source) {
+        methods = state["protocols"][source]
+    } else {
+        if state["impls"].has(source) {
+            methods = state["impls"][source]
+        }
+    }
+    let wanted = state["protocols"][protocol_name]
+    let names = wanted.keys()
+    var i = 0
+    while i < names.len() {
+        if !methods.has(names[i]) {
+            return names[i]
+        }
+        i = i + 1
+    }
+    return null
+}
+
+// Check that a value of the source type fits the target type. The
+// message is written only when the check fails. A protocol says which
+// method is missing, because that is the part the program has to add.
+fn check_assignable(state, source, target, node, kind, name) {
+    if state["protocols"].has(target) {
+        let missing = missing_method(state, source, target)
+        if missing != null {
+            fail("type '" + source + "' does not satisfy protocol '" + target + "': missing method '" + missing + "'", node)
+        }
+        return
+    }
+    if is_type_var(state, target) {
+        let bound = type_var_bound(state, target)
+        // A type parameter satisfies the bound of another type
+        // parameter: the type is not known yet.
+        if !is_type_var(state, source) and !satisfies_bound(source, bound) {
+            fail(assign_message(kind, source, target, name), node)
+        }
+        return
+    }
+    if is_assignable(source, target) {
+        return
+    }
+    fail(assign_message(kind, source, target, name), node)
+}
+
+// The message of a value that does not fit the type it is given.
+fn assign_message(kind, source, target, name) {
+    if kind == "variable" {
+        return "cannot assign value of type '" + source + "' to variable '" + name + "' of type '" + target + "'"
+    }
+    if kind == "return" {
+        return "cannot return value of type '" + source + "' from function with return type '" + target + "'"
+    }
+    return "argument of type '" + source + "' is not assignable to parameter of type '" + target + "' in call to '" + name + "'"
+}
+
+// Check the call of a generic function and give its type. The type
+// arguments are found by matching the declared types of the parameters
+// with the types of the arguments. A type argument that cannot be
+// found is `any`, a bound that the type does not satisfy is an error,
+// and the type of the call is the declared return type with the type
+// arguments put in place of the type parameters.
+fn generic_call(state, name, binding, node, arg_types, kwarg_types, scope) {
+    var type_params = binding["type_params"]
+    if type_params == null {
+        type_params = []
+    }
+    let type_vars = {}
+    var i = 0
+    while i < type_params.len() {
+        type_vars[type_params[i]["name"]] = true
+        i = i + 1
+    }
+    let bindings = {}
+    var specs = binding["params"]
+    if specs == null {
+        specs = []
+    }
+    let positional = []
+    var known = {}
+    i = 0
+    while i < specs.len() {
+        if specs[i]["param_kind"] == "positional" {
+            positional.push(specs[i])
+        }
+        known[specs[i]["name"]] = specs[i]
+        i = i + 1
+    }
+    let args = node["args"]
+    i = 0
+    while i < args.len() {
+        if i >= positional.len() {
+            break
+        }
+        let declared = positional[i]["type"]
+        if declared != null {
+            unify(declared, infer_type(state, args[i], scope), type_vars, bindings)
+        }
+        i = i + 1
+    }
+    let kwargs = node["kwargs"]
+    i = 0
+    while i < kwargs.len() {
+        let spec = known[kwargs[i][0]]
+        if spec != null and spec["type"] != null {
+            unify(spec["type"], infer_type(state, kwargs[i][1], scope), type_vars, bindings)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < type_params.len() {
+        let param = type_params[i]
+        var found = "any"
+        if bindings.has(param["name"]) {
+            found = bindings[param["name"]]
+        }
+        if !satisfies_bound(found, param["bound"]) {
+            fail("type '" + found + "' does not satisfy the bound '" + param["bound"] + "' of type parameter '" + param["name"] + "'", node)
+        }
+        i = i + 1
+    }
+    let effective = []
+    i = 0
+    while i < specs.len() {
+        let spec = specs[i]
+        let filled = {}
+        let keys = spec.keys()
+        var k = 0
+        while k < keys.len() {
+            filled[keys[k]] = spec[keys[k]]
+            k = k + 1
+        }
+        filled["type"] = substitute(spec["type"], bindings, type_vars)
+        effective.push(filled)
+        i = i + 1
+    }
+    check_call_args(state, name, effective, arg_types, kwarg_types, node)
+    let result = substitute(binding["return_type"], bindings, type_vars)
+    if result == null {
+        return "any"
+    }
+    return result
+}
+
+// Match a declared type with the type of an argument. A type parameter
+// that is not known yet takes the type of the argument. A type with
+// type arguments is matched argument by argument, so the type of a
+// list gives the type of its elements.
+fn unify(declared, actual, type_vars, bindings) {
+    if declared == null {
+        return
+    }
+    if type_vars.has(declared) {
+        if !bindings.has(declared) {
+            bindings[declared] = actual
+        }
+        return
+    }
+    let args = type_args(declared)
+    if args.len() == 0 {
+        return
+    }
+    let actual_args = type_args(actual)
+    var i = 0
+    while i < args.len() {
+        if i >= actual_args.len() {
+            break
+        }
+        unify(args[i], actual_args[i], type_vars, bindings)
+        i = i + 1
+    }
+}
+
+// Put the type arguments in place of the type parameters.
+fn substitute(name, bindings, type_vars) {
+    if name == null {
+        return null
+    }
+    if type_vars.has(name) {
+        if bindings.has(name) {
+            return bindings[name]
+        }
+        return "any"
+    }
+    let args = type_args(name)
+    if args.len() == 0 {
+        return name
+    }
+    var i = 0
+    let filled = []
+    while i < args.len() {
+        filled.push(substitute(args[i], bindings, type_vars))
+        i = i + 1
+    }
+    return base_type(name) + "<" + join_types(filled) + ">"
+}
+
+// The type of an expression, with the type of a literal worked out. A
+// list of integers is a `list<int>` and not a `list`: the type
+// arguments of a generic function are found with it.
+fn infer_type(state, node, scope) {
+    if node["kind"] == "ListLiteral" {
+        let elements = node["elements"]
+        if elements.len() == 0 {
+            return "list"
+        }
+        var element = null
+        var i = 0
+        while i < elements.len() {
+            let item_type = infer_type(state, elements[i], scope)
+            if element == null {
+                element = item_type
+            } else {
+                if element != item_type {
+                    element = "any"
+                }
+            }
+            i = i + 1
+        }
+        return "list<" + element + ">"
+    }
+    return check_expr(state, node, scope)
+}
+
+// The type of the elements of a container. The type of a `list<int>`
+// gives `int`, and the type of a `list` gives nothing: the type of the
+// elements is not known.
+fn element_type(name) {
+    if name == null {
+        return null
+    }
+    let base = base_type(name)
+    let args = type_args(name)
+    if (base == "list" or base == "set") and args.len() > 0 {
+        return args[0]
+    }
+    if base == "dict" and args.len() > 1 {
+        return args[1]
+    }
+    return null
 }
 
 // Collect the names the module binds. The names are collected before the
@@ -275,6 +750,10 @@ fn collect_module_names(state, statements) {
         if kind == "LetStmt" {
             names[statement["name"]] = true
         } else if kind == "FnDecl" {
+            names[statement["name"]] = true
+        } else if kind == "StructDecl" {
+            names[statement["name"]] = true
+        } else if kind == "ProtocolDecl" {
             names[statement["name"]] = true
         } else if kind == "UnpackStmt" {
             let unpacked = unpack_names(statement["targets"])
@@ -314,6 +793,14 @@ fn collect_bound_names(node, names) {
         return
     }
     if kind == "FnDecl" {
+        names[node["name"]] = true
+        return
+    }
+    if kind == "StructDecl" {
+        names[node["name"]] = true
+        return
+    }
+    if kind == "ProtocolDecl" {
         names[node["name"]] = true
         return
     }
@@ -528,19 +1015,340 @@ fn check_statements(state, statements, scope) {
     }
 }
 
+// Check a struct: the fields it holds and their types.
+fn check_struct(state, node, scope) {
+    let seen = {}
+    let fields = node["fields"]
+    var i = 0
+    while i < fields.len() {
+        let field = fields[i]
+        if seen.has(field["name"]) {
+            fail("duplicate field '" + field["name"] + "' on struct '" + node["name"] + "'", field)
+        }
+        seen[field["name"]] = true
+        check_annotation(state, field["type_ann"], field)
+        if field["default"] != null {
+            check_expr(state, field["default"], scope)
+        }
+        i = i + 1
+    }
+    scope[node["name"]] = make_immutable_binding("struct")
+}
+
+// Check a protocol: the signatures of its methods.
+fn check_protocol(state, node, scope) {
+    let seen = {}
+    let methods = node["methods"]
+    var i = 0
+    while i < methods.len() {
+        let method = methods[i]
+        if seen.has(method["name"]) {
+            fail("duplicate method '" + method["name"] + "' on protocol '" + node["name"] + "'", method)
+        }
+        seen[method["name"]] = true
+        check_annotation(state, method["return_type"], method)
+        let params = method["params"]
+        var k = 0
+        while k < params.len() {
+            check_annotation(state, params[k]["type_name"], method)
+            k = k + 1
+        }
+        i = i + 1
+    }
+}
+
+// Check an impl block: the methods of a type.
+fn check_impl(state, node, scope) {
+    let type_name = node["type_name"]
+    if !state["structs"].has(type_name) {
+        fail("impl of unknown type '" + type_name + "'", node)
+    }
+    let struct_decl = state["structs"][type_name]
+    let methods = node["methods"]
+    var i = 0
+    while i < methods.len() {
+        let method = methods[i]
+        check_annotation(state, method["return_type"], method)
+        let local = copy_scope(scope)
+        let specs = param_specs(method)
+        var k = 0
+        while k < specs.len() {
+            let spec = specs[k]
+            check_annotation(state, spec["type"], method)
+            if spec["name"] == "self" {
+                local["self"] = make_binding(type_name)
+            } else {
+                if spec["type"] == null {
+                    local[spec["name"]] = make_binding("any")
+                } else {
+                    local[spec["name"]] = make_binding(spec["type"])
+                }
+            }
+            k = k + 1
+        }
+        let names = {}
+        var j = 0
+        while j < specs.len() {
+            names[specs[j]["name"]] = true
+            j = j + 1
+        }
+        let bound = bound_names(method["body"]["statements"])
+        let keys = bound.keys()
+        var b = 0
+        while b < keys.len() {
+            names[keys[b]] = true
+            b = b + 1
+        }
+        state["name_stack"].push(names)
+        state["return_stack"].push(method["return_type"])
+        let saved = state["checking_method"]
+        state["checking_method"] = [type_name, struct_decl]
+        state["function_depth"] = state["function_depth"] + 1
+        check_statements(state, method["body"]["statements"], local)
+        state["function_depth"] = state["function_depth"] - 1
+        state["return_stack"].pop()
+        state["name_stack"].pop()
+        state["checking_method"] = saved
+        i = i + 1
+    }
+}
+
+// True when the method changes the receiver through `self`.
+fn method_mutates(method) {
+    return assigns_self_field(method["body"])
+}
+
+fn assigns_self_field(node) {
+    let kind = node["kind"]
+    if kind == "AssignStmt" {
+        let target = node["target"]
+        if target["kind"] == "Attribute" and target["object"]["kind"] == "Identifier" and target["object"]["name"] == "self" {
+            return true
+        }
+        return false
+    }
+    if kind == "Block" {
+        let statements = node["statements"]
+        var i = 0
+        while i < statements.len() {
+            if assigns_self_field(statements[i]) {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+    if kind == "IfStmt" {
+        if assigns_self_field(node["then_branch"]) {
+            return true
+        }
+        if node["else_branch"] != null and assigns_self_field(node["else_branch"]) {
+            return true
+        }
+        return false
+    }
+    if kind == "WhileStmt" or kind == "ForStmt" {
+        if assigns_self_field(node["body"]) {
+            return true
+        }
+        if node["orelse"] != null and assigns_self_field(node["orelse"]) {
+            return true
+        }
+        return false
+    }
+    return false
+}
+
+// The field of a struct with the given name, or null.
+fn field_of(struct_decl, name) {
+    let fields = struct_decl["fields"]
+    var i = 0
+    while i < fields.len() {
+        if fields[i]["name"] == name {
+            return fields[i]
+        }
+        i = i + 1
+    }
+    return null
+}
+
+// Check the write of a field of a struct.
+fn check_field_assign(state, attr, obj_type, node, scope) {
+    if obj_type == "any" {
+        return
+    }
+    var struct_decl = null
+    if state["structs"].has(obj_type) {
+        struct_decl = state["structs"][obj_type]
+    }
+    if struct_decl == null {
+        fail("type '" + obj_type + "' has no fields", attr)
+    }
+    let field = field_of(struct_decl, attr["name"])
+    if field == null {
+        fail("unknown field '" + attr["name"] + "' on " + obj_type, attr)
+    }
+    if !field["mutable"] {
+        fail("cannot assign to immutable field '" + attr["name"] + "'", attr)
+    }
+    if attr["object"]["kind"] == "Identifier" and attr["object"]["name"] != "self" {
+        let name = attr["object"]["name"]
+        if scope.has(name) {
+            let binding = scope[name]
+            if !binding["mutable"] {
+                fail("cannot assign to field of immutable variable '" + name + "'", attr)
+            }
+        }
+    }
+}
+
+// Check the call of a constructor of a struct.
+fn constructor_call(state, name, arg_types, node) {
+    let struct_decl = state["structs"][name]
+    let fields = struct_decl["fields"]
+    var required = 0
+    var i = 0
+    while i < fields.len() {
+        if fields[i]["default"] == null {
+            required = required + 1
+        }
+        i = i + 1
+    }
+    if arg_types.len() < required or arg_types.len() > fields.len() {
+        fail("struct '" + name + "' expects " + str(required) + " argument(s), got " + str(arg_types.len()), node)
+    }
+    var k = 0
+    while k < arg_types.len() {
+        let field = fields[k]
+        if field["type_ann"] != null and !is_assignable(arg_types[k], field["type_ann"]) {
+            fail("argument of type '" + arg_types[k] + "' is not assignable to field '" + field["name"] + "' of type '" + field["type_ann"] + "'", node)
+        }
+        k = k + 1
+    }
+    return name
+}
+
+// Check the call of a method of a struct.
+fn method_call(state, node, scope) {
+    let recv_type = check_expr(state, node["receiver"], scope)
+    let args = node["args"]
+    let arg_types = []
+    var i = 0
+    while i < args.len() {
+        arg_types.push(check_expr(state, args[i], scope))
+        i = i + 1
+    }
+    if recv_type == "any" or recv_type == "struct" {
+        return "any"
+    }
+    if state["protocols"].has(recv_type) {
+        return protocol_method_call(state, node, recv_type, arg_types)
+    }
+    let methods = state["impls"]
+    if !methods.has(recv_type) {
+        if state["structs"].has(recv_type) {
+            fail("unknown method '" + node["method"] + "' on " + recv_type, node)
+        }
+        return "any"
+    }
+    let table = methods[recv_type]
+    if !table.has(node["method"]) {
+        if state["structs"].has(recv_type) {
+            fail("unknown method '" + node["method"] + "' on " + recv_type, node)
+        }
+        return "any"
+    }
+    let method = table[node["method"]]
+    if method_mutates(method) {
+        let receiver = node["receiver"]
+        if receiver["kind"] == "Identifier" and receiver["name"] != "self" {
+            let name = receiver["name"]
+            if scope.has(name) {
+                let binding = scope[name]
+                if !binding["mutable"] {
+                    fail("cannot call mutating method '" + node["method"] + "' on immutable variable '" + name + "'", node)
+                }
+            }
+        }
+    }
+    let params = []
+    let specs = param_specs(method)
+    var k = 0
+    while k < specs.len() {
+        if specs[k]["name"] != "self" {
+            params.push(specs[k])
+        }
+        k = k + 1
+    }
+    if arg_types.len() != params.len() {
+        fail("method '" + node["method"] + "' expects " + str(params.len()) + " argument(s), got " + str(arg_types.len()), node)
+    }
+    var p = 0
+    while p < arg_types.len() {
+        let param = params[p]
+        if param["type"] != null {
+            check_assignable(state, arg_types[p], param["type"], node, "argument", node["method"])
+        }
+        p = p + 1
+    }
+    if method["return_type"] == null {
+        return "any"
+    }
+    return method["return_type"]
+}
+
+// Check the call of a method of a protocol. The signature of the
+// protocol is the contract of the call: the arity and the types of the
+// arguments are the ones it gives.
+fn protocol_method_call(state, node, protocol_name, arg_types) {
+    let protocol_decl = state["protocols"][protocol_name]
+    if !protocol_decl.has(node["method"]) {
+        fail("unknown method '" + node["method"] + "' on " + protocol_name, node)
+    }
+    let signature = protocol_decl[node["method"]]
+    let params = []
+    let specs = param_specs(signature)
+    var k = 0
+    while k < specs.len() {
+        if specs[k]["name"] != "self" {
+            params.push(specs[k])
+        }
+        k = k + 1
+    }
+    if arg_types.len() != params.len() {
+        fail("method '" + node["method"] + "' expects " + str(params.len()) + " argument(s), got " + str(arg_types.len()), node)
+    }
+    var p = 0
+    while p < arg_types.len() {
+        let param = params[p]
+        if param["type"] != null {
+            check_assignable(state, arg_types[p], param["type"], node, "argument", node["method"])
+        }
+        p = p + 1
+    }
+    if signature["return_type"] == null {
+        return "any"
+    }
+    return signature["return_type"]
+}
+
 fn check_statement(state, node, scope) {
     let kind = node["kind"]
     if kind == "LetStmt" {
-        check_annotation(node["type_ann"], node)
+        check_annotation(state, node["type_ann"], node)
         let value_type = check_expr(state, node["value"], scope)
-        if node["type_ann"] != null and !is_assignable(value_type, node["type_ann"]) {
-            fail("cannot assign value of type '" + value_type + "' to variable '" + node["name"] + "' of type '" + node["type_ann"] + "'", node)
+        if node["type_ann"] != null {
+            check_assignable(state, value_type, node["type_ann"], node, "variable", node["name"])
         }
         if node["value"]["kind"] == "FnDecl" and (node["type_ann"] == null or node["type_ann"] == "fn") {
             scope[node["name"]] = make_fn_binding(param_specs(node["value"]), node["value"]["return_type"])
         } else {
             if node["type_ann"] == null {
-                scope[node["name"]] = make_binding("any")
+                if state["structs"].has(value_type) {
+                    scope[node["name"]] = make_binding(value_type)
+                } else {
+                    scope[node["name"]] = make_binding("any")
+                }
             } else {
                 scope[node["name"]] = make_binding(node["type_ann"])
             }
@@ -550,13 +1358,29 @@ fn check_statement(state, node, scope) {
         }
         return
     }
+    if kind == "StructDecl" {
+        check_struct(state, node, scope)
+        return
+    }
+    if kind == "ImplDecl" {
+        check_impl(state, node, scope)
+        return
+    }
+    if kind == "ProtocolDecl" {
+        check_protocol(state, node, scope)
+        return
+    }
     if kind == "FnDecl" {
-        check_annotation(node["return_type"], node)
+        push_type_vars(state, node)
+        check_annotation(state, node["return_type"], node)
         check_decorators(state, node, scope)
         check_function(state, node, scope)
+        pop_type_vars(state)
         // The name of the function belongs to the block that holds it, so a
         // function that is defined inside a block may be called there.
-        scope[node["name"]] = make_immutable_fn_binding(param_specs(node), node["return_type"])
+        let binding = make_immutable_fn_binding(param_specs(node), node["return_type"])
+        binding["type_params"] = node["type_params"]
+        scope[node["name"]] = binding
         return
     }
     if kind == "AssignStmt" {
@@ -565,8 +1389,8 @@ fn check_statement(state, node, scope) {
             let name = node["target"]["name"]
             if scope.has(name) {
                 let binding = scope[name]
-                if binding["type"] != "any" and !is_assignable(value_type, binding["type"]) {
-                    fail("cannot assign value of type '" + value_type + "' to variable '" + name + "' of type '" + binding["type"] + "'", node)
+                if binding["type"] != "any" {
+                    check_assignable(state, value_type, binding["type"], node, "variable", name)
                 }
                 if !binding["mutable"] {
                     fail("cannot assign to immutable variable '" + name + "'", node)
@@ -582,8 +1406,8 @@ fn check_statement(state, node, scope) {
                         let name = leaf["name"]
                         if scope.has(name) {
                             let binding = scope[name]
-                            if binding["type"] != "any" and !is_assignable(value_type, binding["type"]) {
-                                fail("cannot assign value of type '" + value_type + "' to variable '" + name + "' of type '" + binding["type"] + "'", node)
+                            if binding["type"] != "any" {
+                                check_assignable(state, value_type, binding["type"], node, "variable", name)
                             }
                             if !binding["mutable"] {
                                 fail("cannot assign to immutable variable '" + name + "'", node)
@@ -593,7 +1417,13 @@ fn check_statement(state, node, scope) {
                     i = i + 1
                 }
             } else {
-                check_expr(state, node["target"], scope)
+                if node["target"]["kind"] == "Attribute" {
+                    let attr = node["target"]
+                    let obj_type = check_expr(state, attr["object"], scope)
+                    check_field_assign(state, attr, obj_type, node, scope)
+                } else {
+                    check_expr(state, node["target"], scope)
+                }
             }
         }
         return
@@ -619,8 +1449,8 @@ fn check_statement(state, node, scope) {
         let stack = state["return_stack"]
         if stack.len() > 0 {
             let declared = stack[stack.len() - 1]
-            if declared != null and !is_assignable(value_type, declared) {
-                fail("cannot return value of type '" + value_type + "' from function with return type '" + declared + "'", node)
+            if declared != null {
+                check_assignable(state, value_type, declared, node, "return", "")
             }
         }
         return
@@ -648,12 +1478,17 @@ fn check_statement(state, node, scope) {
         return
     }
     if kind == "ForStmt" {
-        check_expr(state, node["iterable"], scope)
+        let item_type = check_expr(state, node["iterable"], scope)
+        let element = element_type(item_type)
         let loop_scope = copy_scope(scope)
         let targets = node["targets"]
         var i = 0
         while i < targets.len() {
-            loop_scope[targets[i]] = make_binding("any")
+            if element == null {
+                loop_scope[targets[i]] = make_binding("any")
+            } else {
+                loop_scope[targets[i]] = make_binding(element)
+            }
             i = i + 1
         }
         state["loop_depth"] = state["loop_depth"] + 1
@@ -817,7 +1652,7 @@ fn check_function(state, decl, scope) {
     var i = 0
     while i < specs.len() {
         let spec = specs[i]
-        check_annotation(spec["type"], decl)
+        check_annotation(state, spec["type"], decl)
         if spec["type"] == null {
             local[spec["name"]] = make_binding("any")
         } else {
@@ -891,6 +1726,9 @@ fn check_expr(state, node, scope) {
         if scope.has(name) {
             return scope[name]["type"]
         }
+        if state["protocols"].has(name) {
+            fail("protocol '" + name + "' is not a value", node)
+        }
         check_known_name(state, node)
         return "any"
     }
@@ -930,10 +1768,10 @@ fn check_expr(state, node, scope) {
         let specs = param_specs(node)
         var i = 0
         while i < specs.len() {
-            check_annotation(specs[i]["type"], node)
+            check_annotation(state, specs[i]["type"], node)
             i = i + 1
         }
-        check_annotation(node["return_type"], node)
+        check_annotation(state, node["return_type"], node)
         check_function(state, node, scope)
         return "fn"
     }
@@ -955,7 +1793,7 @@ fn check_expr(state, node, scope) {
         return "any"
     }
     if kind == "Index" {
-        check_expr(state, node["target"], scope)
+        let target_type = check_expr(state, node["target"], scope)
         if node["index"]["kind"] == "Slice" {
             let slice = node["index"]
             let parts = [slice["start"], slice["stop"], slice["step"]]
@@ -966,21 +1804,61 @@ fn check_expr(state, node, scope) {
                 }
                 i = i + 1
             }
-        } else {
-            check_expr(state, node["index"], scope)
+            return target_type
         }
-        return "any"
+        check_expr(state, node["index"], scope)
+        let element = element_type(target_type)
+        if element == null {
+            return "any"
+        }
+        return element
     }
     if kind == "MethodCall" {
-        check_expr(state, node["receiver"], scope)
-        var i = 0
-        while i < node["args"].len() {
-            check_expr(state, node["args"][i], scope)
-            i = i + 1
+        return method_call(state, node, scope)
+    }
+    if kind == "Attribute" {
+        let obj_type = check_expr(state, node["object"], scope)
+        if obj_type == "any" or obj_type == "struct" {
+            return "any"
         }
-        return "any"
+        var struct_decl = null
+        if state["structs"].has(obj_type) {
+            struct_decl = state["structs"][obj_type]
+        }
+        if struct_decl == null {
+            fail("type '" + obj_type + "' has no fields", node)
+        }
+        let field = field_of(struct_decl, node["name"])
+        if field == null {
+            fail("unknown field '" + node["name"] + "' on " + obj_type, node)
+        }
+        if field["type_ann"] == null {
+            return "any"
+        }
+        return field["type_ann"]
+    }
+    if kind == "Unwrap" {
+        return check_unwrap(state, node, scope)
     }
     fail("cannot check expression: " + kind, node)
+    return "any"
+}
+
+fn check_unwrap(state, node, scope) {
+    if state["function_depth"] == 0 {
+        fail("the '?' operator is only allowed inside a function", node)
+    }
+    let stack = state["return_stack"]
+    if stack.len() > 0 {
+        let declared = stack[stack.len() - 1]
+        if declared != null and declared != "result" and declared != "any" {
+            fail("the '?' operator needs a function that returns 'result'", node)
+        }
+    }
+    let source = check_expr(state, node["expr"], scope)
+    if source != "result" and source != "any" and source != "dict" {
+        fail("cannot use '?' on a value of type '" + source + "'", node)
+    }
     return "any"
 }
 
@@ -1016,20 +1894,41 @@ fn check_call(state, node, scope) {
     if binding["type"] == "any" {
         return "any"
     }
+    if binding["type"] == "struct" {
+        return constructor_call(state, name, arg_types, node)
+    }
     if binding["type"] != "fn" {
         fail("'" + name + "' of type '" + binding["type"] + "' is not callable", node)
     }
     if binding["params"] == null {
         return "any"
     }
-    check_call_args(name, binding["params"], arg_types, kwarg_types, node)
+    if binding["type_params"] != null and binding["type_params"].len() > 0 {
+        return generic_call(state, name, binding, node, arg_types, kwarg_types, scope)
+    }
+    check_call_args(state, name, binding["params"], arg_types, kwarg_types, node)
     if binding["return_type"] == null {
         return "any"
     }
     return binding["return_type"]
 }
 
-fn check_call_args(name, specs, arg_types, kwarg_types, node) {
+// The type arguments of a type are written with a comma and a space
+// between them.
+fn join_types(args) {
+    var out = ""
+    var i = 0
+    while i < args.len() {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + args[i]
+        i = i + 1
+    }
+    return out
+}
+
+fn check_call_args(state, name, specs, arg_types, kwarg_types, node) {
     let positional = []
     let kwonly = []
     var has_vararg = false
@@ -1065,7 +1964,7 @@ fn check_call_args(name, specs, arg_types, kwarg_types, node) {
         }
         var j = 0
         while j < specs.len() {
-            check_arg_type(arg_types[j], specs[j]["type"], name, node)
+            check_arg_type(state, arg_types[j], specs[j]["type"], name, node)
             j = j + 1
         }
         return
@@ -1086,7 +1985,7 @@ fn check_call_args(name, specs, arg_types, kwarg_types, node) {
     }
     var p = 0
     while p < arg_types.len() and p < positional.len() {
-        check_arg_type(arg_types[p], positional[p]["type"], name, node)
+        check_arg_type(state, arg_types[p], positional[p]["type"], name, node)
         p = p + 1
     }
     let keys = kwarg_types.keys()
@@ -1098,7 +1997,7 @@ fn check_call_args(name, specs, arg_types, kwarg_types, node) {
                 fail("function '" + name + "' got an unexpected keyword argument '" + key + "'", node)
             }
         } else {
-            check_arg_type(kwarg_types[key], known[key]["type"], name, node)
+            check_arg_type(state, kwarg_types[key], known[key]["type"], name, node)
         }
         i = i + 1
     }
@@ -1137,13 +2036,11 @@ fn check_call_args(name, specs, arg_types, kwarg_types, node) {
     }
 }
 
-fn check_arg_type(arg_type, ptype, name, node) {
+fn check_arg_type(state, arg_type, ptype, name, node) {
     if ptype == null {
         return
     }
-    if !is_assignable(arg_type, ptype) {
-        fail("argument of type '" + arg_type + "' is not assignable to parameter of type '" + ptype + "' in call to '" + name + "'", node)
-    }
+    check_assignable(state, arg_type, ptype, node, "argument", name)
 }
 
 fn check_builtin_call(name, node, arg_types) {
@@ -1201,19 +2098,19 @@ fn module_error_message(path, message) {
     return prefix + ": " + message
 }
 
-fn exported_binding(statement) {
+fn exported_binding(state, statement) {
     if statement["kind"] == "FnDecl" and statement["exported"] {
-        check_annotation_throw(statement["return_type"])
+        check_annotation_throw(state, statement["return_type"])
         let ptypes = param_specs(statement)
         var i = 0
         while i < ptypes.len() {
-            check_annotation_throw(ptypes[i]["type"])
+            check_annotation_throw(state, ptypes[i]["type"])
             i = i + 1
         }
         return [statement["name"], make_immutable_fn_binding(param_specs(statement), statement["return_type"])]
     }
     if statement["kind"] == "LetStmt" and statement["exported"] {
-        check_annotation_throw(statement["type_ann"])
+        check_annotation_throw(state, statement["type_ann"])
         if statement["type_ann"] == null {
             return [statement["name"], make_binding("any")]
         }
@@ -1259,7 +2156,7 @@ fn module_exports(state, path, node) {
         }
         var binding = null
         try {
-            binding = exported_binding(statement)
+            binding = exported_binding(state, statement)
         } catch err {
             fail(module_error_message(path, err), node)
         }
@@ -1292,6 +2189,8 @@ export fn check_program(program, base_dir) {
     let state = make_state(base_dir)
     let scope = {}
     collect_functions(program["statements"], scope)
+    collect_structs(state, program["statements"], scope)
+    collect_protocols(state, program["statements"])
     collect_module_names(state, program["statements"])
     check_statements(state, program["statements"], scope)
     return null

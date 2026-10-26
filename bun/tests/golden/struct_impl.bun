@@ -1,0 +1,32 @@
+// The methods of a struct live in an impl block, and they take the
+// value they work on as their first parameter.
+struct Vec2 {
+    x: int,
+    y: int
+}
+
+impl Vec2 {
+    fn sum(self) -> int {
+        return self.x + self.y
+    }
+
+    fn scaled(self, factor: int) -> Vec2 {
+        return Vec2(self.x * factor, self.y * factor)
+    }
+
+    fn bump(self) {
+        self.x = self.x + 1
+        self.y = self.y + 1
+    }
+}
+
+let v = Vec2(1, 2)
+print(v.sum())
+print(v.scaled(3).x)
+print(v.scaled(3).y)
+
+// A method that changes the value needs a mutable name.
+var m = Vec2(10, 20)
+m.bump()
+print(m.x)
+print(m.y)

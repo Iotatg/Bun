@@ -1,5 +1,5 @@
 fn make_code(name, params, code, filename, source) {
-    return {"name": name, "params": params, "code": code, "filename": filename, "source": source, "param_defs": []}
+    return {"name": name, "params": params, "code": code, "filename": filename, "source": source, "param_defs": [], "type_params": []}
 }
 
 let MATCH_SUBJECT = "__match_subject"
@@ -27,7 +27,8 @@ fn make_state(filename, source) {
         "try_contexts": [],
         "for_depth": 0,
         "loops": [],
-        "has_yield": false
+        "has_yield": false,
+        "structs": {}
     }
 }
 
@@ -331,6 +332,7 @@ export fn compile_program(filename, source, program) {
     let st = make_state(filename, source)
     let code = []
     let statements = program["statements"]
+    collect_structs(st, statements)
     var i = 0
     while i < statements.len() {
         compile_statement(st, statements[i], code)
@@ -338,6 +340,20 @@ export fn compile_program(filename, source, program) {
     }
     code.push(["HALT", null, 0, 0])
     return make_code("<module>", [], code, filename, source)
+}
+
+// Collect the struct declarations of the program. The declarations are
+// collected before the code is written, so a constructor may be called
+// before the declaration that names it.
+fn collect_structs(st, statements) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "StructDecl" {
+            st["structs"][statement["name"]] = statement
+        }
+        i = i + 1
+    }
 }
 
 fn compile_function(st, node) {
@@ -389,6 +405,14 @@ fn compile_function(st, node) {
     }
     let result = make_code(name, names, code, st["filename"], st["source"])
     result["param_defs"] = defs
+    let type_params = []
+    let params_of_type = node["type_params"]
+    var t = 0
+    while t < params_of_type.len() {
+        type_params.push({"name": params_of_type[t]["name"], "bound": params_of_type[t]["bound"]})
+        t = t + 1
+    }
+    result["type_params"] = type_params
     if st["has_yield"] {
         // A function that gives its values one at a time is a generator.
         result["is_generator"] = true
@@ -469,7 +493,13 @@ fn compile_statement(st, node, code) {
                         emit(code, "STORE_INDEX", null, node)
                     }
                 } else {
-                    throw "invalid assignment target"
+                    if target["kind"] == "Attribute" {
+                        compile_expr(st, target["object"], code)
+                        compile_expr(st, node["value"], code)
+                        emit(code, "SET_FIELD", target["name"], node)
+                    } else {
+                        throw "invalid assignment target"
+                    }
                 }
             }
         }
@@ -478,6 +508,25 @@ fn compile_statement(st, node, code) {
     if kind == "ExprStmt" {
         compile_expr(st, node["expr"], code)
         emit(code, "POP", null, node)
+        return
+    }
+    if kind == "StructDecl" {
+        // A struct is a type, and a type is not a value: the program
+        // that declares it runs the same with it and without it.
+        return
+    }
+    if kind == "ProtocolDecl" {
+        // A protocol is a type, and a type is not a value: the program
+        // that declares it runs the same with it and without it.
+        return
+    }
+    if kind == "ImplDecl" {
+        let methods = node["methods"]
+        var i = 0
+        while i < methods.len() {
+            emit(code, "REGISTER_IMPL", [node["type_name"], methods[i]["name"], compile_function(st, methods[i])], node)
+            i = i + 1
+        }
         return
     }
     if kind == "Block" {
@@ -990,7 +1039,12 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "Call" {
-        compile_expr(st, node["callee"], code)
+        let callee = node["callee"]
+        if callee["kind"] == "Identifier" and st["structs"].has(callee["name"]) {
+            compile_constructor(st, st["structs"][callee["name"]], node, code)
+            return
+        }
+        compile_expr(st, callee, code)
         let args = node["args"]
         var i = 0
         while i < args.len() {
@@ -1016,7 +1070,47 @@ fn compile_expr(st, node, code) {
         emit(code, "MAKE_FUNCTION", compile_function(st, node), node)
         return
     }
+    if kind == "Attribute" {
+        compile_expr(st, node["object"], code)
+        emit(code, "GET_FIELD", node["name"], node)
+        return
+    }
+    if kind == "Unwrap" {
+        compile_expr(st, node["expr"], code)
+        emit(code, "UNWRAP_OR_RETURN", null, node)
+        return
+    }
     throw "unknown expression: " + kind
+}
+
+// Compile the call of a constructor of a struct.
+fn compile_constructor(st, declaration, node, code) {
+    let fields = declaration["fields"]
+    let args = node["args"]
+    if args.len() > fields.len() {
+        throw "struct '" + declaration["name"] + "' expects " + str(fields.len()) + " argument(s), got " + str(args.len())
+    }
+    var i = 0
+    while i < args.len() {
+        compile_expr(st, args[i], code)
+        i = i + 1
+    }
+    var k = args.len()
+    while k < fields.len() {
+        let field = fields[k]
+        if field["default"] == null {
+            throw "struct '" + declaration["name"] + "' is missing a value for field '" + field["name"] + "'"
+        }
+        compile_expr(st, field["default"], code)
+        k = k + 1
+    }
+    let names = []
+    var n = 0
+    while n < fields.len() {
+        names.push(fields[n]["name"])
+        n = n + 1
+    }
+    emit(code, "MAKE_STRUCT", [declaration["name"], names], node)
 }
 
 fn build_unpack_plan(targets) {

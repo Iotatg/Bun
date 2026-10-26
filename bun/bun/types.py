@@ -9,6 +9,8 @@ DICT = "dict"
 FN = "fn"
 SECRET = "secret"
 SET = "set"
+STRUCT = "struct"
+RESULT = "result"
 
 # The names that are another name.  A `number` is a `float` and a `text` is
 # a `string`: the alias is kept in the message of an error, so a program
@@ -18,7 +20,7 @@ TEXT = "text"
 
 TYPE_NAMES = frozenset(
     {INT, FLOAT, STRING, BOOL, NULL, ANY, LIST, DICT, FN, SECRET, SET,
-     NUMBER, TEXT})
+     STRUCT, RESULT, NUMBER, TEXT})
 
 # The type every alias stands for.
 ALIASES = {NUMBER: FLOAT, TEXT: STRING}
@@ -148,11 +150,74 @@ BUILTIN_SIGNATURES = {
     "trim": [((STRING,), STRING)],
     "lower": [((STRING,), STRING)],
     "upper": [((STRING,), STRING)],
+    "Ok": [((ANY,), RESULT)],
+    "Err": [((ANY,), RESULT)],
+    "is_ok": [((ANY,), BOOL)],
+    "is_err": [((ANY,), BOOL)],
 }
 
 
 def is_known_type(name):
     return name in TYPE_NAMES
+
+
+# The bounds a type parameter of a function may carry.  A bound is a
+# class of types: `Num` is the types a number may have, `Ord` the types
+# that may be put in order, and so on.  A bound with an empty set is
+# satisfied by every type.
+BOUND_NAMES = frozenset({"Num", "Ord", "Eq", "Hash", "Show"})
+
+BOUND_TYPES = {
+    "Num": frozenset({INT, FLOAT}),
+    "Ord": frozenset({INT, FLOAT, STRING}),
+    "Eq": frozenset(),
+    "Hash": frozenset({INT, FLOAT, STRING, BOOL}),
+    "Show": frozenset(),
+}
+
+
+def base_type(name):
+    """The name of a type, without its type arguments.
+
+    The type `list<int>` has the base `list`, and the type `int` has
+    the base `int`.
+    """
+    if not name:
+        return name
+    index = name.find("<")
+    if index < 0:
+        return name
+    return name[:index]
+
+
+def type_args(name):
+    """The type arguments of a type.
+
+    The type `list<int>` has the argument `int`, and the type `int` has
+    no argument.
+    """
+    if not name:
+        return []
+    index = name.find("<")
+    if index < 0:
+        return []
+    return [part.strip() for part in name[index + 1:-1].split(",")]
+
+
+def satisfies_bound(name, bound):
+    """Report whether a type satisfies a bound.
+
+    The type `any` satisfies every bound: it is the way out of the
+    check of a type, and a bound is a check of a type.
+    """
+    if bound is None:
+        return True
+    if name == ANY:
+        return True
+    allowed = BOUND_TYPES.get(bound)
+    if allowed is None or not allowed:
+        return True
+    return name in allowed
 
 
 def is_assignable(source, target):
@@ -166,4 +231,11 @@ def is_assignable(source, target):
         return True
     if source == NULL:
         return True
+    # A type with type arguments is a type with the same name: the
+    # arguments of a container are a promise of the program, not a
+    # check of the language.
+    source_base = base_type(source)
+    target_base = base_type(target)
+    if source_base != source or target_base != target:
+        return source_base == target_base
     return False

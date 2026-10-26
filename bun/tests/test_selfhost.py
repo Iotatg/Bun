@@ -233,6 +233,32 @@ CHECKER_ERROR_CASES = [
     "fn f() {\n    match 1 {\n        1 => print(missing_name),\n    }\n}",
     "@missing\nfn one(a) {\n    return a\n}",
     "let x: int = 5\n@x\nfn one(a) {\n    return a\n}",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "struct Point {\n    var x: int\n}\n"
+    "fn show(s: Shape) {\n    print(s.area())\n}\n"
+    "show(Point(1))",
+    "protocol Shape {\n    fn area(self) -> float\n}\nlet s = Shape",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.nope())\n}\n",
+    "protocol Shape {\n    fn area(self) -> float\n    fn area(self) -> float\n}",
+    "protocol Shape {\n    fn scaled(self, factor: int) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.scaled(\"two\"))\n}\n",
+    "protocol Shape {\n    fn scaled(self, factor: int) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.scaled())\n}\n",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "fn show(s: Shape) -> float {\n    return \"two\"\n}",
+    "protocol Shape {\n    fn area(self) -> banana\n}",
+    "let x: T = 1",
+    "fn f<T: Nope>(x: T) -> T {\n    return x\n}",
+    "fn f<T, T>(x: T) -> T {\n    return x\n}",
+    "fn f<T: Num>(x: T) -> T {\n    return x\n}\nlet n: int = f(\"s\")",
+    "fn f<T>(x: T) -> T {\n    return x\n}\nlet n: string = f(1)",
+    "fn f<T>(x: T) -> T {\n    return x\n}\nlet n: int = f(\"s\")",
+    "fn f(xs: list<banana>) -> int {\n    return 0\n}",
+    "fn f<T>(xs: list<T>) -> T {\n    return xs[0]\n}\nlet n: string = f([1])",
+    "let x = Ok(1)?\n",
+    "fn f() -> int {\n    return Ok(1)?\n}\n",
+    "fn f() -> result {\n    let n = 5?\n    return Ok(n)\n}\n",
 ]
 
 

@@ -43,7 +43,8 @@ typedef enum {
     BUN_SET,
     BUN_FUNC,
     BUN_BUILTIN,
-    BUN_SECRET
+    BUN_SECRET,
+    BUN_STRUCT
 } BunTag;
 
 typedef struct BunEnv BunEnv;
@@ -74,6 +75,7 @@ typedef struct BunParam {
     int has_default;
     BunFn default_code;
     int slot;              /* the slot of the frame, or -1 for the environment */
+    int borrowed;          /* the value is not copied when it is bound */
 } BunParam;
 
 struct BunObj {
@@ -96,6 +98,8 @@ struct BunObj {
     int *index;          /* the open addressing table of the keys */
     int index_size;
     BunValue secret;     /* the value that a secret holds */
+    const char **field_names;  /* the names of the fields of a struct */
+    BunValue *field_values;    /* the values of the fields of a struct */
 };
 
 #define BUN_VALUE(tag) ((BunValue){ (tag), { 0 } })
@@ -345,6 +349,11 @@ static size_t bun_hash_name(const char *name) {
     return hash;
 }
 
+/* The copy of a value.  A struct is a value type, so a copy of a struct
+ * is a new struct with the same fields.  Every other value is shared. */
+static BunValue bun_copy_value(BunValue value);
+static const char *bun_type_name(BunValue value);
+
 /* The size of the table of an environment is always a power of two, so
  * the slot of a name is a mask and not a division.  A division costs
  * more than the rest of the lookup. */
@@ -424,7 +433,10 @@ static BunValue bun_env_get(BunEnv *env, const char *name) {
 
 static void bun_env_define(BunEnv *env, const char *name, BunValue value,
                             int mutable) {
-    bun_env_set(env, name, value, mutable);
+    /* A name holds a copy of the value, because a struct is a value
+     * type: the program that holds the name and the program that made
+     * the value do not share it. */
+    bun_env_set(env, name, bun_copy_value(value), mutable);
 }
 
 static void bun_env_assign(BunEnv *env, const char *name, BunValue value) {
@@ -434,7 +446,7 @@ static void bun_env_assign(BunEnv *env, const char *name, BunValue value) {
             if (!env->entries[position].mutable) {
                 bun_throw("cannot assign to immutable variable '%s'", name);
             }
-            env->entries[position].value = value;
+            env->entries[position].value = bun_copy_value(value);
             return;
         }
         env = env->parent;
@@ -552,6 +564,135 @@ static BunValue bun_str_concat(BunValue left, BunValue right) {
     object->len = len;
     object->data = data;
     return bun_obj_value(object);
+}
+
+/* ------------------------------------------------------------------ */
+/* The structs                                                         */
+/* ------------------------------------------------------------------ */
+
+/* A struct is a value type.  The value of a struct is copied when it
+ * is put in a name, when it is given to a function and when it is the
+ * answer of a function, so two names never share one struct.  The copy
+ * is deep: a struct that holds a struct holds a copy of it. */
+
+static BunValue bun_copy_value(BunValue value) {
+    if (value.tag != BUN_STRUCT) {
+        return value;
+    }
+    BunObj *object = value.as.obj;
+    size_t count = object->count;
+    BunObj *copy = bun_new_obj(BUN_STRUCT);
+    copy->name = object->name;
+    copy->count = count;
+    copy->cap = count;
+    copy->field_names = object->field_names;
+    copy->field_values =
+        (BunValue *)bun_alloc(sizeof(BunValue) * (count ? count : 1));
+    for (size_t index = 0; index < count; index++) {
+        copy->field_values[index] = bun_copy_value(object->field_values[index]);
+    }
+    return bun_obj_value(copy);
+}
+
+static BunValue bun_struct_new(const char *type_name, const char **names,
+                                BunValue *values, int count) {
+    BunObj *object = bun_new_obj(BUN_STRUCT);
+    object->name = type_name;
+    object->count = (size_t)count;
+    object->cap = (size_t)count;
+    object->field_names =
+        (const char **)bun_alloc(sizeof(char *) * (count ? count : 1));
+    object->field_values =
+        (BunValue *)bun_alloc(sizeof(BunValue) * (count ? count : 1));
+    for (int index = 0; index < count; index++) {
+        object->field_names[index] = names[index];
+        object->field_values[index] = bun_copy_value(values[index]);
+    }
+    return bun_obj_value(object);
+}
+
+static int bun_struct_field(BunObj *object, const char *name) {
+    for (size_t index = 0; index < object->count; index++) {
+        if (strcmp(object->field_names[index], name) == 0) {
+            return (int)index;
+        }
+    }
+    return -1;
+}
+
+static BunValue bun_get_field(BunValue value, const char *name) {
+    if (value.tag != BUN_STRUCT) {
+        bun_throw("type '%s' has no field '%s'", bun_type_name(value), name);
+    }
+    BunObj *object = value.as.obj;
+    int index = bun_struct_field(object, name);
+    if (index < 0) {
+        bun_throw("unknown field '%s' on %s", name, object->name);
+    }
+    return object->field_values[index];
+}
+
+static void bun_set_field(BunValue value, const char *name, BunValue field) {
+    if (value.tag != BUN_STRUCT) {
+        bun_throw("type '%s' has no field '%s'", bun_type_name(value), name);
+    }
+    BunObj *object = value.as.obj;
+    int index = bun_struct_field(object, name);
+    if (index < 0) {
+        bun_throw("unknown field '%s' on %s", name, object->name);
+    }
+    object->field_values[index] = bun_copy_value(field);
+}
+
+/* The methods of the structs.  The table is filled when the program
+ * runs an `impl` block, and the table of the machine is filled the same
+ * way, so a method is found the same way under both. */
+
+typedef struct BunStructMethod {
+    const char *type_name;
+    const char *method;
+    BunFn fn;
+    BunEnv *closure;
+} BunStructMethod;
+
+#define BUN_MAX_STRUCT_METHODS 256
+static BunStructMethod bun_struct_methods[BUN_MAX_STRUCT_METHODS];
+static int bun_struct_method_count = 0;
+
+static void bun_register_struct_method(const char *type_name, const char *method,
+                                        BunFn fn, BunEnv *closure) {
+    for (int index = 0; index < bun_struct_method_count; index++) {
+        BunStructMethod *entry = &bun_struct_methods[index];
+        if (strcmp(entry->type_name, type_name) == 0 &&
+            strcmp(entry->method, method) == 0) {
+            entry->fn = fn;
+            entry->closure = closure;
+            return;
+        }
+    }
+    if (bun_struct_method_count >= BUN_MAX_STRUCT_METHODS) {
+        bun_throw("too many methods of structs");
+    }
+    BunStructMethod *entry = &bun_struct_methods[bun_struct_method_count++];
+    entry->type_name = type_name;
+    entry->method = method;
+    entry->fn = fn;
+    entry->closure = closure;
+}
+
+static BunFn bun_find_struct_method(const char *type_name, const char *method,
+                                     BunEnv **closure) {
+    for (int index = 0; index < bun_struct_method_count; index++) {
+        BunStructMethod *entry = &bun_struct_methods[index];
+        if (strcmp(entry->type_name, type_name) == 0 &&
+            strcmp(entry->method, method) == 0) {
+            if (closure != NULL) {
+                *closure = entry->closure;
+            }
+            return entry->fn;
+        }
+    }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1118,6 +1259,26 @@ static int bun_values_equal_slow(BunValue left, BunValue right) {
         }
         return 1;
     }
+    if (left.tag == BUN_STRUCT || right.tag == BUN_STRUCT) {
+        if (left.tag != BUN_STRUCT || right.tag != BUN_STRUCT) {
+            return 0;
+        }
+        BunObj *a = left.as.obj;
+        BunObj *b = right.as.obj;
+        if (strcmp(a->name, b->name) != 0 || a->count != b->count) {
+            return 0;
+        }
+        for (size_t index = 0; index < a->count; index++) {
+            if (strcmp(a->field_names[index], b->field_names[index]) != 0) {
+                return 0;
+            }
+            if (!bun_values_equal(a->field_values[index],
+                                  b->field_values[index])) {
+                return 0;
+            }
+        }
+        return 1;
+    }
     return 0;
 }
 
@@ -1297,6 +1458,38 @@ static char *bun_stringify(BunValue value) {
         snprintf(out, 64, "<builtin %s>", value.as.obj->name);
         return out;
     }
+    case BUN_STRUCT: {
+        BunObj *object = value.as.obj;
+        size_t size = strlen(object->name) + 3;
+        for (size_t index = 0; index < object->count; index++) {
+            size += strlen(object->field_names[index]) +
+                    strlen(bun_stringify(object->field_values[index])) + 4;
+        }
+        char *out = (char *)bun_alloc(size);
+        size_t at = 0;
+        size_t len = strlen(object->name);
+        memcpy(out + at, object->name, len);
+        at += len;
+        out[at++] = '{';
+        for (size_t index = 0; index < object->count; index++) {
+            if (index) {
+                out[at++] = ',';
+                out[at++] = ' ';
+            }
+            len = strlen(object->field_names[index]);
+            memcpy(out + at, object->field_names[index], len);
+            at += len;
+            out[at++] = ':';
+            out[at++] = ' ';
+            const char *item = bun_stringify(object->field_values[index]);
+            len = strlen(item);
+            memcpy(out + at, item, len);
+            at += len;
+        }
+        out[at++] = '}';
+        out[at] = '\0';
+        return out;
+    }
     }
     return "null";
 }
@@ -1410,6 +1603,38 @@ static char *bun_repr(BunValue value) {
         out[at] = '\0';
         return out;
     }
+    if (value.tag == BUN_STRUCT) {
+        BunObj *object = value.as.obj;
+        size_t size = strlen(object->name) + 3;
+        for (size_t index = 0; index < object->count; index++) {
+            size += strlen(object->field_names[index]) +
+                    strlen(bun_repr(object->field_values[index])) + 4;
+        }
+        char *out = (char *)bun_alloc(size);
+        size_t at = 0;
+        size_t len = strlen(object->name);
+        memcpy(out + at, object->name, len);
+        at += len;
+        out[at++] = '{';
+        for (size_t index = 0; index < object->count; index++) {
+            if (index) {
+                out[at++] = ',';
+                out[at++] = ' ';
+            }
+            len = strlen(object->field_names[index]);
+            memcpy(out + at, object->field_names[index], len);
+            at += len;
+            out[at++] = ':';
+            out[at++] = ' ';
+            const char *item = bun_repr(object->field_values[index]);
+            len = strlen(item);
+            memcpy(out + at, item, len);
+            at += len;
+        }
+        out[at++] = '}';
+        out[at] = '\0';
+        return out;
+    }
     return bun_stringify(value);
 }
 
@@ -1439,6 +1664,8 @@ static const char *bun_type_name(BunValue value) {
         return "builtin";
     case BUN_SECRET:
         return "secret";
+    case BUN_STRUCT:
+        return value.as.obj->name;
     }
     return "value";
 }
@@ -1472,6 +1699,8 @@ static const char *bun_public_type_name(BunValue value) {
         return "any";
     case BUN_SECRET:
         return "secret";
+    case BUN_STRUCT:
+        return "any";
     }
     return "any";
 }
@@ -1634,6 +1863,66 @@ static BunValue bun_builtin_dump(BunValue *args, int count) {
         bun_throw("dump() expects 1 argument, got %d", count);
     }
     return bun_str_from_c(bun_canonical_dump(args[0]));
+}
+
+static BunValue bun_builtin_Ok(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("Ok() expects 1 argument");
+    }
+    BunValue result = bun_dict_new();
+    bun_dict_set(result.as.obj, bun_str_from_c("ok"), args[0]);
+    return result;
+}
+
+static BunValue bun_builtin_Err(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("Err() expects 1 argument");
+    }
+    BunValue result = bun_dict_new();
+    bun_dict_set(result.as.obj, bun_str_from_c("err"), args[0]);
+    return result;
+}
+
+static BunValue bun_builtin_is_ok(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_ok() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("ok")));
+}
+
+static BunValue bun_builtin_is_err(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_err() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    BunObj *dict = args[0].as.obj;
+    return bun_bool_value(bun_dict_has(dict, bun_str_from_c("err"))
+                         && !bun_dict_has(dict, bun_str_from_c("ok")));
+}
+
+/* Take the `ok` value of a Result, or report that it is an `err`.
+   A Result is a dict with an `ok` key or an `err` key.  The `ok` key
+   wins when both are present.  A value that is not a Result is an
+   error.  The return is 1 when `out` holds the unwrapped value, and 0
+   when the caller has to return the Result itself. */
+static int bun_unwrap_result(BunValue value, BunValue *out) {
+    if (value.tag != BUN_DICT) {
+        bun_throw("'?' expects a Result value, got %s", bun_public_type_name(value));
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("ok"))) {
+        *out = bun_dict_get_c(value.as.obj, "ok");
+        return 1;
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("err"))) {
+        return 0;
+    }
+    bun_throw("'?' expects a Result value");
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3386,6 +3675,22 @@ static void bun_check_int(const char *name, BunValue value) {
 
 static BunValue bun_method_call(BunValue receiver, const char *method,
                                 BunValue *args, int count) {
+    if (receiver.tag == BUN_STRUCT) {
+        /* A method of a struct borrows the receiver: the mutation of a
+         * field through `self` is seen by the caller. */
+        BunObj *object = receiver.as.obj;
+        BunEnv *closure = NULL;
+        BunFn fn = bun_find_struct_method(object->name, method, &closure);
+        if (fn == NULL) {
+            bun_throw("unknown method '%s' on %s", method, object->name);
+        }
+        BunValue call_args[count + 1];
+        call_args[0] = receiver;
+        for (int index = 0; index < count; index++) {
+            call_args[index + 1] = args[index];
+        }
+        return fn(closure, call_args, count + 1, bun_null_value());
+    }
     if (receiver.tag == BUN_STR) {
         BunObj *text = receiver.as.obj;
 
@@ -3890,11 +4195,17 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
 
 static void bun_bind_one(BunEnv *env, BunValue *slots,
                           const BunParam *param, BunValue value) {
+    /* The arguments of a call are copied, because a struct is a value
+     * type.  The receiver of a method is borrowed, and it is not
+     * copied. */
+    if (!param->borrowed) {
+        value = bun_copy_value(value);
+    }
     if (slots != NULL && param->slot >= 0) {
         slots[param->slot] = value;
         return;
     }
-    bun_env_define(env, param->name, value, 1);
+    bun_env_set(env, param->name, value, 1);
 }
 
 /* The slow path of the binding of the arguments.  It is not inlined
@@ -4132,6 +4443,10 @@ int main(int argc, char **argv) {
     bun_define_builtin(globals, "set", bun_builtin_set);
     bun_define_builtin(globals, "secret", bun_builtin_secret);
     bun_define_builtin(globals, "dump", bun_builtin_dump);
+    bun_define_builtin(globals, "Ok", bun_builtin_Ok);
+    bun_define_builtin(globals, "Err", bun_builtin_Err);
+    bun_define_builtin(globals, "is_ok", bun_builtin_is_ok);
+    bun_define_builtin(globals, "is_err", bun_builtin_is_err);
     BunValue result = bun_module_code(globals);
     (void)result;
     bun_arena_release();

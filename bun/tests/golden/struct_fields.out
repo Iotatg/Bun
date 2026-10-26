@@ -1,0 +1,8 @@
+3
+4
+clicks
+0
+double
+5
+Point{x: 3, y: 4}
+Counter{name: clicks, count: 0}

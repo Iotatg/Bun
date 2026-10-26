@@ -7,8 +7,8 @@ from . import ops
 from . import patterns
 from . import tasks
 from .values import (
-    BreakSignal, BunFunction, Builtin, ContinueSignal, ReturnSignal,
-    format_fstring_part, is_truthy, repr_value, stringify,
+    BreakSignal, BunFunction, BunStruct, Builtin, ContinueSignal, ReturnSignal,
+    copy_value, format_fstring_part, is_truthy, repr_value, stringify,
 )
 from .environment import Environment
 from .builtins import register_builtins
@@ -27,6 +27,7 @@ class Interpreter:
         self.loading = set()
         self.export_stack = []
         self.last_value = None
+        self.structs = {}
         # The generator that runs in this thread, if there is one.
         self._current = threading.local()
 
@@ -35,6 +36,7 @@ class Interpreter:
         if base_dir is None:
             base_dir = os.getcwd()
         self.globals.module_dir = base_dir
+        self._collect_structs(program.statements)
         try:
             self.execute(program, env)
         except ReturnSignal as signal:
@@ -43,12 +45,27 @@ class Interpreter:
                 signal.line, signal.col)
         except BreakSignal as signal:
             raise BunRuntimeError(
-                "'break' outside of a loop", signal.line, signal.col)
+                "'break' outside of a loop",
+                signal.line, signal.col)
         except ContinueSignal as signal:
             raise BunRuntimeError(
-                "'continue' outside of a loop", signal.line, signal.col)
+                "'continue' outside of a loop",
+                signal.line, signal.col)
 
-    def call_function(self, function, args):
+    def _collect_structs(self, statements):
+        """Collect the struct declarations of the program.
+
+        The declarations are collected before the program runs, so a
+        constructor may be called before the declaration that names it.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.StructDecl):
+                self.structs[statement.name] = statement
+
+    def call_function(self, function, args, borrowed=0):
+        args = list(args)
+        for index in range(borrowed, len(args)):
+            args[index] = copy_value(args[index])
         call_env = Environment(function.closure)
         for spec, source, payload in ops.bind_arguments(
                 function.name, function.param_specs, args, {}):
@@ -103,6 +120,32 @@ class Interpreter:
             env = env.parent
         return None
 
+    def _register_impl(self, node, env):
+        """Record the methods of an impl block."""
+        for method in node.methods:
+            function = self._make_function(method, env)
+            ops.register_impl(node.type_name, method.name, function)
+
+    def _construct(self, declaration, args, env):
+        """Build the value of a struct from the arguments of a call."""
+        fields = declaration.fields
+        if len(args) > len(fields):
+            raise BunRuntimeError(
+                "struct '%s' expects %d argument(s), got %d"
+                % (declaration.name, len(fields), len(args)))
+        values = []
+        for index, field in enumerate(fields):
+            if index < len(args):
+                values.append(args[index])
+            elif field.default is not None:
+                values.append(self.evaluate(field.default, env))
+            else:
+                raise BunRuntimeError(
+                    "struct '%s' is missing a value for field '%s'"
+                    % (declaration.name, field.name))
+        return ops.make_struct(
+            declaration.name, [field.name for field in fields], values)
+
     def _make_function(self, node, env):
         return BunFunction(
             node.name or "anonymous",
@@ -152,7 +195,7 @@ class Interpreter:
                 self.execute(statement, env)
         elif isinstance(node, ast.LetStmt):
             value = self.evaluate(node.value, env)
-            env.define(node.name, value, node.mutable)
+            env.define(node.name, copy_value(value), node.mutable)
             if node.exported:
                 self._record_export(node.name, value)
         elif isinstance(node, ast.AssignStmt):
@@ -212,6 +255,14 @@ class Interpreter:
             env.define(node.name, value, False)
             if node.exported:
                 self._record_export(node.name, value)
+        elif isinstance(node, ast.StructDecl):
+            self.structs[node.name] = node
+        elif isinstance(node, ast.ProtocolDecl):
+            # A protocol is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            pass
+        elif isinstance(node, ast.ImplDecl):
+            self._register_impl(node, env)
         elif isinstance(node, ast.ImportStmt):
             exports = self._load_module(node.path, node.line, node.col, env)
             for name in node.names:
@@ -221,7 +272,7 @@ class Interpreter:
                 env.define(name, exports[name], False)
         elif isinstance(node, ast.ReturnStmt):
             value = self.evaluate(node.value, env) if node.value is not None else None
-            raise ReturnSignal(value, node.line, node.col)
+            raise ReturnSignal(copy_value(value), node.line, node.col)
         elif isinstance(node, ast.TryStmt):
             self._execute_try(node, env)
         elif isinstance(node, ast.WithStmt):
@@ -412,7 +463,7 @@ class Interpreter:
                 elif source == "kwarg":
                     call_env.define(spec["name"], self._to_dict(payload), True)
                 else:
-                    call_env.define(spec["name"], payload, True)
+                    call_env.define(spec["name"], copy_value(payload), True)
             if callee.is_generator:
                 # A generator gives its values one at a time, and it runs
                 # in a thread of its own.
@@ -431,9 +482,12 @@ class Interpreter:
 
     def _assign(self, target, value, env):
         if isinstance(target, ast.Identifier):
-            env.assign(target.name, value)
+            env.assign(target.name, copy_value(value))
         elif isinstance(target, ast.UnpackTarget):
             self._unpack_assign(target, value, env)
+        elif isinstance(target, ast.Attribute):
+            obj = self.evaluate(target.object, env)
+            ops.set_field(obj, target.name, copy_value(value))
         elif isinstance(target, ast.Index):
             if isinstance(target.index, ast.Slice):
                 obj = self.evaluate(target.target, env)
@@ -503,6 +557,13 @@ class Interpreter:
             return self._index(self.evaluate(node.target, env), self.evaluate(node.index, env))
         if isinstance(node, ast.MethodCall):
             return self._method_call(node, env)
+        if isinstance(node, ast.Attribute):
+            return ops.get_field(self.evaluate(node.object, env), node.name)
+        if isinstance(node, ast.Unwrap):
+            ok, payload = ops.unwrap_result(self.evaluate(node.expr, env))
+            if ok:
+                return payload
+            raise ReturnSignal(payload, node.line, node.col)
         raise BunRuntimeError("unknown expression: %s" % type(node).__name__)
 
     def _dict_literal(self, node, env):
@@ -556,6 +617,11 @@ class Interpreter:
             self.evaluate(node.right, env))
 
     def _call(self, node, env):
+        if isinstance(node.callee, ast.Identifier):
+            declaration = self.structs.get(node.callee.name)
+            if declaration is not None:
+                args = [self.evaluate(arg, env) for arg in node.args]
+                return self._construct(declaration, args, env)
         callee = self.evaluate(node.callee, env)
         args = [self.evaluate(arg, env) for arg in node.args]
         kwargs = {}
@@ -570,7 +636,7 @@ class Interpreter:
                 elif source == "kwarg":
                     call_env.define(spec["name"], self._to_dict(payload), True)
                 else:
-                    call_env.define(spec["name"], payload, True)
+                    call_env.define(spec["name"], copy_value(payload), True)
             if callee.is_generator:
                 # A generator gives its values one at a time, and it runs
                 # in a thread of its own.
@@ -593,6 +659,11 @@ class Interpreter:
     def _method_call(self, inner, env):
         receiver = self.evaluate(inner.receiver, env)
         args = [self.evaluate(arg, env) for arg in inner.args]
+        if isinstance(receiver, BunStruct):
+            function = ops.struct_method(receiver.type_name, inner.method)
+            if isinstance(function, BunFunction):
+                return self.call_function(function, [receiver] + args, borrowed=1)
+            return ops.method_call(inner.method, receiver, args)
         return ops.method_call(inner.method, receiver, args)
 
     def _index(self, obj, index):

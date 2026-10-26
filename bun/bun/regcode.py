@@ -161,6 +161,15 @@ SCOPE_EXIT = "SCOPE_EXIT"
 MATCH_TEST = "MATCH_TEST"
 MATCH_FAIL = "MATCH_FAIL"
 
+# The structs.
+MAKE_STRUCT = "MAKE_STRUCT"
+GET_FIELD = "GET_FIELD"
+SET_FIELD = "SET_FIELD"
+REGISTER_IMPL = "REGISTER_IMPL"
+
+# The result and the `?` operator.
+UNWRAP_OR_RETURN = "UNWRAP_OR_RETURN"
+
 # The superinstructions.  They do the work of two instructions in one
 # dispatch, and the plan of the work lives in the constant pool.
 LOAD_NAME2 = "LOAD_NAME2"
@@ -292,6 +301,11 @@ OPERANDS = {
     SCOPE_EXIT: (None, None, None),
     MATCH_TEST: ("slot", "pool", None),
     MATCH_FAIL: ("slot", None, None),
+    MAKE_STRUCT: ("slot", "pool", "count"),
+    GET_FIELD: ("slot", "slot", "pool"),
+    SET_FIELD: ("slot", "slot", "pool"),
+    REGISTER_IMPL: ("pool", "pool", "pool"),
+    UNWRAP_OR_RETURN: ("slot", None, None),
     LOAD_NAME2: ("slot", "pool", None),
     LOAD_NAME_CONST: ("slot", "pool", None),
     CONST_LOAD_NAME: ("slot", "pool", None),
@@ -346,7 +360,8 @@ def read_slots(code, instruction):
               LOAD_NAME2, LOAD_NAME_CONST, CONST_LOAD_NAME):
         return []
     if op in (STORE_NAME, DEFINE_NAME, POP, DUP, RETURN, FOR_SETUP,
-              FORMAT, UNPACK_PLAN, YIELD, MATCH_TEST, MATCH_FAIL):
+              FORMAT, UNPACK_PLAN, YIELD, MATCH_TEST, MATCH_FAIL,
+              UNWRAP_OR_RETURN):
         return [a]
     if op in BINARY_OPCODES.values():
         return [b, c]
@@ -354,6 +369,12 @@ def read_slots(code, instruction):
         return [a]
     if op == BUILD_LIST or op == BUILD_STRING:
         return list(range(a, a + b))
+    if op == MAKE_STRUCT:
+        return list(range(a, a + c))
+    if op == GET_FIELD:
+        return [b]
+    if op == SET_FIELD:
+        return [a, b]
     if op == BUILD_DICT:
         return list(range(a, a + b * 2))
     if op == LIST_APPEND:
@@ -416,6 +437,12 @@ def touched_slots(code, instruction):
         slots.append(a + b * 2 - 1)
     elif op == BUILD_STRING:
         slots.append(a + b - 1)
+    elif op == MAKE_STRUCT:
+        slots.append(a + c - 1)
+    elif op == GET_FIELD:
+        slots.append(b)
+    elif op == SET_FIELD:
+        slots.append(b)
     elif op == SLICE:
         slots.append(a + 3)
     elif op == STORE_SLICE:

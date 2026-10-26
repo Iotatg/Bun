@@ -118,6 +118,48 @@ class MatchStmt:
 
 
 @record
+class StructField:
+    name: str
+    type_ann: str | None = None
+    mutable: bool = True
+    default: object = None
+    line: int = 0
+    col: int = 0
+
+
+@record
+class StructDecl:
+    name: str
+    fields: list[object]
+    line: int = 0
+    col: int = 0
+
+
+@record
+class ImplDecl:
+    type_name: str
+    methods: list[object]
+    line: int = 0
+    col: int = 0
+
+
+@record
+class ProtocolDecl:
+    name: str
+    methods: list[object]
+    line: int = 0
+    col: int = 0
+
+
+@record
+class Attribute:
+    object: object
+    name: str
+    line: int = 0
+    col: int = 0
+
+
+@record
 class FnDecl:
     name: str
     params: list[object]
@@ -127,6 +169,21 @@ class FnDecl:
     exported: bool = False
     return_type: str | None = None
     decorators: list[object] = field(default_factory=list)
+    type_params: list[object] = field(default_factory=list)
+
+
+@record
+class TypeParam:
+    """A type parameter of a function.
+
+    The bound is the name of a class of types the parameter may not
+    leave: `Num`, `Ord`, `Eq`, `Hash` or `Show`. A parameter without a
+    bound may be any type.
+    """
+    name: str
+    bound: str | None = None
+    line: int = 0
+    col: int = 0
 
 
 @record
@@ -281,6 +338,13 @@ class ComprehensionClause:
 class Unary:
     op: str
     operand: object
+    line: int = 0
+    col: int = 0
+
+
+@record
+class Unwrap:
+    expr: object
     line: int = 0
     col: int = 0
 

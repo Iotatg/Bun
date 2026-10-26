@@ -4,8 +4,62 @@ from .ints import check as check_int
 from .methods import LIST_METHODS, SECRET_METHODS, STRING_METHODS
 from .set import BunSet, SET_METHODS
 from .values import (
-    BunSecret, is_number, is_truthy, stringify, values_equal,
+    BunSecret, BunStruct, copy_value, is_number, is_truthy, stringify,
+    values_equal,
 )
+
+STRUCT_METHODS = {}
+
+
+def make_struct(type_name, field_names, field_values):
+    """Build a struct value from the values of its fields.
+
+    A struct is a value type, so the values of its fields are copied.
+    The copy happens here and not at the call of the constructor, so
+    that every engine builds the same value.
+    """
+    fields = {}
+    for name, value in zip(field_names, field_values):
+        fields[name] = copy_value(value)
+    return BunStruct(type_name, fields, list(field_names))
+
+
+def get_field(obj, name):
+    """Read one field of a struct."""
+    if not isinstance(obj, BunStruct):
+        raise BunRuntimeError(
+            "type '%s' has no field '%s'" % (type_name(obj), name))
+    if name not in obj.fields:
+        raise BunRuntimeError(
+            "unknown field '%s' on %s" % (name, obj.type_name))
+    return obj.fields[name]
+
+
+def set_field(obj, name, value):
+    """Write one field of a struct."""
+    if not isinstance(obj, BunStruct):
+        raise BunRuntimeError(
+            "type '%s' has no field '%s'" % (type_name(obj), name))
+    if name not in obj.fields:
+        raise BunRuntimeError(
+            "unknown field '%s' on %s" % (name, obj.type_name))
+    obj.fields[name] = value
+
+
+def register_impl(type_name, method, function):
+    """Record the implementation of a method of a struct type."""
+    table = STRUCT_METHODS.setdefault(type_name, {})
+    table[method] = function
+    _METHOD_DISPATCH.pop((type_name, method), None)
+
+
+def struct_method(type_name, method):
+    """Find the implementation of a method of a struct type."""
+    table = STRUCT_METHODS.get(type_name, {})
+    if method not in table:
+        raise BunRuntimeError(
+            "unknown method '%s' on %s" % (method, type_name))
+    return table[method]
 
 
 def binary_op(op, left, right):
@@ -269,6 +323,8 @@ def type_name(value):
         return "set"
     if isinstance(value, BunSecret):
         return "secret"
+    if isinstance(value, BunStruct):
+        return value.type_name
     return type(value).__name__
 
 
@@ -292,6 +348,9 @@ def _resolve_method(method, receiver):
     elif isinstance(receiver, BunSecret):
         table = SECRET_METHODS
         name = "secret"
+    elif isinstance(receiver, BunStruct):
+        table = STRUCT_METHODS.get(receiver.type_name, {})
+        name = receiver.type_name
     else:
         raise BunRuntimeError(
             "'%s' is not a method on %s" % (method, type_name(receiver)))
@@ -305,7 +364,10 @@ def method_call(method, receiver, args):
     # The method tables are static, so the lookup result only depends on the
     # concrete type of the receiver and the method name. Caching it removes
     # the isinstance chain and the table lookup from every method call.
-    key = (type(receiver), method)
+    if isinstance(receiver, BunStruct):
+        key = (receiver.type_name, method)
+    else:
+        key = (type(receiver), method)
     handler = _METHOD_DISPATCH.get(key)
     if handler is None:
         handler = _resolve_method(method, receiver)
@@ -566,4 +628,23 @@ def _unpack_seq(plans, items, values):
             values.append(items[count])
             count += 1
     return count
+
+
+def unwrap_result(value):
+    """Take the `ok` value of a Result, or report that it is an `err`.
+
+    A Result is a dict with an `ok` key or an `err` key.  The `ok` key
+    wins when both are present.  A value that is not a Result is an
+    error.  The return is `(ok, payload)`: `ok` is true when the
+    payload is the unwrapped value, and false when the payload is the
+    Result that the enclosing function has to return.
+    """
+    if not isinstance(value, BunDict):
+        raise BunRuntimeError(
+            "'?' expects a Result value, got %s" % type_name(value))
+    if value.has("ok"):
+        return True, value.get("ok")
+    if value.has("err"):
+        return False, value
+    raise BunRuntimeError("'?' expects a Result value")
 

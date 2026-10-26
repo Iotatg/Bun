@@ -1172,6 +1172,262 @@ gives its next value.
 The native backend does not have generators yet and refuses a program
 that uses them, by name.
 
+## Structs and methods (Phase 17)
+
+A `struct` is a type of value that holds named fields. It is the first
+half of the type-system spine of the language: the pieces a program
+builds its own types with.
+
+```bun
+struct Point {
+    var x: int,
+    var y: int
+}
+
+impl Point {
+    fn sum(self) -> int {
+        return self.x + self.y
+    }
+
+    fn bump(self, by: int) {
+        self.x = self.x + by
+        self.y = self.y + by
+    }
+}
+
+var p = Point(3, 4)
+print(p.x)       // 3
+print(p.sum())   // 7
+p.bump(1)
+print(p.y)       // 5
+```
+
+The rules of the language:
+
+- A field is written `let` (read-only), `var` (writable), or with neither
+  (writable). A field may carry a type and a default value:
+  `var count: int = 0`.
+- The constructor is the name of the struct: `Point(3, 4)`. The arguments
+  are positional and follow the order of the fields. A field with a default
+  may be left out.
+- A struct is a **value**: an assignment or an argument copies it, and the
+  copy does not share its fields with the original.
+- A method call **borrows** the receiver: `p.bump(1)` changes `p` itself.
+  The receiver is the first parameter of the method, and it is named `self`.
+- A method that writes to `self.<field>` is a mutating method, and it may
+  only be called on a `var` name. A `let` name cannot be changed, through a
+  method or otherwise.
+- Two structs with the same fields are two different types.
+- An `impl` block may come after the `struct` it names, and several `impl`
+  blocks for one struct are merged.
+
+The checker knows the fields of a struct, the methods of an `impl`, and the
+types of their arguments, so a wrong field, a wrong argument, or a write to
+a read-only field is an error before the program runs:
+
+```bun
+struct Point {
+    let x: int
+}
+
+var p = Point(1)
+p.x = 2        // error: cannot assign to immutable field 'x'
+```
+
+Every engine of the language runs the same program the same way: the tree
+walker, the stack VM, the register VM, the native backend, and the
+self-hosted front end.
+
+## Protocols (Phase 18)
+
+A `protocol` names the methods a value must have. It is how a program says
+"any value of this shape" without saying what the shape is made of.
+
+```bun
+protocol Shape {
+    fn area(self) -> float
+    fn name(self) -> string
+}
+
+struct Circle {
+    var r: float
+}
+
+impl Circle {
+    fn area(self) -> float {
+        return 3.0 * self.r * self.r
+    }
+
+    fn name(self) -> string {
+        return "circle"
+    }
+}
+
+fn show(shape: Shape) {
+    print(shape.name())
+    print(shape.area())
+}
+
+show(Circle(2.0))
+```
+
+The rules of the language:
+
+- A protocol holds method signatures without a body. The first parameter of a
+  signature is the receiver, and it is named `self`.
+- A type satisfies a protocol when it has **every** method of the protocol.
+  The check is structural: there is no `impl Shape for Circle`, and a type
+  does not say that it satisfies a protocol.
+- A protocol may be written as the type of a parameter, of a field, or of a
+  variable. The value is then checked against the methods of the protocol.
+- A protocol is a type, so it is not a value: `let s = Shape` is an error.
+- A method call on a protocol is checked against the signature of the
+  protocol: the number of the arguments and their types.
+
+The checker names the method that is missing, because that is the part the
+program has to add:
+
+```bun
+protocol Shape {
+    fn area(self) -> float
+}
+
+struct Point {
+    var x: int
+}
+
+fn show(shape: Shape) {
+    print(shape.area())
+}
+
+show(Point(1))
+// error: type 'Point' does not satisfy protocol 'Shape': missing method 'area'
+```
+
+## Generics (Phase 19)
+
+A type parameter stands for a type that is not known yet. The checker finds
+the type from the arguments of the call, and the type of the call is the
+return type with the type arguments in place of the type parameters.
+
+```bun
+fn first<T>(xs: list<T>) -> T {
+    return xs[0]
+}
+
+fn total<T: Num>(xs: list<T>) -> T {
+    var sum = 0
+    for x in xs {
+        sum = sum + x
+    }
+    return sum
+}
+
+print(first([1, 2]))
+print(first(["a", "b"]))
+print(total([1, 2, 3]))
+```
+
+The rules of the language:
+
+- A name between angle brackets after the name of the function is a type
+  parameter: `fn first<T>(...)`. It is a type inside the function, so it may
+  be written as the type of a parameter, of a variable or of the result.
+- The body of a function with type parameters is checked **once**, on its
+  own: the checker does not walk the program once per type.
+- A bound says which types the type parameter may not leave: `fn total<T: Num>`.
+  The bounds are `Num` (the numbers), `Ord` (the numbers and the strings),
+  `Eq` and `Hash` (the types that can be compared or used as a key) and
+  `Show` (every type). A bound that the argument does not satisfy is an error
+  at the call.
+- A type parameter may stand for the type of the elements of a list:
+  `list<T>`. The checker keeps the type of a list, so `first([1, 2])` is an
+  `int` and `first(["a"])` is a `string`.
+- The types are **erased** when the program runs. There is one function for
+  every type parameter, not one copy per type: the register code and the C
+  backend carry no type information, so a generic function is the same code
+  for every type and the phase adds no opcode.
+- A type parameter outside a function is an unknown type: `let x: T = 1` is an
+  error.
+- Only one level of type arguments is written: `list<T>`. A function type as a
+  type argument (`fn(T) -> U`) and the nested generics (`list<list<T>>`) are
+  deferred to a later phase.
+
+The checker names the type that does not fit and the bound it does not
+satisfy, because that is the part the program has to change:
+
+```bun
+fn total<T: Num>(xs: list<T>) -> T {
+    var sum = 0
+    for x in xs {
+        sum = sum + x
+    }
+    return sum
+}
+
+print(total(["a"]))
+// error: type 'string' does not satisfy the bound 'Num' of type parameter 'T'
+```
+
+## Results and the `?` operator (Phase 20)
+
+A result is a value that holds either a success or a failure. `Ok(value)`
+makes a success and `Err(error)` makes a failure. A result is data, so it
+may sit in a list, in a field or in a dict.
+
+```bun
+fn parse(s: string) -> result {
+    if s == "" {
+        return Err("the text is empty")
+    }
+    return Ok(len(s))
+}
+```
+
+The `?` operator takes the value out of a success and passes a failure
+along. The value of `parse(s)?` is the number of characters when the text
+is not empty, and the enclosing function returns the failure unchanged
+when it is.
+
+```bun
+fn twice(s: string) -> result {
+    let n = parse(s)?
+    return Ok(n * 2)
+}
+
+print(twice("bun")["ok"])
+print(twice("")["err"])
+```
+
+The rules of the language:
+
+- `result` is the name of the type. A function that returns a result says
+  `-> result`.
+- `Ok` and `Err` take one argument each and make a result. The value of a
+  success sits under the key `ok`, and the error of a failure under `err`.
+- `is_ok(value)` and `is_err(value)` are **functions**, not methods, so
+  they do not collide with the methods of a program. A value is a success
+  when it is a dict with the key `ok`, and a failure when it is a dict with
+  the key `err` and without the key `ok`.
+- The `?` is only allowed **inside a function**, and the function has to
+  return a result. The checker says so when it does not.
+- A value whose type is known and is not a result cannot carry a `?`: the
+  checker names the type that is wrong.
+- A value whose type is not known yet (`any` or `dict`) is left to the
+  runtime. A value that is not a result at all is a runtime error.
+
+The checker names the part of the program that has to change:
+
+```bun
+fn f() -> int {
+    return Ok(1)?
+}
+// error: the '?' operator needs a function that returns 'result'
+```
+
+Every engine of the language runs the same program: the tree, the stack VM,
+the register VM, the C backend and the self-hosted front end.
+
 ## The native tier (Phase 11)
 
 The stack VM is the reference semantics of the language. The register VM is
@@ -1744,3 +2000,11 @@ python3 -m pytest -v
   - Deferred to a later phase: the completion of a name in the middle of a line, a picture of the failure in the data of the error
 - Phase 16: the everyday language — the set, the type aliases `number` and `text`, the decorators — DONE
   - Deferred to a later phase: the `del` statement, the generators
+- Phase 17: the first half of the type-system spine — `struct`, `impl`, the field access, the methods of a struct, and the value semantics of a struct — DONE
+  - Deferred to a later phase: the `enum` (Phase 21)
+- Phase 18: the protocols — a `protocol` names the methods a value must have, the check is structural, and a protocol may be the type of a parameter, of a field or of a variable — DONE
+  - Deferred to a later phase: the `enum` (Phase 21)
+- Phase 19: the generics — a type parameter stands for a type that the checker finds from the arguments, a bound says which types the parameter may not leave, and the types are erased when the program runs — DONE
+  - Deferred to a later phase: the function type as a type argument, the nested generics, the `enum` (Phase 21)
+- Phase 20: the results — `result` names a value that is either a success or a failure, `Ok` and `Err` make one, and the `?` takes the value out of a success and passes a failure along — DONE
+  - Deferred to a later phase: the `enum` (Phase 21), the `?` on a value of a type that is not known yet at the checker

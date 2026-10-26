@@ -1970,6 +1970,36 @@ def _set(args):
     return BunSet(values)
 
 
+def _Ok(args):
+    if len(args) != 1:
+        raise BunRuntimeError("Ok() expects 1 argument")
+    result = BunDict()
+    result.set("ok", args[0])
+    return result
+
+
+def _Err(args):
+    if len(args) != 1:
+        raise BunRuntimeError("Err() expects 1 argument")
+    result = BunDict()
+    result.set("err", args[0])
+    return result
+
+
+def _is_ok(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_ok() expects 1 argument")
+    value = args[0]
+    return isinstance(value, BunDict) and value.has("ok")
+
+
+def _is_err(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_err() expects 1 argument")
+    value = args[0]
+    return isinstance(value, BunDict) and value.has("err") and not value.has("ok")
+
+
 def register_builtins(env, program_args=None):
     env.define("args", Builtin("args", _make_args(program_args)), False)
     env.define("print", Builtin("print", _print), False)
@@ -2090,3 +2120,7 @@ def register_builtins(env, program_args=None):
     env.define("trim", Builtin("trim", _trim), False)
     env.define("lower", Builtin("lower", _lower), False)
     env.define("upper", Builtin("upper", _upper), False)
+    env.define("Ok", Builtin("Ok", _Ok), False)
+    env.define("Err", Builtin("Err", _Err), False)
+    env.define("is_ok", Builtin("is_ok", _is_ok), False)
+    env.define("is_err", Builtin("is_err", _is_err), False)

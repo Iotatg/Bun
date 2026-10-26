@@ -59,6 +59,11 @@ from .compiler import (
     OP_SCOPE_EXIT,
     OP_MATCH_TEST,
     OP_MATCH_FAIL,
+    OP_MAKE_STRUCT,
+    OP_GET_FIELD,
+    OP_SET_FIELD,
+    OP_REGISTER_IMPL,
+    OP_UNWRAP_OR_RETURN,
     Compiler,
 )
 from .dict import BunDict
@@ -75,8 +80,8 @@ from .modules import (
     resolve_module_path,
 )
 from .values import (
-    BunFunction, Builtin, format_fstring_part, is_truthy, repr_value,
-    stringify,
+    BunFunction, BunStruct, Builtin, copy_value, format_fstring_part,
+    is_truthy, repr_value, stringify,
 )
 
 
@@ -287,7 +292,7 @@ class VM:
                             if not values[arg][1]:
                                 raise BunRuntimeError(
                                     "cannot assign to immutable variable '%s'" % arg)
-                            values[arg][0] = stack.pop()
+                            values[arg][0] = copy_value(stack.pop())
                             break
                         scope = scope.parent
                     else:
@@ -331,7 +336,7 @@ class VM:
                     continue
                 if op == OP_DEFINE_NAME:
                     name, mutable = arg
-                    frame.env.define(name, stack.pop(), mutable)
+                    frame.env.define(name, copy_value(stack.pop()), mutable)
                     continue
                 if op == OP_ENTER_SCOPE:
                     frame.env = Environment(frame.env)
@@ -434,10 +439,10 @@ class VM:
 
     def _op_define_name(self, frame, arg, line, col):
         name, mutable = arg
-        frame.env.define(name, frame.stack.pop(), mutable)
+        frame.env.define(name, copy_value(frame.stack.pop()), mutable)
 
     def _op_store_name(self, frame, arg, line, col):
-        frame.env.assign(arg, frame.stack.pop())
+        frame.env.assign(arg, copy_value(frame.stack.pop()))
 
     def _op_del(self, frame, arg, line, col):
         frame.env.delete(arg)
@@ -479,6 +484,19 @@ class VM:
         else:
             args = []
         callee = frame.stack.pop()
+        return self._call_function(frame, callee, args, kwargs)
+
+    def _call_function(self, frame, callee, args, kwargs, borrowed=0):
+        """Run a call. The answer stays on the stack of the frame.
+
+        The arguments of a call are copied, because a struct is a value
+        type. The first `borrowed` arguments are left alone: a method
+        call borrows the receiver, so a mutation through `self` is seen
+        by the caller.
+        """
+        args = list(args)
+        for index in range(borrowed, len(args)):
+            args[index] = copy_value(args[index])
         if isinstance(callee, BunFunction):
             call_env = Environment(callee.closure)
             for spec, source, payload in ops.bind_arguments(
@@ -517,7 +535,7 @@ class VM:
             "%s is not callable" % stringify(callee))
 
     def _op_return(self, frame, arg, line, col):
-        value = frame.stack.pop()
+        value = copy_value(frame.stack.pop())
         generator = frame.root().generator
         if generator is not None:
             # The body of a generator is over, and it gives its last
@@ -581,7 +599,39 @@ class VM:
         else:
             args = []
         receiver = frame.stack.pop()
+        if isinstance(receiver, BunStruct):
+            function = ops.struct_method(receiver.type_name, method)
+            if isinstance(function, BunFunction):
+                return self._call_function(
+                    frame, function, [receiver] + args, {}, borrowed=1)
         frame.stack.append(ops.method_call(method, receiver, args))
+
+    def _op_make_struct(self, frame, arg, line, col):
+        type_name, field_names = arg
+        count = len(field_names)
+        if count:
+            values = frame.stack[-count:]
+            del frame.stack[-count:]
+        else:
+            values = []
+        frame.stack.append(ops.make_struct(type_name, field_names, values))
+
+    def _op_get_field(self, frame, arg, line, col):
+        obj = frame.stack.pop()
+        frame.stack.append(ops.get_field(obj, arg))
+
+    def _op_set_field(self, frame, arg, line, col):
+        value = frame.stack.pop()
+        obj = frame.stack.pop()
+        ops.set_field(obj, arg, copy_value(value))
+
+    def _op_register_impl(self, frame, arg, line, col):
+        type_name, method, body = arg
+        function = BunFunction(body["name"], body["params"], body,
+                               frame.env, body.get("filename"),
+                               body.get("source"),
+                               param_specs=body.get("param_defs"))
+        ops.register_impl(type_name, method, function)
 
     def _op_try(self, frame, arg, line, col):
         frame.handlers.append(
@@ -739,6 +789,14 @@ class VM:
     def _op_unary(self, frame, arg, line, col):
         frame.stack.append(ops.unary_op(arg, frame.stack.pop()))
 
+    def _op_unwrap_or_return(self, frame, arg, line, col):
+        ok, payload = ops.unwrap_result(frame.stack.pop())
+        if ok:
+            frame.stack.append(payload)
+            return None
+        frame.stack.append(payload)
+        return self._op_return(frame, arg, line, col)
+
     def _op_jump(self, frame, arg, line, col):
         frame.ip = arg
 
@@ -829,4 +887,9 @@ class VM:
         OP_MATCH_FAIL: _op_match_fail,
         OP_SCOPE_ENTER: _op_scope_enter,
         OP_SCOPE_EXIT: _op_scope_exit,
+        OP_MAKE_STRUCT: _op_make_struct,
+        OP_GET_FIELD: _op_get_field,
+        OP_SET_FIELD: _op_set_field,
+        OP_REGISTER_IMPL: _op_register_impl,
+        OP_UNWRAP_OR_RETURN: _op_unwrap_or_return,
     }

@@ -28,6 +28,9 @@ let KEYWORDS = {
     "continue": "CONTINUE",
     "del": "DEL",
     "yield": "YIELD",
+    "struct": "STRUCT",
+    "impl": "IMPL",
+    "protocol": "PROTOCOL",
 }
 
 let TWO_CHAR = {
@@ -56,6 +59,7 @@ let ONE_CHAR = {
     "<": "LT",
     ">": "GT",
     "!": "BANG",
+    "?": "QUESTION",
     "(": "LPAREN",
     ")": "RPAREN",
     "{": "LBRACE",

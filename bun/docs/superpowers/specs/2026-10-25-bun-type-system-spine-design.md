@@ -348,11 +348,9 @@ fn identity<T>(value: T) -> T {
     return value
 }
 
-fn map<T, U>(xs: list<T>, f: fn(T) -> U) -> list<U> {
+fn map<T>(xs: list<T>, f: fn) -> list<T> {
     var out = []
-    for x in xs {
-        out.push(f(x))
-    }
+    for x in xs { out.push(f(x)) }
     return out
 }
 
@@ -367,14 +365,24 @@ Type parameters live on `FnDecl` (`type_params: list[TypeParam]`) and,
 later, on `StructDecl`. A `TypeParam` is `{name, bound}` where `bound` is
 one of `Num`, `Ord`, `Eq`, `Hash`, `Show`, or none.
 
-**Monomorphisation.** When a call site has known concrete type arguments
-(from annotations or from the checker's inference of literals), the stack
-compiler clones the function's `CodeObject` with the type parameters
-substituted, names it `name__T1_T2`, and emits a call to the clone. The
-C backend therefore sees a concrete function and can inline it.
+**Erasure, not monomorphisation.** The type parameters live in the checker
+only. The register code and the C backend carry no type information, so a
+clone per type would be byte for byte the same code; the copies would cost
+time and size and would buy nothing. Instead the runtime keeps one shared
+function and the checker gives the call its concrete type. The phase adds no
+opcode and leaves the tree engine, the stack VM, the register VM and the C
+backend unchanged.
 
-When the type arguments are `any`, one shared instantiation is used
-(dynamic, like today).
+The body of a function with type parameters is checked **once**, on its own:
+the checker does not walk the program once per type. A type parameter is a
+type inside the function, and a value of a type parameter is assignable to a
+type parameter target when the source satisfies the bound.
+
+**The surface of the type arguments.** A type argument is a plain type, a
+type variable, or `list<T>`. One level only: `fn(T) -> U` as a type
+argument and the nested generics (`list<list<T>>`) are deferred to a later
+phase. One level also keeps the `>>` of the nested generics out of the
+lexer, so the lexer does not change.
 
 Bounds: `T: Num` means the concrete type must be `int` or `float`. `Ord`
 means `int`, `float` or `string`. `Eq` means any type that `==` accepts.
@@ -390,7 +398,9 @@ prints `[2, 4]`; `sum(["a"])` is a checker error (`string` is not `Num`).
 
 ## 5. Phase 20 — `Result` + `?`
 
-`Result` is a dict protocol, consistent with "a model is data":
+`result` is a **named type**, so the checker knows it and the program may
+write it as the type of a parameter, of a field or of a variable. It is
+still a dict under the hood, consistent with "a model is data":
 
 ```
 Ok(value)  => {"ok": value}
@@ -398,12 +408,13 @@ Err(error) => {"err": error}
 ```
 
 Builtins `Ok` and `Err`. `is_ok(r)` / `is_err(r)` are functions, not
-methods, so they do not collide with user methods.
+methods, so they do not collide with user methods. The `ok` key wins when
+both keys are there.
 
 The postfix operator `?`:
 
 ```bun
-fn parse(s: string) -> any {
+fn parse(s: string) -> result {
     let n = int_or_err(s)?
     return Ok(n * 2)
 }
@@ -413,19 +424,47 @@ fn parse(s: string) -> any {
 yields that value. If it has an `"err"` key, the enclosing function
 returns the Result unchanged. If it has neither, a runtime error.
 
-Checker: `?` is only legal inside a function. (We do not yet require the
-return type to be a Result, because Bun is gradual; a later phase may
-tighten this.)
+Checker (the design was tightened against the first sketch, which left
+the return type alone):
 
-Lexer: `?` after an expression. Token: reuse `BANG` is wrong; add
-`QUESTION = "QUESTION"` or parse `?` as a postfix in the parser from a
-new token.
+- `?` is only legal inside a function: `the '?' operator is only allowed
+  inside a function`.
+- The enclosing function has to return a `result` (or leave the type
+  unknown): `the '?' operator needs a function that returns 'result'`.
+- A value whose type is known and is not a `result` is an error:
+  `cannot use '?' on a value of type '<type>'`. A value of type `any` or
+  `dict` is left to the runtime.
+
+Lexer: `?` after an expression. Token: reuse `BANG` is wrong; the token is
+`QUESTION = "QUESTION"`, parsed as a postfix in the parser.
 
 Stack opcode: `UNWRAP_OR_RETURN` (pops a Result, pushes the `ok` value
-or returns the Result from the current function).
+or returns the Result from the current function). The tree engine raises
+a `ReturnSignal` with the Result instead. The register machine has the
+same instruction, and the C backend emits `bun_unwrap_result`.
 
 Tests: a successful `?` chain; an `Err` that propagates; `?` on a non-Result
 is a runtime error.
+
+| file | change |
+|------|--------|
+| `bun/tokens.py`, `bun/lexer.py` | `QUESTION` |
+| `bun/ast.py`, `bun/parser.py` | the `Unwrap` node |
+| `bun/types.py` | `RESULT`, the signatures of `Ok`, `Err`, `is_ok`, `is_err` |
+| `bun/checker.py` | `check_unwrap` |
+| `bun/ops.py` | `unwrap_result` |
+| `bun/builtins.py` | `Ok`, `Err`, `is_ok`, `is_err` |
+| `bun/interpreter.py` | the tree walker |
+| `bun/compiler.py`, `bun/vm.py` | `UNWRAP_OR_RETURN` |
+| `bun/regcode.py`, `bun/regcompile.py`, `bun/regvm.py` | the register instruction |
+| `bun/cbackend.py`, `lib/bun/c_runtime.h` | the C emission and the runtime |
+| `selfhost/lexer.bun`, `selfhost/parser.bun` | the `?` and the `Unwrap` node |
+| `selfhost/checker.bun` | `check_unwrap`, the `result` type |
+| `selfhost/compiler.bun` | the `UNWRAP_OR_RETURN` instruction |
+| `bun/docs.py`, `selfhost/docs.bun` | the entries |
+| `tests/golden/result_question.bun` | the corpus |
+| `tests/test_result.py` | checker + engine tests |
+| `README.md` | the section and the roadmap |
 
 ---
 

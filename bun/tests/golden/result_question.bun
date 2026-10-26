@@ -1,0 +1,29 @@
+// A Result is a value that holds either a success or a failure.
+fn parse(s: string) -> result {
+    if s == "bad" {
+        return Err("bad input")
+    }
+    return Ok(len(s))
+}
+
+// The `?` gives the value of a success and passes a failure along.
+fn twice(s: string) -> result {
+    let n = parse(s)?
+    return Ok(n * 2)
+}
+
+let good = twice("bun")
+print(good)
+print(is_ok(good))
+print(is_err(good))
+print(good["ok"])
+
+let bad = twice("bad")
+print(bad)
+print(is_ok(bad))
+print(is_err(bad))
+print(bad["err"])
+
+// A value that is not a Result is neither a success nor a failure.
+print(is_ok(5))
+print(is_err(5))
