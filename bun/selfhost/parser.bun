@@ -76,6 +76,9 @@ fn statement(st) {
     if t == "STRUCT" {
         return struct_decl(st)
     }
+    if t == "ENUM" {
+        return enum_decl(st)
+    }
     if t == "IMPL" {
         return impl_decl(st)
     }
@@ -253,6 +256,42 @@ fn struct_field(st) {
         default = expression(st)
     }
     return {"kind": "StructField", "name": name["value"], "type_ann": type_ann, "mutable": mutable, "default": default, "line": start["line"], "col": start["col"]}
+}
+
+// Parse an enum: the variants it holds.
+fn enum_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected enum name")
+    expect(st, "LBRACE", "expected '{' after enum name")
+    let variants = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        variants.push(enum_variant(st))
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after enum variants")
+    return {"kind": "EnumDecl", "name": name["value"], "variants": variants, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse one variant of an enum: its name and the types of its fields.
+fn enum_variant(st) {
+    let start = peek(st)
+    let name = expect(st, "IDENT", "expected a variant name")
+    let field_types = []
+    if match_token(st, ["LPAREN"]) != null {
+        if !check(st, "RPAREN") {
+            while true {
+                field_types.push(type_name(st))
+                if match_token(st, ["COMMA"]) == null {
+                    break
+                }
+                if check(st, "RPAREN") {
+                    break
+                }
+            }
+        }
+        expect(st, "RPAREN", "expected ')' after the fields of a variant")
+    }
+    return {"kind": "EnumVariant", "name": name["value"], "field_types": field_types, "line": start["line"], "col": start["col"]}
 }
 
 // Parse an impl block: the methods of a type.
@@ -688,7 +727,18 @@ fn unpack_ahead(st) {
 
 fn match_pattern(st) {
     let tok = peek(st)
+    if tok["type"] == "IDENT" and peek_token(st, 1)["type"] == "DOT" {
+        // A variant of an enum: `Color.Red`, with the fields of a
+        // variant written in parentheses: `Shape.Circle(radius)`.
+        return enum_variant_pattern(st)
+    }
     if tok["type"] == "IDENT" {
+        if peek_token(st, 1)["type"] == "LPAREN" {
+            // A pattern of a struct: `Point(x: 0, y)`. The value has to
+            // be a struct of the named type, and the fields are matched
+            // one by one.
+            return struct_pattern(st)
+        }
         if tok["value"] == "_" {
             advance(st)
             return match_pattern_node("wildcard", tok, "", null, null, [], [])
@@ -756,6 +806,56 @@ fn match_pattern(st) {
         return match_pattern_node("range", tok, "", value, high, [], [])
     }
     return match_pattern_node("literal", tok, "", value, null, [], [])
+}
+
+// Parse the pattern of a variant of an enum: the name of the enum, the
+// name of the variant, and the patterns of its fields, bound by
+// position.
+fn enum_variant_pattern(st) {
+    let name_tok = advance(st)
+    expect(st, "DOT", "expected '.' in a variant pattern")
+    let variant = expect(st, "IDENT", "expected a variant name")
+    let items = []
+    if match_token(st, ["LPAREN"]) != null {
+        if !check(st, "RPAREN") {
+            while true {
+                items.push(match_pattern(st))
+                if match_token(st, ["COMMA"]) == null {
+                    break
+                }
+                if check(st, "RPAREN") {
+                    break
+                }
+            }
+        }
+        expect(st, "RPAREN", "expected ')' after the fields of a variant")
+    }
+    return match_pattern_node("enum", name_tok, variant["value"], name_tok["value"], null, items, [])
+}
+
+fn struct_pattern(st) {
+    let name_tok = advance(st)
+    expect(st, "LPAREN", "expected '(' after the name of a struct pattern")
+    let entries = []
+    if !check(st, "RPAREN") {
+        while true {
+            let field = expect(st, "IDENT", "expected a field name in a struct pattern")
+            if match_token(st, ["COLON"]) != null {
+                entries.push([field["value"], match_pattern(st)])
+            } else {
+                // A bare name binds the field that name holds.
+                entries.push([field["value"], match_pattern_node("binding", field, field["value"], null, null, [], [])])
+            }
+            if match_token(st, ["COMMA"]) == null {
+                break
+            }
+            if check(st, "RPAREN") {
+                break
+            }
+        }
+    }
+    expect(st, "RPAREN", "expected ')' after the fields of a struct pattern")
+    return match_pattern_node("struct", name_tok, "", name_tok["value"], null, [], entries)
 }
 
 fn match_pattern_node(kind, tok, name, value, high, items, entries) {

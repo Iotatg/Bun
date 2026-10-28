@@ -7,6 +7,7 @@ KEYWORDS = {
     "var": TokenType.VAR,
     "fn": TokenType.FN,
     "struct": TokenType.STRUCT,
+    "enum": TokenType.ENUM,
     "impl": TokenType.IMPL,
     "protocol": TokenType.PROTOCOL,
     "if": TokenType.IF,

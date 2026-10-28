@@ -1428,6 +1428,313 @@ fn f() -> int {
 Every engine of the language runs the same program: the tree, the stack VM,
 the register VM, the C backend and the self-hosted front end.
 
+## Enums (Phase 21)
+
+An enum is a named choice: one value of a set of variants. A variant holds
+no fields or a fixed number of fields, the way a struct holds its fields.
+
+```bun
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+}
+```
+
+The name of the enum is not a value: a variant picks its fields, and the
+variant is the value. A variant without fields is written on its own, and a
+variant with fields is a call.
+
+```bun
+let color = Color.Green
+let shape = Shape.Rect(3.0, 4.0)
+```
+
+A `match` answers for one variant, and its pattern binds the fields of the
+variant as names. A case that names the variant alone answers for the
+variant that holds no fields.
+
+```bun
+fn area(s: Shape) -> float {
+    match s {
+        Shape.Circle(r) => return 3.14159 * r * r
+        Shape.Rect(w, h) => return w * h
+    }
+    return 0.0
+}
+
+match color {
+    Color.Red => print("red")
+    Color.Green => print("green")
+    Color.Blue => print("blue")
+}
+```
+
+The rules of the language:
+
+- `enum` is the name of the type. A function that returns an enum says
+  `-> Shape`.
+- The fields of a variant have the types of the fields of a struct. A
+  variant may be a plain name: `Shape` with the fields of no variant is
+  not a value.
+- The name of the enum is not a value, like the name of a protocol: a
+  program that writes `Shape` alone is told that the name is not a value.
+- The checker counts the fields of a variant: a call with the wrong number
+  of arguments, a variant that is not declared and an enum that is not
+  declared are all errors before the program runs.
+- Every engine builds the same value, the same way it builds a dict: the
+  answer of `type_of(Color.Green)` is `"dict"` and the value holds its
+  fields under the name of the variant.
+
+```bun
+print(type_of(Color.Green))
+print(Color.Green)
+```
+
+prints
+
+```text
+dict
+{type: Color, kind: Green, fields: []}
+```
+
+## Options and the `?` operator (Phase 22)
+
+An option is a value that may be missing. `some(value)` holds a value and
+`none()` holds the missing one.
+
+```bun
+fn find(table: dict, key: string) -> option {
+    if table.has(key) {
+        return some(table[key])
+    }
+    return none()
+}
+
+print(is_some(find({"a": 1}, "a")))
+print(is_none(find({"a": 1}, "b")))
+```
+
+The `?` of an option gives its value in a function that answers an option,
+and a `none` is passed along the way a failure is passed along: the value
+of `find(table, "a")?` is the value under the key when it is there, and the
+enclosing function answers `none()` when it is not.
+
+```bun
+fn first(table: dict) -> option {
+    let value = find(table, "a")?
+    return some(value * 2)
+}
+```
+
+The rules of the language:
+
+- `option` is the name of the type. A function that returns an option says
+  `-> option`.
+- `some` takes one argument and `none` takes none, like `Ok` and `Err`.
+- The `?` of an option is only allowed inside a function, and the function
+  has to return an option: the checker says so when it does not, and the
+  same way it does for a result.
+- An option may not walk a `for`: an option is a value, not a sequence.
+- An option is data: the answer of `type_of(none())` is `"dict"`.
+
+## The iterator protocol (Phase 23)
+
+A `for` walks a list, a string, a dict or a set, and it walks any struct
+that answers `next`. The method answers `some(item)` for the next item and
+`none()` for the end of the sequence.
+
+```bun
+struct Counter {
+    var count: int
+    var limit: int
+}
+
+impl Counter {
+    fn next(self) -> option {
+        if self.count >= self.limit {
+            return none()
+        }
+        self.count = self.count + 1
+        return some(self.count)
+    }
+}
+
+for n in Counter(1, 4) {
+    print(n)
+}
+```
+
+prints
+
+```text
+2
+3
+4
+```
+
+The rules of the language:
+
+- The receiver of `next` is borrowed across the loop, the way a method
+  call borrows it: a `next` that writes to a field keeps walking, and the
+  value keeps its place after the loop ends.
+- `next` has to answer with an option: a value of another kind is a
+  runtime error, and so is a struct that has no `next`.
+- A loop may stop with `break`, and the value keeps its place: the `count`
+  of a counter that stopped at 3 is 3.
+- The engines call the `next` of a value their own way, the way they call
+  any method: the tree, both VMs and the C backend run the same program.
+
+## Struct patterns (Phase 24)
+
+A case of a `match` names a struct and the fields it wants to test. The
+subject has to be a value of that struct, and a field pattern tests its
+value or binds it. A struct of another type, a dict or a list never
+answers a struct pattern.
+
+```bun
+struct Point {
+    var x: int
+    var y: int
+}
+
+fn where(p: Point) -> string {
+    match p {
+        Point(x: 0, y: 0) => return "origin"
+        Point(x: 0, y) => return "axis"
+        Point(x, y) => return "field"
+    }
+    return "none"
+}
+
+print(where(Point(0, 5)))
+print(where(Point(2, 7)))
+```
+
+prints
+
+```text
+axis
+field
+```
+
+A field pattern is any pattern: a literal, a name, a list, a dict, even
+another struct. The inner struct fields are tested in their turn.
+
+```bun
+struct Point {
+    var x: int
+    var y: int
+}
+
+struct Line {
+    var start: Point
+    var end: Point
+}
+
+match Line(Point(0, 0), Point(0, 4)) {
+    Line(start: Point(x: 0, y: 0), end) => print(end.y)
+    Line(start, end) => print("flat")
+}
+```
+
+prints
+
+```text
+4
+```
+
+The checker reads the shape of the program before it runs, so a name
+that is not a struct, or a field the struct does not have, is an error
+and not a failed match.
+
+```text
+error: unknown field 'z' on struct 'Point' in a pattern
+```
+
+```text
+error: unknown struct 'Nope' in a pattern
+```
+
+The rules of the language:
+
+- A struct pattern answers for a value of the named struct alone: a
+  dict, a list or a struct of another type never answers it.
+- A field pattern is any pattern: a literal, a name, a list, a dict, an
+  `or` or another struct.
+- A name that binds a field binds the value of that field, the way a
+  name of a list pattern binds the value of its item.
+- The checker reads the shape of the program before it runs: an unknown
+  struct or an unknown field is an error and not a failed match.
+- The engines test the fields the same way: the tree, both VMs and the C
+  backend run the same program.
+
+## The `with` and the `scope` under the C backend (Phase 25)
+
+The C backend turns the register code of a program into C. The `with`
+statement and the `scope` statement run under it now, so every engine of
+the language runs the same program.
+
+A `with` runs its body between the `__enter__` and the `__exit__` of its
+targets, and the answer of the `__exit__` decides whether a failure goes
+on. A `scope` runs its body in a task group: the tasks it spawned are
+joined before the scope ends, and the first failure of a child is the
+failure of the scope.
+
+```bun
+scope {
+    let a = spawn { return 1 + 1 }
+    let b = spawn { return 2 + 2 }
+    print(task_join(a))
+    print(task_join(b))
+}
+print("after scope")
+```
+
+prints
+
+```text
+2
+4
+after scope
+```
+
+A child that fails makes the scope fail, and the failure of the body wins
+over the failure of a child.
+
+```bun
+try {
+    scope {
+        let bad = spawn { throw "child failed" }
+    }
+    print("no error")
+} catch e {
+    print("caught " + e)
+}
+```
+
+prints
+
+```text
+caught child failed
+```
+
+The rules of the language:
+
+- A task runs on a thread of its own, and the values it makes stay alive
+  for the task that joins it.
+- A task of a group is joined before the group ends, in the order the
+  tasks were spawned.
+- A `cancel` is a flag: the task sees it when it asks, and the task that
+  asked for the cancel does not stop it.
+- The backend refuses nothing of the two statements any more: a program
+  that uses them runs under every engine.
+
 ## The native tier (Phase 11)
 
 The stack VM is the reference semantics of the language. The register VM is
@@ -1995,16 +2302,19 @@ python3 -m pytest -v
   - Deferred to a later phase: attention and the transformer, a binary model format, a subword tokeniser, a compiled backend for the kernels
 - Phase 13: the C backend — the register code becomes C, the system compiler does the optimisation, the unsupported constructs are refused by name at compile time, the run of the native backend is about ten times faster than the run of the stack VM — DONE
   - DONE since: the `match` of the language, the linker of the modules, a picture of the failure like the one of the VM, a cache of the compiled programs
-  - Deferred to a later phase: the `with` and the `scope` under the backend
+  - DONE since: the `with` and the `scope` under the backend
 - Phase 14: the machine surface — `bun repl --json`, the session of the language over JSON-RPC 2.0, a value comes back as a value — DONE
   - Deferred to a later phase: the completion of a name in the middle of a line, a picture of the failure in the data of the error
 - Phase 16: the everyday language — the set, the type aliases `number` and `text`, the decorators — DONE
   - Deferred to a later phase: the `del` statement, the generators
 - Phase 17: the first half of the type-system spine — `struct`, `impl`, the field access, the methods of a struct, and the value semantics of a struct — DONE
-  - Deferred to a later phase: the `enum` (Phase 21)
 - Phase 18: the protocols — a `protocol` names the methods a value must have, the check is structural, and a protocol may be the type of a parameter, of a field or of a variable — DONE
-  - Deferred to a later phase: the `enum` (Phase 21)
 - Phase 19: the generics — a type parameter stands for a type that the checker finds from the arguments, a bound says which types the parameter may not leave, and the types are erased when the program runs — DONE
-  - Deferred to a later phase: the function type as a type argument, the nested generics, the `enum` (Phase 21)
+  - Deferred to a later phase: the function type as a type argument, the nested generics
 - Phase 20: the results — `result` names a value that is either a success or a failure, `Ok` and `Err` make one, and the `?` takes the value out of a success and passes a failure along — DONE
-  - Deferred to a later phase: the `enum` (Phase 21), the `?` on a value of a type that is not known yet at the checker
+  - Deferred to a later phase: the `?` on a value of a type that is not known yet at the checker
+- Phase 21: the enums — `enum` names a choice of variants, a variant holds the fields of a struct, a match pattern binds them, and the value of every engine is the same dict — DONE
+- Phase 22: the options — `option` names a value that may be missing, `some` and `none` make one, the `?` gives its value and passes a `none` along, and a `for` refuses to walk one — DONE
+- Phase 23: the iterator protocol — a `for` walks a struct that answers `next` with `some(item)` and `none()`, the receiver is borrowed across the loop, and the value keeps its place — DONE
+- Phase 24: the struct patterns — a case of a `match` names a struct and its fields, a field pattern tests its value or binds it, a struct of another type never answers it, and the checker refuses an unknown struct or an unknown field before the program runs — DONE
+- Phase 25: the `with` and the `scope` under the C backend — the `with` runs the body between the `__enter__` and the `__exit__` of its targets, the `scope` runs its body in a task group whose tasks are joined before the scope ends, and a failure of a child is the failure of the scope — DONE

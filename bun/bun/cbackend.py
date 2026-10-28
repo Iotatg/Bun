@@ -81,6 +81,9 @@ SUPPORTED_BUILTINS = frozenset([
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "set", "secret", "dump",
     "Ok", "Err", "is_ok", "is_err",
+    "some", "none", "is_some", "is_none",
+    "spawn", "task_join", "task_done", "cancel", "task_cancelled",
+    "sleep",
 ])
 
 # The builtins of the language.  The list is checked against the runtime
@@ -90,6 +93,7 @@ LANGUAGE_BUILTINS = frozenset([
     "float", "type_of", "bool", "abs", "sum", "any", "all", "min", "max",
     "zip", "enumerate", "sorted", "reversed", "set", "next", "send",
     "dump", "secret", "url_encode", "url_decode",
+    "some", "none", "is_some", "is_none",
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "getenv_or", "json_parse", "json_stringify", "http_get", "http_post",
     "http_get_bytes", "http_post_multipart", "write_bytes", "read_bytes",
@@ -204,8 +208,6 @@ def check_builtins(program):
 # The opcodes the backend does not translate.  The value is the message
 # of the refusal.
 REFUSED = {
-    regcode.SCOPE_ENTER: "the scope statement",
-    regcode.SCOPE_EXIT: "the scope statement",
     regcode.YIELD: "the yield statement",
 }
 
@@ -218,9 +220,10 @@ PLAN_RANGE = 5
 PLAN_LIST = 6
 PLAN_DICT = 7
 PLAN_OR = 8
+PLAN_STRUCT = 9
 
 PLAN_KINDS = ("literal", "wildcard", "binding", "type", "range", "list",
-              "dict", "or")
+              "dict", "or", "struct")
 
 
 def _escape(text):
@@ -801,6 +804,8 @@ class CEmitter:
                 children.append(plan[2])
         elif kind == "dict":
             children = [sub for _, sub in plan[1]]
+        elif kind == "struct":
+            children = [sub for _, sub in plan[2]]
         elif kind == "or":
             children = list(plan[1])
         for child in children:
@@ -860,6 +865,24 @@ class CEmitter:
             lines.append("static const char *const %s[] = {" % keys)
             for name_of_key, _ in plan[1]:
                 lines.append("    %s," % _c_string(name_of_key))
+            lines.append("};")
+            self._plan_arrays[(index, id(plan), "keys")] = keys
+        elif kind == "struct":
+            # The plan of a struct holds the pattern of every field it
+            # names, the way a dict holds the pattern of its entries:
+            # one array of the plans and one array of the field names.
+            for _, sub in plan[2]:
+                self._plan_array(index, sub, lines, seen)
+            array = "%s_items" % name
+            keys = "%s_fields" % name
+            self._plan_arrays[key] = array
+            lines.append("static const BunPlan *const %s[] = {" % array)
+            for _, sub in plan[2]:
+                lines.append("    &%s," % self._plan_names[(index, id(sub))])
+            lines.append("};")
+            lines.append("static const char *const %s[] = {" % keys)
+            for field, _ in plan[2]:
+                lines.append("    %s," % _c_string(field))
             lines.append("};")
             self._plan_arrays[(index, id(plan), "keys")] = keys
         elif kind == "or":
@@ -922,6 +945,15 @@ class CEmitter:
             lines.append("    %s.kind = %d;" % (name, PLAN_OR))
             lines.append("    %s.count = %d;" % (name, len(plan[1])))
             lines.append("    %s.items = %s;" % (name, self._plan_arrays[
+                (index, id(plan))]))
+        elif kind == "struct":
+            lines.append("    %s.kind = %d;" % (name, PLAN_STRUCT))
+            lines.append("    %s.literal = %s;" % (
+                name, self.value_expr(plan[1])))
+            lines.append("    %s.count = %d;" % (name, len(plan[2])))
+            lines.append("    %s.keys = %s;" % (name, self._plan_arrays[
+                (index, id(plan), "keys")]))
+            lines.append("    %s.values = %s;" % (name, self._plan_arrays[
                 (index, id(plan))]))
         return lines
 
@@ -1587,6 +1619,15 @@ class CEmitter:
             if depth <= 0:
                 return []
             return ["    env = scopes[%d];" % depth]
+        if op == regcode.SCOPE_ENTER:
+            # The group of the scope is opened before the body runs, and
+            # the tasks that the body spawns belong to the group.
+            return ["    bun_scope_enter();"]
+        if op == regcode.SCOPE_EXIT:
+            # The group is closed: every task of the group is joined, and
+            # the first failure of a child is the failure of the scope
+            # when the body has no failure of its own.
+            return ["    bun_scope_exit(pending);"]
         if op == regcode.FOR_SETUP:
             return ["    iters[iter_count++] = bun_iter_new(regs[%d]);" % a]
         if op == regcode.FOR_NEXT:

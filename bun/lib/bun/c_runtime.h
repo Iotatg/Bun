@@ -27,6 +27,8 @@
 #include <setjmp.h>
 #include <ctype.h>
 #include <errno.h>
+#include <pthread.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* The values                                                          */
@@ -143,6 +145,8 @@ typedef struct BunIter {
     size_t at;
     int is_string;
     BunObj *text;
+    int is_object;        /* the iterator answers 'next' */
+    BunValue object;      /* the value of the iterator protocol */
 } BunIter;
 
 /* ------------------------------------------------------------------ */
@@ -154,7 +158,48 @@ typedef struct BunArenaBlock {
     void *data;
 } BunArenaBlock;
 
-static BunArenaBlock *bun_arena = NULL;
+/* The arena of the thread.  A task of the program runs on a thread of
+   its own, and it allocates in an arena of its own, so a lock is not
+   taken on every allocation.  When the thread of a task ends, its arena
+   moves to the list of the ended tasks: the value a task made is still
+   there for the task that joins it. */
+static _Thread_local BunArenaBlock *bun_thread_arena = NULL;
+static pthread_mutex_t bun_arena_lock = PTHREAD_MUTEX_INITIALIZER;
+static BunArenaBlock *bun_ended_arena = NULL;
+static pthread_key_t bun_arena_key;
+static int bun_arena_key_made = 0;
+
+static void bun_arena_migrate(void) {
+    BunArenaBlock *block;
+    if (bun_thread_arena == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&bun_arena_lock);
+    block = bun_thread_arena;
+    while (block->next != NULL) {
+        block = block->next;
+    }
+    block->next = bun_ended_arena;
+    bun_ended_arena = bun_thread_arena;
+    bun_thread_arena = NULL;
+    pthread_mutex_unlock(&bun_arena_lock);
+}
+
+static void bun_arena_thread_end(void *value) {
+    (void)value;
+    bun_arena_migrate();
+}
+
+static void bun_arena_init_thread(void) {
+    if (!bun_arena_key_made) {
+        if (pthread_key_create(&bun_arena_key, bun_arena_thread_end) == 0) {
+            bun_arena_key_made = 1;
+        }
+    }
+    if (bun_arena_key_made) {
+        pthread_setspecific(bun_arena_key, (void *)&bun_arena_key_made);
+    }
+}
 
 static void *bun_alloc(size_t size) {
     BunArenaBlock *block = (BunArenaBlock *)malloc(sizeof(BunArenaBlock));
@@ -164,20 +209,24 @@ static void *bun_alloc(size_t size) {
         exit(1);
     }
     block->data = data;
-    block->next = bun_arena;
-    bun_arena = block;
+    block->next = bun_thread_arena;
+    bun_thread_arena = block;
     return data;
 }
 
 static void bun_arena_release(void) {
-    BunArenaBlock *block = bun_arena;
+    BunArenaBlock *block;
+    bun_arena_migrate();
+    pthread_mutex_lock(&bun_arena_lock);
+    block = bun_ended_arena;
     while (block) {
         BunArenaBlock *next = block->next;
         free(block->data);
         free(block);
         block = next;
     }
-    bun_arena = NULL;
+    bun_ended_arena = NULL;
+    pthread_mutex_unlock(&bun_arena_lock);
 }
 
 static BunObj *bun_new_obj(BunTag tag) {
@@ -208,8 +257,8 @@ extern const BunHint bun_hints[];
    system keeps the values of a loop in the registers of the machine when
    the two places are written apart, and the loop of a program is the place
    where the speed matters most. */
-static int bun_error_line = 0;
-static int bun_error_col = 0;
+static _Thread_local int bun_error_line = 0;
+static _Thread_local int bun_error_col = 0;
 
 /* Write the position of the source before an instruction that can fail. */
 static void bun_at(int line, int col) {
@@ -276,8 +325,8 @@ typedef struct BunHandler {
     struct BunHandler *prev;
 } BunHandler;
 
-static BunHandler *bun_handler = NULL;
-static char bun_error_message[8192];
+static _Thread_local BunHandler *bun_handler = NULL;
+static _Thread_local char bun_error_message[8192];
 
 static void bun_throw(const char *format, ...) {
     va_list args;
@@ -1905,23 +1954,75 @@ static BunValue bun_builtin_is_err(BunValue *args, int count) {
                          && !bun_dict_has(dict, bun_str_from_c("ok")));
 }
 
-/* Take the `ok` value of a Result, or report that it is an `err`.
-   A Result is a dict with an `ok` key or an `err` key.  The `ok` key
-   wins when both are present.  A value that is not a Result is an
-   error.  The return is 1 when `out` holds the unwrapped value, and 0
-   when the caller has to return the Result itself. */
+/* The builtins of an option: `some(v)` is an option that carries a
+   value, `none()` is an option that carries nothing, and the two `is_`
+   builtins report which one it is without taking the value apart. */
+static BunValue bun_builtin_some(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("some() expects 1 argument");
+    }
+    BunValue option = bun_dict_new();
+    bun_dict_set(option.as.obj, bun_str_from_c("some"), args[0]);
+    return option;
+}
+
+static BunValue bun_builtin_none(BunValue *args, int count) {
+    if (count != 0) {
+        bun_throw("none() expects no argument");
+    }
+    (void)args;
+    BunValue option = bun_dict_new();
+    bun_dict_set(option.as.obj, bun_str_from_c("none"), bun_null_value());
+    return option;
+}
+
+static BunValue bun_builtin_is_some(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_some() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("some")));
+}
+
+static BunValue bun_builtin_is_none(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_none() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("none")));
+}
+
+/* Take the payload of a Result or of an option, or hand it back.
+   A Result is a dict with an `ok` key or an `err` key, and an option is
+   a dict with a `some` key or a `none` key.  The payload key wins when
+   the dict has one, so `Ok` wins over `Err` and `some` wins over `none`.
+   A value that is neither is an error.  The return is 1 when `out` holds
+   the unwrapped value, and 0 when the caller has to return the value
+   itself, so a `?` on a value that carries nothing gives it back to the
+   caller. */
 static int bun_unwrap_result(BunValue value, BunValue *out) {
     if (value.tag != BUN_DICT) {
-        bun_throw("'?' expects a Result value, got %s", bun_public_type_name(value));
+        bun_throw("'?' expects a Result or an option value, got %s", bun_public_type_name(value));
     }
     if (bun_dict_has(value.as.obj, bun_str_from_c("ok"))) {
         *out = bun_dict_get_c(value.as.obj, "ok");
         return 1;
     }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("some"))) {
+        *out = bun_dict_get_c(value.as.obj, "some");
+        return 1;
+    }
     if (bun_dict_has(value.as.obj, bun_str_from_c("err"))) {
         return 0;
     }
-    bun_throw("'?' expects a Result value");
+    if (bun_dict_has(value.as.obj, bun_str_from_c("none"))) {
+        return 0;
+    }
+    bun_throw("'?' expects a Result or an option value");
     return 0;
 }
 
@@ -2551,6 +2652,7 @@ typedef struct BunPlan {
 #define BUN_PLAN_LIST 6
 #define BUN_PLAN_DICT 7
 #define BUN_PLAN_OR 8
+#define BUN_PLAN_STRUCT 9
 
 /* The names a pattern binds.  They are collected first and applied after,
  * so a pattern that fails halfway leaves nothing behind. */
@@ -2687,6 +2789,31 @@ static int bun_match_plan(BunValue value, const BunPlan *plan,
             }
         }
         return 0;
+    }
+    case BUN_PLAN_STRUCT: {
+        /* A struct of the named type, with its fields matched the way
+         * the entries of a dict are matched. */
+        if (value.tag != BUN_STRUCT) {
+            return 0;
+        }
+        if (plan->literal.tag != BUN_STR) {
+            return 0;
+        }
+        BunObj *object = value.as.obj;
+        if (strcmp(object->name, plan->literal.as.obj->data) != 0) {
+            return 0;
+        }
+        for (int index = 0; index < plan->count; index++) {
+            int at = bun_struct_field(object, plan->keys[index]);
+            if (at < 0) {
+                return 0;
+            }
+            if (!bun_match_plan(object->field_values[at],
+                                plan->values[index], out)) {
+                return 0;
+            }
+        }
+        return 1;
     }
     }
     return 0;
@@ -4372,6 +4499,8 @@ static BunIter bun_iter_new(BunValue value) {
     iter.is_string = 0;
     iter.text = NULL;
     iter.items = NULL;
+    iter.is_object = 0;
+    iter.object = value;
     if (value.tag == BUN_LIST) {
         iter.items = value.as.obj->items;
         iter.count = value.as.obj->count;
@@ -4385,6 +4514,15 @@ static BunIter bun_iter_new(BunValue value) {
         iter.is_string = 1;
         iter.text = value.as.obj;
         iter.count = value.as.obj->len;
+    } else if (value.tag == BUN_STRUCT) {
+        /* A value of a struct is an iterator when it has a `next`
+           method: the method answers with an option, a `some` is the
+           next item and a `none` is the end of the sequence. */
+        BunObj *object = value.as.obj;
+        if (bun_find_struct_method(object->name, "next", NULL) == NULL) {
+            bun_throw("value is not iterable");
+        }
+        iter.is_object = 1;
     } else {
         bun_throw("value is not iterable");
     }
@@ -4392,6 +4530,17 @@ static BunIter bun_iter_new(BunValue value) {
 }
 
 static int bun_iter_next(BunIter *iter, BunValue *out) {
+    if (iter->is_object) {
+        BunValue step = bun_method_call(iter->object, "next", NULL, 0);
+        if (step.tag != BUN_DICT) {
+            bun_throw("the 'next' method has to answer with an option");
+        }
+        if (bun_dict_has(step.as.obj, bun_str_from_c("some"))) {
+            *out = bun_dict_get_c(step.as.obj, "some");
+            return 1;
+        }
+        return 0;
+    }
     if (iter->at >= iter->count) {
         return 0;
     }
@@ -4402,6 +4551,309 @@ static int bun_iter_next(BunIter *iter, BunValue *out) {
     }
     iter->at++;
     return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* The tasks and the groups                                            */
+/* ------------------------------------------------------------------ */
+
+/* A task is the record of a `spawn`: its thread, its answer, its failure
+   and the flag of a `cancel`.  A group is the record of a `scope`: the
+   tasks that were spawned while the group was open.  A task of the group
+   is joined before the scope ends, and the first failure of a child is
+   the failure of the scope. */
+
+typedef struct BunTask {
+    int id;
+    pthread_t thread;
+    int started;
+    int done;
+    int cancelled;
+    int has_error;
+    BunValue error;
+    BunValue result;
+    BunValue function;
+    struct BunGroup *group;
+} BunTask;
+
+typedef struct BunGroup {
+    BunTask **items;
+    int count;
+    int size;
+    struct BunGroup *previous;
+} BunGroup;
+
+#define BUN_MAX_TASKS 4096
+
+static BunTask *bun_task_registry[BUN_MAX_TASKS];
+static int bun_task_count = 0;
+static pthread_mutex_t bun_task_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local BunGroup *bun_current_group = NULL;
+static _Thread_local BunTask *bun_current_task = NULL;
+
+static BunTask *bun_task_new(BunValue function) {
+    BunTask *task = (BunTask *)bun_alloc(sizeof(BunTask));
+    task->id = 0;
+    task->started = 0;
+    task->done = 0;
+    task->cancelled = 0;
+    task->has_error = 0;
+    task->error = bun_null_value();
+    task->result = bun_null_value();
+    task->function = function;
+    task->group = bun_current_group;
+    return task;
+}
+
+/* The task is registered in the registry of the program and, while a
+   group is open, in the group of the scope.  The two lists are guarded:
+   the program joins a task while another task is still running, and a
+   task of the group may spawn a task of its own. */
+static int bun_task_register(BunTask *task) {
+    pthread_mutex_lock(&bun_task_lock);
+    if (bun_task_count >= BUN_MAX_TASKS) {
+        pthread_mutex_unlock(&bun_task_lock);
+        return 0;
+    }
+    bun_task_registry[bun_task_count++] = task;
+    task->id = bun_task_count - 1;
+    if (task->group != NULL) {
+        if (task->group->count >= task->group->size) {
+            int size = task->group->size * 2;
+            BunTask **items;
+            if (size == 0) {
+                size = 4;
+            }
+            items = (BunTask **)bun_alloc(sizeof(BunTask *) * size);
+            if (task->group->count > 0) {
+                memcpy(items, task->group->items,
+                       sizeof(BunTask *) * task->group->count);
+            }
+            task->group->items = items;
+            task->group->size = size;
+        }
+        task->group->items[task->group->count++] = task;
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    return 1;
+}
+
+/* Whether a task of the program is still running.  The memory of the
+   program is not freed while a task runs, because the task still uses
+   the values of the program. */
+static int bun_task_running(void) {
+    int index;
+    int running = 0;
+    pthread_mutex_lock(&bun_task_lock);
+    for (index = 0; index < bun_task_count; index++) {
+        BunTask *task = bun_task_registry[index];
+        if (task->started && !task->done) {
+            running = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    return running;
+}
+
+static BunTask *bun_task_lookup(BunValue handle) {
+    int number;
+    if (handle.tag != BUN_DICT) {
+        return NULL;
+    }
+    {
+        BunValue id = bun_dict_get_c(handle.as.obj, "id");
+        if (id.tag != BUN_INT) {
+            return NULL;
+        }
+        number = (int)id.as.i;
+    }
+    pthread_mutex_lock(&bun_task_lock);
+    if (number < 0 || number >= bun_task_count) {
+        pthread_mutex_unlock(&bun_task_lock);
+        return NULL;
+    }
+    {
+        BunTask *task = bun_task_registry[number];
+        pthread_mutex_unlock(&bun_task_lock);
+        return task;
+    }
+}
+
+/* The body of a task runs on a thread of its own.  An error of the body
+   is an error of the task: the place of the failure is kept, and the task
+   that joins it sees the failure instead of an answer. */
+static void *bun_task_thread(void *data) {
+    BunTask *task = (BunTask *)data;
+    BunHandler handler;
+    handler.kind = 0;
+    handler.env = NULL;
+    handler.prev = NULL;
+    bun_current_task = task;
+    bun_current_group = task->group;
+    bun_arena_init_thread();
+    if (setjmp(handler.buf) == 0) {
+        bun_handler = &handler;
+        task->result = bun_call(task->function, NULL, 0, bun_null_value());
+        bun_handler = handler.prev;
+    } else {
+        task->has_error = 1;
+        task->error = bun_str_from_c(bun_error_message);
+    }
+    /* The values of the task move to the list of the ended tasks before
+       the task says that it is done, so the task that joins it never
+       sees a value that is gone. */
+    bun_arena_migrate();
+    task->done = 1;
+    return NULL;
+}
+
+static BunValue bun_builtin_spawn(BunValue *args, int count) {
+    BunTask *task;
+    if (count != 1) {
+        bun_throw("spawn() expects 1 argument");
+    }
+    if (args[0].tag != BUN_FUNC) {
+        bun_throw("spawn() expects a function");
+    }
+    task = bun_task_new(args[0]);
+    if (!bun_task_register(task)) {
+        bun_throw("too many tasks");
+    }
+    if (pthread_create(&task->thread, NULL, bun_task_thread, task) != 0) {
+        bun_throw("cannot start a task");
+    }
+    task->started = 1;
+    {
+        BunValue handle = bun_dict_new();
+        bun_dict_set(handle.as.obj, bun_str_from_c("id"),
+                     bun_int_value(task->id));
+        return handle;
+    }
+}
+
+static BunTask *bun_task_handle(BunValue *args, int count, const char *name) {
+    if (count != 1) {
+        bun_throw("%s() expects 1 argument", name);
+    }
+    {
+        BunTask *task = bun_task_lookup(args[0]);
+        if (task == NULL) {
+            bun_throw("%s() expects a task handle", name);
+        }
+        return task;
+    }
+}
+
+static void bun_task_join(BunTask *task) {
+    if (task->started && pthread_equal(task->thread, pthread_self()) == 0) {
+        pthread_join(task->thread, NULL);
+        task->started = 0;
+    }
+}
+
+static BunValue bun_builtin_task_join(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "task_join");
+    bun_task_join(task);
+    if (task->has_error) {
+        bun_throw("%s", task->error.as.obj->data);
+    }
+    return task->result;
+}
+
+static BunValue bun_builtin_task_done(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "task_done");
+    return bun_bool_value(task->done);
+}
+
+static BunValue bun_builtin_cancel(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "cancel");
+    task->cancelled = 1;
+    return bun_null_value();
+}
+
+static BunValue bun_builtin_task_cancelled(BunValue *args, int count) {
+    if (count == 0) {
+        return bun_bool_value(bun_current_task != NULL &&
+                              bun_current_task->cancelled);
+    }
+    if (count != 1) {
+        bun_throw("task_cancelled() expects no argument or a task handle");
+    }
+    {
+        BunTask *task = bun_task_lookup(args[0]);
+        if (task == NULL) {
+            bun_throw("task_cancelled() expects a task handle");
+        }
+        return bun_bool_value(task->cancelled);
+    }
+}
+
+static BunValue bun_builtin_sleep(BunValue *args, int count) {
+    double seconds;
+    struct timespec request;
+    if (count != 1) {
+        bun_throw("sleep() expects 1 argument");
+    }
+    if (args[0].tag == BUN_INT) {
+        seconds = (double)args[0].as.i;
+    } else if (args[0].tag == BUN_FLOAT) {
+        seconds = args[0].as.f;
+    } else {
+        bun_throw("sleep() expects a number of seconds");
+    }
+    if (seconds < 0) {
+        bun_throw("sleep() expects a non-negative number");
+    }
+    request.tv_sec = (time_t)seconds;
+    request.tv_nsec = (long)((seconds - (double)request.tv_sec) * 1000000000.0);
+    nanosleep(&request, NULL);
+    return bun_null_value();
+}
+
+/* The scope of the program.  The group is opened before the body runs
+   and closed after it: every task of the group is joined, and the first
+   failure of a child is raised when the body has no failure of its own. */
+static BunGroup *bun_scope_enter(void) {
+    BunGroup *group = (BunGroup *)bun_alloc(sizeof(BunGroup));
+    group->items = NULL;
+    group->count = 0;
+    group->size = 0;
+    group->previous = bun_current_group;
+    bun_current_group = group;
+    return group;
+}
+
+static void bun_scope_exit(BunPending *pending) {
+    BunGroup *group = bun_current_group;
+    BunTask **tasks;
+    int count;
+    int index;
+    const char *error = NULL;
+    if (group == NULL) {
+        bun_throw("'scope' without an open group");
+    }
+    bun_current_group = group->previous;
+    /* The tasks of the group are copied before they are joined: a task of
+       the group may spawn a task of its own, and the list of the group
+       grows while the group is closed. */
+    pthread_mutex_lock(&bun_task_lock);
+    count = group->count;
+    tasks = (BunTask **)bun_alloc(sizeof(BunTask *) * (count > 0 ? count : 1));
+    if (count > 0) {
+        memcpy(tasks, group->items, sizeof(BunTask *) * count);
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    for (index = 0; index < count; index++) {
+        BunTask *task = tasks[index];
+        bun_task_join(task);
+        if (error == NULL && task->has_error) {
+            error = task->error.as.obj->data;
+        }
+    }
+    if (error != NULL && !pending->has) {
+        bun_throw("%s", error);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -4447,9 +4899,22 @@ int main(int argc, char **argv) {
     bun_define_builtin(globals, "Err", bun_builtin_Err);
     bun_define_builtin(globals, "is_ok", bun_builtin_is_ok);
     bun_define_builtin(globals, "is_err", bun_builtin_is_err);
+    bun_define_builtin(globals, "some", bun_builtin_some);
+    bun_define_builtin(globals, "none", bun_builtin_none);
+    bun_define_builtin(globals, "is_some", bun_builtin_is_some);
+    bun_define_builtin(globals, "is_none", bun_builtin_is_none);
+    bun_define_builtin(globals, "spawn", bun_builtin_spawn);
+    bun_define_builtin(globals, "task_join", bun_builtin_task_join);
+    bun_define_builtin(globals, "task_done", bun_builtin_task_done);
+    bun_define_builtin(globals, "cancel", bun_builtin_cancel);
+    bun_define_builtin(globals, "task_cancelled", bun_builtin_task_cancelled);
+    bun_define_builtin(globals, "sleep", bun_builtin_sleep);
+    bun_arena_init_thread();
     BunValue result = bun_module_code(globals);
     (void)result;
-    bun_arena_release();
+    if (!bun_task_running()) {
+        bun_arena_release();
+    }
     return 0;
 }
 

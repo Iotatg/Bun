@@ -136,6 +136,29 @@ class StructDecl:
 
 
 @record
+class EnumVariant:
+    """One variant of an enum.
+
+    The types of the fields of a variant: a variant without a field is
+    a unit, `Circle(float)` is a variant with one field of type `float`.
+    The fields are bound by position, the way the fields of a tuple are
+    bound.
+    """
+    name: str
+    field_types: list[object] = field(default_factory=list)
+    line: int = 0
+    col: int = 0
+
+
+@record
+class EnumDecl:
+    name: str
+    variants: list[object]
+    line: int = 0
+    col: int = 0
+
+
+@record
 class ImplDecl:
     type_name: str
     methods: list[object]

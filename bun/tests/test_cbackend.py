@@ -195,7 +195,6 @@ def test_no_program_of_the_corpus_prints_something_else(capfd):
 
 
 @pytest.mark.parametrize("source,name", [
-    ("scope {\n    print(1)\n}\n", "scope"),
     ("fn gen() {\n    yield 1\n}\n", "yield"),
 ])
 def test_the_backend_refuses_what_it_cannot_translate(source, name):
@@ -1761,3 +1760,59 @@ def test_the_failure_of_a_secret_is_the_failure_of_the_machine(capfd):
         expected = _vm_failure(source, capfd)
         got = _c_failure(source, capfd)
         assert got == expected
+
+
+@needs_compiler
+def test_the_backend_joins_the_tasks_of_a_scope(capfd):
+    """The scope statement runs under the backend."""
+    source = ("scope {\n"
+              "    let a = spawn { return 1 + 1 }\n"
+              "    let b = spawn { return 2 + 2 }\n"
+              "    print(task_join(a))\n"
+              "    print(task_join(b))\n"
+              "}\n"
+              "print(\"after scope\")\n")
+    expected = _run_vm(source, capfd=capfd)
+    got = _run_c(source, capfd=capfd)
+    assert got == expected
+
+
+@needs_compiler
+def test_the_backend_raises_the_failure_of_a_child(capfd):
+    """A child that fails makes the scope fail."""
+    source = ("try {\n"
+              "    scope {\n"
+              "        let bad = spawn { throw \"child failed\" }\n"
+              "    }\n"
+              "    print(\"no error\")\n"
+              "} catch e {\n"
+              "    print(\"caught \" + e)\n"
+              "}\n")
+    expected = _run_vm(source, capfd=capfd)
+    got = _run_c(source, capfd=capfd)
+    assert got == expected
+
+
+@needs_compiler
+def test_the_backend_joins_a_task_it_never_joins(capfd):
+    """A task of the scope is joined when the scope ends."""
+    source = ("var log = []\n"
+              "scope {\n"
+              "    let t = spawn {\n"
+              "        log.push(\"child\")\n"
+              "    }\n"
+              "}\n"
+              "log.push(\"parent\")\n"
+              "print(log.join(\",\"))\n")
+    expected = _run_vm(source, capfd=capfd)
+    got = _run_c(source, capfd=capfd)
+    assert got == expected
+
+
+@needs_compiler
+def test_the_backend_reports_a_task_that_is_not_a_handle(capfd):
+    """A handle that is not a handle is a failure."""
+    source = "print(task_join(1))\n"
+    expected = _vm_failure(source, capfd)
+    got = _c_failure(source, capfd)
+    assert got == expected

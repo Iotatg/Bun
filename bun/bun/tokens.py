@@ -20,6 +20,7 @@ class TokenType:
     VAR = "VAR"
     FN = "FN"
     STRUCT = "STRUCT"
+    ENUM = "ENUM"
     IMPL = "IMPL"
     PROTOCOL = "PROTOCOL"
     IF = "IF"

@@ -145,6 +145,27 @@ class VM:
         return self._execute(code, env, base_dir if base_dir is not None
                              else os.getcwd())
 
+    def _next_answer(self, frame, value):
+        """Run the `next` method of a value and give its answer.
+
+        The method is called with its receiver borrowed, the way a
+        method call borrows it, so a value that walks a loop keeps its
+        state between the steps of the loop: a copy would walk the same
+        step over and over.
+        """
+        code = {
+            "name": "<next>",
+            "params": [],
+            "code": [
+                ("LOAD_CONST", value, 0, 0),
+                ("METHOD_CALL", ("next", 0), 0, 0),
+                ("HALT", None, 0, 0),
+            ],
+            "filename": "<next>",
+            "source": "",
+        }
+        return self._execute(code, Environment(self.globals), frame.base_dir)
+
     def call_function(self, function, args):
         if not isinstance(function, BunFunction):
             raise BunRuntimeError("%s is not callable" % stringify(function))
@@ -810,16 +831,14 @@ class VM:
 
     def _op_for_setup(self, frame, arg, line, col):
         iterable = frame.stack.pop()
-        if isinstance(iterable, BunDict):
-            iterable = iterable.keys()
-        if isinstance(iterable, BunSet):
-            iterable = iterable.values()
-        if is_generator(iterable):
-            frame.iterators.append(iter(iterable))
+        # A value that answers a `next` method is walked with the answers
+        # of that method, and the method is called the way this engine
+        # calls it, with the receiver borrowed from the loop.
+        if ops.has_next(iterable):
+            frame.iterators.append(ops.protocol_iterator(
+                iterable, lambda: self._next_answer(frame, iterable)))
             return
-        if not isinstance(iterable, (list, str)):
-            raise BunRuntimeError("value is not iterable")
-        frame.iterators.append(iter(iterable))
+        frame.iterators.append(ops.iterate(iterable))
 
     def _op_for_next(self, frame, arg, line, col):
         try:

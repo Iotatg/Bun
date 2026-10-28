@@ -236,7 +236,9 @@ a program.
 - **`eval`**, which runs a piece of Bun source and returns the value of
   its last expression.
 - **`scope`**, a structured concurrency statement: the body runs in a task
-  group, and the scope joins every task it spawned before it ends.
+  group, and the scope joins every task it spawned before it ends. The
+  `with` and the `scope` run under every engine of the language, the C
+  backend included.
 - **Byte lists** as the type for binary data, and the builtins that work
   on them: `sha256`, `md5`, `aes_ige_encrypt`, `aes_ctr_crypt`,
   `rsa_encrypt`, `utf8_bytes`, `bytes_slice`, `bytes_append`, `bigint_*`.
@@ -276,7 +278,24 @@ a program.
   wildcard, a type, a range, a list or a dict. A case may name more than
   one pattern: `301, 302 => print("moved")`, it may have a guard:
   `n if n > 0 => print(n)`, and a list pattern may have a tail:
-  `[first, *rest]`.
+  `[first, *rest]`. A **struct pattern** names a struct and its fields:
+  `Point(x: 0, y)` answers for a value of that struct alone, tests the
+  field `x` against the literal `0` and binds the field `y`, and a field
+  pattern is any pattern, a nested struct included. An unknown struct or
+  an unknown field is a checker error and not a failed match.
+- **The `enum`**, a named choice: a variant holds no fields or the fields
+  of a struct, the name of the enum is not a value, and a `match` pattern
+  binds the fields of a variant. The value is a dict that holds the name of
+  the enum, the name of the variant and the fields, so a `match` of a dict
+  pattern answers for a variant too.
+- **The `option`**, a value that may be missing: `some(value)` holds one
+  and `none()` holds the missing one, `is_some` and `is_none` tell the two
+  apart, the `?` gives the value in a function that answers an option and
+  passes a `none` along, and a `for` refuses to walk one.
+- **The iterator protocol**: a `for` walks any struct that answers `next`
+  with `some(item)` and `none()`. The receiver is borrowed across the loop,
+  so a `next` that writes to a field keeps walking, and the value keeps its
+  place when the loop stops early.
 - **The word `not`**, beside the mark `!`, with Python's precedence: the
   word binds looser than a comparison and tighter than `and`.
 - **A set**: `set([1, 2, 3])` holds the values that are not equal to each

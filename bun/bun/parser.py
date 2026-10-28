@@ -63,6 +63,8 @@ class Parser:
             return self._fn_decl()
         if t == TokenType.STRUCT:
             return self._struct_decl()
+        if t == TokenType.ENUM:
+            return self._enum_decl()
         if t == TokenType.IMPL:
             return self._impl_decl()
         if t == TokenType.PROTOCOL:
@@ -196,6 +198,33 @@ class Parser:
             default = self._expression()
         return ast.StructField(name.value, type_ann, mutable, default,
                                start.line, start.col)
+
+    def _enum_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected enum name")
+        self._expect(TokenType.LBRACE, "expected '{' after enum name")
+        variants = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            variants.append(self._enum_variant())
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after enum variants")
+        return ast.EnumDecl(name.value, variants, kw.line, kw.col)
+
+    def _enum_variant(self):
+        start = self._peek()
+        name = self._expect(TokenType.IDENT, "expected a variant name")
+        field_types = []
+        if self._match(TokenType.LPAREN):
+            if not self._check(TokenType.RPAREN):
+                while True:
+                    field_types.append(self._type_name())
+                    if not self._match(TokenType.COMMA):
+                        break
+                    if self._check(TokenType.RPAREN):
+                        break
+            self._expect(TokenType.RPAREN,
+                         "expected ')' after the fields of a variant")
+        return ast.EnumVariant(name.value, field_types, start.line, start.col)
 
     def _impl_decl(self):
         kw = self._advance()
@@ -584,7 +613,17 @@ class Parser:
 
     def _match_pattern(self):
         tok = self._peek()
+        if (tok.type == TokenType.IDENT
+                and self._peek(1).type == TokenType.DOT):
+            # A variant of an enum: `Color.Red`, with the fields of a
+            # variant written in parentheses: `Shape.Circle(radius)`.
+            return self._enum_variant_pattern()
         if tok.type == TokenType.IDENT:
+            if self._peek(1).type == TokenType.LPAREN:
+                # A pattern of a struct: `Point(x: 0, y)`. The value has
+                # to be a struct of the named type, and the fields are
+                # matched one by one.
+                return self._struct_pattern()
             if tok.value == "_":
                 self._advance()
                 return ast.MatchPattern("wildcard", line=tok.line, col=tok.col)
@@ -650,6 +689,64 @@ class Parser:
                                     line=tok.line, col=tok.col)
         return ast.MatchPattern("literal", value=value, line=tok.line,
                                 col=tok.col)
+
+    def _enum_variant_pattern(self):
+        """Parse the pattern of a variant of an enum.
+
+        The pattern of `Color.Red` is the name of the enum, the name of
+        the variant and no field, and the pattern of `Shape.Circle(r)`
+        is the same with one field bound by position.
+        """
+        name_tok = self._advance()
+        self._expect(TokenType.DOT, "expected '.' in a variant pattern")
+        variant = self._expect(TokenType.IDENT, "expected a variant name")
+        items = []
+        if self._match(TokenType.LPAREN):
+            if not self._check(TokenType.RPAREN):
+                while True:
+                    items.append(self._match_pattern())
+                    if not self._match(TokenType.COMMA):
+                        break
+                    if self._check(TokenType.RPAREN):
+                        break
+            self._expect(TokenType.RPAREN,
+                         "expected ')' after the fields of a variant")
+        return ast.MatchPattern("enum", value=name_tok.value,
+                                name=variant.value, items=items,
+                                line=name_tok.line, col=name_tok.col)
+
+    def _struct_pattern(self):
+        """Parse the pattern of a struct.
+
+        `Point(x: 0, y)` names the struct, tests the field `x` against
+        the literal `0` and binds the field `y` to a name. A bare name
+        is the pattern of the field that name holds, so `Point(x, y)`
+        binds both fields.
+        """
+        name_tok = self._advance()
+        self._expect(TokenType.LPAREN,
+                     "expected '(' after the name of a struct pattern")
+        entries = []
+        if not self._check(TokenType.RPAREN):
+            while True:
+                field = self._expect(
+                    TokenType.IDENT,
+                    "expected a field name in a struct pattern")
+                if self._match(TokenType.COLON):
+                    sub = self._match_pattern()
+                else:
+                    sub = ast.MatchPattern("binding", name=field.value,
+                                           line=field.line, col=field.col)
+                entries.append((field.value, sub))
+                if not self._match(TokenType.COMMA):
+                    break
+                if self._check(TokenType.RPAREN):
+                    break
+        self._expect(TokenType.RPAREN,
+                     "expected ')' after the fields of a struct pattern")
+        return ast.MatchPattern("struct", value=name_tok.value,
+                                entries=entries,
+                                line=name_tok.line, col=name_tok.col)
 
     def _literal_pattern_value(self):
         """Parse the value of a literal or range pattern."""

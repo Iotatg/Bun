@@ -29,6 +29,7 @@ let KEYWORDS = {
     "del": "DEL",
     "yield": "YIELD",
     "struct": "STRUCT",
+    "enum": "ENUM",
     "impl": "IMPL",
     "protocol": "PROTOCOL",
 }

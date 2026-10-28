@@ -1,0 +1,64 @@
+// The 'next' method of a struct is the iterator protocol: a `some` is
+// the next item and a `none` is the end of the sequence.
+struct Counter {
+    var count: int
+    var limit: int
+}
+
+impl Counter {
+    fn next(self) -> option {
+        if self.count >= self.limit {
+            return none()
+        }
+        self.count = self.count + 1
+        return some(self.count)
+    }
+}
+
+struct Letters {
+    var text: string
+    var at: int
+}
+
+impl Letters {
+    fn next(self) -> option {
+        if self.at >= len(self.text) {
+            return none()
+        }
+        let letter = self.text[self.at]
+        self.at = self.at + 1
+        return some(letter)
+    }
+}
+
+let counter = Counter(1, 4)
+for n in counter {
+    print(n)
+}
+
+let letters = Letters("bun", 0)
+for letter in letters {
+    print(letter)
+}
+
+// The loop may stop early, and the value keeps walking after it.
+let stopped = Counter(0, 5)
+for n in stopped {
+    if n == 3 {
+        break
+    }
+    print(n)
+}
+print(stopped.count)
+
+for item in [10, 20] {
+    print(item)
+}
+
+for key in {"a": 1, "b": 2} {
+    print(key)
+}
+
+for ch in "hi" {
+    print(ch)
+}

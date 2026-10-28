@@ -28,6 +28,7 @@ class Interpreter:
         self.export_stack = []
         self.last_value = None
         self.structs = {}
+        self.enums = {}
         # The generator that runs in this thread, if there is one.
         self._current = threading.local()
 
@@ -61,6 +62,8 @@ class Interpreter:
         for statement in statements:
             if isinstance(statement, ast.StructDecl):
                 self.structs[statement.name] = statement
+            elif isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = statement
 
     def call_function(self, function, args, borrowed=0):
         args = list(args)
@@ -125,6 +128,26 @@ class Interpreter:
         for method in node.methods:
             function = self._make_function(method, env)
             ops.register_impl(node.type_name, method.name, function)
+
+    def _iterate(self, value):
+        """The iterator of the items of a value.
+
+        A value of a struct that answers a `next` method is walked with
+        the answers of that method, and the method is called the way
+        this engine calls it: a method borrows its receiver, so the
+        value the loop walks is the value the program holds.
+        """
+        if ops.has_next(value):
+            return ops.protocol_iterator(
+                value, lambda: self._call_next(value))
+        return ops.iterate(value)
+
+    def _call_next(self, value):
+        function = ops.struct_method(value.type_name, "next")
+        if not isinstance(function, BunFunction):
+            raise BunRuntimeError(
+                "the 'next' method of %s is not a function" % value.type_name)
+        return self.call_function(function, [value], borrowed=1)
 
     def _construct(self, declaration, args, env):
         """Build the value of a struct from the arguments of a call."""
@@ -226,14 +249,7 @@ class Interpreter:
                 # break.
                 self.execute(node.orelse, env)
         elif isinstance(node, ast.ForStmt):
-            iterable = self.evaluate(node.iterable, env)
-            if isinstance(iterable, BunDict):
-                iterable = iterable.keys()
-            if isinstance(iterable, BunSet):
-                iterable = iterable.values()
-            if not isinstance(iterable, (list, str)) \
-                    and not is_generator(iterable):
-                raise BunRuntimeError("value is not iterable")
+            iterable = self._iterate(self.evaluate(node.iterable, env))
             broke = False
             for item in iterable:
                 loop_env = Environment(env)
@@ -257,6 +273,10 @@ class Interpreter:
                 self._record_export(node.name, value)
         elif isinstance(node, ast.StructDecl):
             self.structs[node.name] = node
+        elif isinstance(node, ast.EnumDecl):
+            # An enum is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            self.enums[node.name] = node
         elif isinstance(node, ast.ProtocolDecl):
             # A protocol is a type, and a type is not a value: the program
             # that declares it runs the same with it and without it.
@@ -558,6 +578,10 @@ class Interpreter:
         if isinstance(node, ast.MethodCall):
             return self._method_call(node, env)
         if isinstance(node, ast.Attribute):
+            if (isinstance(node.object, ast.Identifier)
+                    and node.object.name in self.enums):
+                return self._construct_enum(node.object.name, node.name,
+                                            [], env, node)
             return ops.get_field(self.evaluate(node.object, env), node.name)
         if isinstance(node, ast.Unwrap):
             ok, payload = ops.unwrap_result(self.evaluate(node.expr, env))
@@ -565,6 +589,50 @@ class Interpreter:
                 return payload
             raise ReturnSignal(payload, node.line, node.col)
         raise BunRuntimeError("unknown expression: %s" % type(node).__name__)
+
+    def _enum_variant(self, node):
+        """The variant an attribute expression names, if it names one."""
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        if node.object.name not in self.enums:
+            return None
+        return (node.object.name, node.name)
+
+    def _construct_enum(self, enum_name, variant_name, args, env, node):
+        """Build the value of a variant of an enum.
+
+        A variant is a dict with three entries: the name of the enum it
+        belongs to, the name of the variant and the list of its fields.
+        The name of the enum is part of the value so two enums that use
+        the same name for a variant stay apart, the way two structs
+        with the same field names stay apart.
+        """
+        declaration = self.enums.get(enum_name)
+        if declaration is None:
+            raise BunRuntimeError(
+                "unknown enum '%s'" % enum_name, node.line, node.col)
+        variant = None
+        for item in declaration.variants:
+            if item.name == variant_name:
+                variant = item
+                break
+        if variant is None:
+            raise BunRuntimeError(
+                "enum '%s' has no variant '%s'" % (enum_name, variant_name),
+                node.line, node.col)
+        if len(args) != len(variant.field_types):
+            raise BunRuntimeError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(variant.field_types),
+                   len(args)), node.line, node.col)
+        values = [copy_value(arg) for arg in args]
+        value = BunDict()
+        value.set("type", enum_name)
+        value.set("kind", variant_name)
+        value.set("fields", values)
+        return value
 
     def _dict_literal(self, node, env):
         result = BunDict()
@@ -622,6 +690,11 @@ class Interpreter:
             if declaration is not None:
                 args = [self.evaluate(arg, env) for arg in node.args]
                 return self._construct(declaration, args, env)
+        if isinstance(node.callee, ast.Attribute):
+            enum = self._enum_variant(node.callee)
+            if enum is not None:
+                args = [self.evaluate(arg, env) for arg in node.args]
+                return self._construct_enum(enum[0], enum[1], args, env, node)
         callee = self.evaluate(node.callee, env)
         args = [self.evaluate(arg, env) for arg in node.args]
         kwargs = {}
@@ -657,6 +730,14 @@ class Interpreter:
         raise BunRuntimeError("%s is not callable" % stringify(callee))
 
     def _method_call(self, inner, env):
+        if (isinstance(inner.receiver, ast.Identifier)
+                and inner.receiver.name in self.enums):
+            # The fields of a variant are written like the arguments of
+            # a method: `Shape.Circle(2.0)` is the variant `Circle` of
+            # the enum `Shape` with one field.
+            args = [self.evaluate(arg, env) for arg in inner.args]
+            return self._construct_enum(inner.receiver.name, inner.method,
+                                        args, env, inner)
         receiver = self.evaluate(inner.receiver, env)
         args = [self.evaluate(arg, env) for arg in inner.args]
         if isinstance(receiver, BunStruct):

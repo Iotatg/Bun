@@ -14,7 +14,9 @@ let TYPES = {
     "secret": true,
     "set": true,
     "struct": true,
+    "enum": true,
     "result": true,
+    "option": true,
     "number": true,
     "text": true,
 }
@@ -153,6 +155,10 @@ let BUILTIN_SIGNATURES = {
     "Err": [[["any"], "result"]],
     "is_ok": [[["any"], "bool"]],
     "is_err": [[["any"], "bool"]],
+    "some": [[["any"], "option"]],
+    "none": [[[], "option"]],
+    "is_some": [[["any"], "bool"]],
+    "is_none": [[["any"], "bool"]],
 }
 
 fn is_known_type(name) {
@@ -323,7 +329,7 @@ fn copy_scope(scope) {
 }
 
 fn make_state(base_dir) {
-    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": []}
+    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "enums": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": []}
 }
 
 fn check_annotation(state, name, node) {
@@ -334,7 +340,7 @@ fn check_annotation(state, name, node) {
         return
     }
     let base = base_type(name)
-    if is_known_type(base) or state["structs"].has(base) {
+    if is_known_type(base) or state["structs"].has(base) or state["enums"].has(base) {
         let args = type_args(name)
         var i = 0
         while i < args.len() {
@@ -357,7 +363,7 @@ fn check_annotation_throw(state, name) {
         return
     }
     let base = base_type(name)
-    if is_known_type(base) or state["structs"].has(base) {
+    if is_known_type(base) or state["structs"].has(base) or state["enums"].has(base) {
         return
     }
     if state["protocols"].has(name) {
@@ -467,8 +473,28 @@ fn collect_structs(state, statements, scope) {
     }
 }
 
-// Collect the protocols of the program. The protocols are collected
-// before the statements are checked, so a protocol may be used before
+// Collect the enums of the program. The enums are collected before the
+// statements are checked, so an enum may be used before the declaration
+// that names it, the way a struct may.
+fn collect_enums(state, statements) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "EnumDecl" {
+            let table = {}
+            let variants = statement["variants"]
+            var k = 0
+            while k < variants.len() {
+                table[variants[k]["name"]] = variants[k]["field_types"]
+                k = k + 1
+            }
+            state["enums"][statement["name"]] = table
+        }
+        i = i + 1
+    }
+}
+
+// Collect the protocols of the program. The protocols are collected// before the statements are checked, so a protocol may be used before
 // the declaration that names it.
 fn collect_protocols(state, statements) {
     var i = 0
@@ -753,6 +779,8 @@ fn collect_module_names(state, statements) {
             names[statement["name"]] = true
         } else if kind == "StructDecl" {
             names[statement["name"]] = true
+        } else if kind == "EnumDecl" {
+            names[statement["name"]] = true
         } else if kind == "ProtocolDecl" {
             names[statement["name"]] = true
         } else if kind == "UnpackStmt" {
@@ -797,6 +825,10 @@ fn collect_bound_names(node, names) {
         return
     }
     if kind == "StructDecl" {
+        names[node["name"]] = true
+        return
+    }
+    if kind == "EnumDecl" {
         names[node["name"]] = true
         return
     }
@@ -961,7 +993,41 @@ fn pattern_names(pattern) {
         }
         return names
     }
+    if kind == "struct" {
+        // The fields of a struct are matched by name, the way the
+        // entries of a dict are matched.
+        let names = []
+        let entries = pattern["entries"]
+        var i = 0
+        while i < entries.len() {
+            let inner = pattern_names(entries[i][1])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+            i = i + 1
+        }
+        return names
+    }
     if kind == "or" {
+        let names = []
+        let items = pattern["items"]
+        var i = 0
+        while i < items.len() {
+            let inner = pattern_names(items[i])
+            var j = 0
+            while j < inner.len() {
+                names.push(inner[j])
+                j = j + 1
+            }
+            i = i + 1
+        }
+        return names
+    }
+    if kind == "enum" {
+        // The fields of a variant are bound by position, the way the
+        // items of a list are bound.
         let names = []
         let items = pattern["items"]
         var i = 0
@@ -1033,6 +1099,76 @@ fn check_struct(state, node, scope) {
         i = i + 1
     }
     scope[node["name"]] = make_immutable_binding("struct")
+}
+
+// Check an enum: the names of its variants and their fields. A variant
+// has a type of its own, but the name of the enum is not a value: a
+// program writes `Color.Red` and never `Color`, so the name of the enum
+// is a type and nothing else.
+fn check_enum(state, node, scope) {
+    let seen = {}
+    let variants = node["variants"]
+    var i = 0
+    while i < variants.len() {
+        let variant = variants[i]
+        if seen.has(variant["name"]) {
+            fail("duplicate variant '" + variant["name"] + "' on enum '" + node["name"] + "'", variant)
+        }
+        seen[variant["name"]] = true
+        let fields = variant["field_types"]
+        var k = 0
+        while k < fields.len() {
+            check_annotation(state, fields[k], variant)
+            k = k + 1
+        }
+        i = i + 1
+    }
+    scope[node["name"]] = make_immutable_binding("enum")
+}
+
+fn check_pattern(state, pattern) {
+    let kind = pattern["pattern_kind"]
+    if kind == "struct" {
+        if !state["structs"].has(pattern["value"]) {
+            fail("unknown struct '" + pattern["value"] + "' in a pattern", pattern)
+        }
+        let decl = state["structs"][pattern["value"]]
+        let fields = decl["fields"]
+        let entries = pattern["entries"]
+        var i = 0
+        while i < entries.len() {
+            let field = entries[i][0]
+            var has_field = false
+            var j = 0
+            while j < fields.len() {
+                if fields[j]["name"] == field {
+                    has_field = true
+                }
+                j = j + 1
+            }
+            if !has_field {
+                fail("unknown field '" + field + "' on struct '" + pattern["value"] + "' in a pattern", pattern)
+            }
+            check_pattern(state, entries[i][1])
+            i = i + 1
+        }
+        return
+    }
+    let items = pattern["items"]
+    var i = 0
+    while i < items.len() {
+        check_pattern(state, items[i])
+        i = i + 1
+    }
+    if pattern["tail"] != null {
+        check_pattern(state, pattern["tail"])
+    }
+    let entries = pattern["entries"]
+    var k = 0
+    while k < entries.len() {
+        check_pattern(state, entries[k][1])
+        k = k + 1
+    }
 }
 
 // Check a protocol: the signatures of its methods.
@@ -1229,7 +1365,76 @@ fn constructor_call(state, name, arg_types, node) {
 }
 
 // Check the call of a method of a struct.
+// The variant an attribute expression names, if it names one.
+// `Color.Red` is the variant `Red` of the enum `Color`: the name of the
+// enum is a type, so the expression is resolved when the program is
+// checked and not when it runs.
+fn enum_variant_of(state, node) {
+    if node["kind"] != "Attribute" {
+        return null
+    }
+    let target = node["object"]
+    if target["kind"] != "Identifier" {
+        return null
+    }
+    let variants = state["enums"]
+    if !variants.has(target["name"]) {
+        return null
+    }
+    let table = variants[target["name"]]
+    if !table.has(node["name"]) {
+        fail("enum '" + target["name"] + "' has no variant '" + node["name"] + "'", node)
+    }
+    return [target["name"], node["name"], table[node["name"]]]
+}
+
+// The type of a variant of an enum, and the check of its fields. The
+// fields of a variant are bound by position: every field has the type
+// the declaration of the variant gives it, and the value of the
+// expression is a value of the enum.
+fn enum_variant_type(variant, node) {
+    let enum_name = variant[0]
+    let variant_name = variant[1]
+    let fields = variant[2]
+    if fields.len() > 0 {
+        fail("variant '" + enum_name + "." + variant_name + "' needs " + fields.len() + " field(s), write '" + enum_name + "." + variant_name + "(...)'", node)
+    }
+    return enum_name
+}
+
+fn enum_call(state, node, variant, arg_types) {
+    let enum_name = variant[0]
+    let variant_name = variant[1]
+    let fields = variant[2]
+    if arg_types.len() != fields.len() {
+        fail("variant '" + enum_name + "." + variant_name + "' expects " + fields.len() + " argument(s), got " + arg_types.len(), node)
+    }
+    var i = 0
+    while i < fields.len() {
+        check_assignable(state, arg_types[i], fields[i], node, "argument", enum_name + "." + variant_name)
+        i = i + 1
+    }
+    return enum_name
+}
+
 fn method_call(state, node, scope) {
+    if node["receiver"]["kind"] == "Identifier" and state["enums"].has(node["receiver"]["name"]) {
+        // The fields of a variant are written like the arguments of a
+        // method: `Shape.Circle(2.0)` is the variant `Circle` of the
+        // enum `Shape` with one field.
+        let attr = {"kind": "Attribute", "object": node["receiver"], "name": node["method"], "line": node["line"], "col": node["col"]}
+        let variant = enum_variant_of(state, attr)
+        if variant != null {
+            let args = node["args"]
+            let arg_types = []
+            var i = 0
+            while i < args.len() {
+                arg_types.push(check_expr(state, args[i], scope))
+                i = i + 1
+            }
+            return enum_call(state, node, variant, arg_types)
+        }
+    }
     let recv_type = check_expr(state, node["receiver"], scope)
     let args = node["args"]
     let arg_types = []
@@ -1362,6 +1567,10 @@ fn check_statement(state, node, scope) {
         check_struct(state, node, scope)
         return
     }
+    if kind == "EnumDecl" {
+        check_enum(state, node, scope)
+        return
+    }
     if kind == "ImplDecl" {
         check_impl(state, node, scope)
         return
@@ -1479,6 +1688,10 @@ fn check_statement(state, node, scope) {
     }
     if kind == "ForStmt" {
         let item_type = check_expr(state, node["iterable"], scope)
+        let walked = base_type(item_type)
+        if walked == "result" or walked == "option" {
+            fail("'" + walked + "' is not walked by a 'for'", node)
+        }
         let element = element_type(item_type)
         let loop_scope = copy_scope(scope)
         let targets = node["targets"]
@@ -1586,6 +1799,7 @@ fn check_statement(state, node, scope) {
         let cases = node["cases"]
         var i = 0
         while i < cases.len() {
+            check_pattern(state, cases[i][0])
             let case_scope = copy_scope(scope)
             let names = pattern_names(cases[i][0])
             var j = 0
@@ -1687,7 +1901,11 @@ fn check_comprehension(state, node, scope) {
     let clauses = node["clauses"]
     var i = 0
     while i < clauses.len() {
-        check_expr(state, clauses[i]["iterable"], local)
+        let item_type = check_expr(state, clauses[i]["iterable"], local)
+        let walked = base_type(item_type)
+        if walked == "result" or walked == "option" {
+            fail("'" + walked + "' is not walked by a 'for'", node)
+        }
         local[clauses[i]["target"]] = make_binding("any")
         i = i + 1
     }
@@ -1724,10 +1942,19 @@ fn check_expr(state, node, scope) {
     if kind == "Identifier" {
         let name = node["name"]
         if scope.has(name) {
+            if scope[name]["type"] == "enum" {
+                fail("enum '" + name + "' is not a value", node)
+            }
             return scope[name]["type"]
         }
         if state["protocols"].has(name) {
             fail("protocol '" + name + "' is not a value", node)
+        }
+        if state["enums"].has(name) {
+            fail("enum '" + name + "' is not a value", node)
+        }
+        if BUILTIN_SIGNATURES.has(name) {
+            return "fn"
         }
         check_known_name(state, node)
         return "any"
@@ -1817,6 +2044,10 @@ fn check_expr(state, node, scope) {
         return method_call(state, node, scope)
     }
     if kind == "Attribute" {
+        let variant = enum_variant_of(state, node)
+        if variant != null {
+            return enum_variant_type(variant, node)
+        }
         let obj_type = check_expr(state, node["object"], scope)
         if obj_type == "any" or obj_type == "struct" {
             return "any"
@@ -1848,16 +2079,19 @@ fn check_unwrap(state, node, scope) {
     if state["function_depth"] == 0 {
         fail("the '?' operator is only allowed inside a function", node)
     }
+    let source = check_expr(state, node["expr"], scope)
+    if source != "result" and source != "option" and source != "any" and source != "dict" {
+        fail("cannot use '?' on a value of type '" + source + "'", node)
+    }
     let stack = state["return_stack"]
     if stack.len() > 0 {
         let declared = stack[stack.len() - 1]
-        if declared != null and declared != "result" and declared != "any" {
-            fail("the '?' operator needs a function that returns 'result'", node)
+        if declared == null or declared == "any" {
+            return "any"
         }
-    }
-    let source = check_expr(state, node["expr"], scope)
-    if source != "result" and source != "any" and source != "dict" {
-        fail("cannot use '?' on a value of type '" + source + "'", node)
+        if source != "any" and source != "dict" and declared != source {
+            fail("the '?' operator needs a function that returns '" + source + "'", node)
+        }
     }
     return "any"
 }
@@ -2190,6 +2424,7 @@ export fn check_program(program, base_dir) {
     let scope = {}
     collect_functions(program["statements"], scope)
     collect_structs(state, program["statements"], scope)
+    collect_enums(state, program["statements"])
     collect_protocols(state, program["statements"])
     collect_module_names(state, program["statements"])
     check_statements(state, program["statements"], scope)

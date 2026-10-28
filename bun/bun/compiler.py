@@ -128,6 +128,7 @@ class Compiler:
         self._for_depth = 0
         self._loops = []
         self.structs = {}
+        self.enums = {}
 
     def compile_program(self, program):
         code = []
@@ -146,6 +147,8 @@ class Compiler:
         for statement in statements:
             if isinstance(statement, ast.StructDecl):
                 self.structs[statement.name] = statement
+            elif isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = statement
 
     def compile_function(self, node):
         code = []
@@ -339,6 +342,10 @@ class Compiler:
                 emit(code, OP_RECORD_EXPORT, node.name, node)
         elif isinstance(node, ast.StructDecl):
             self.structs[node.name] = node
+        elif isinstance(node, ast.EnumDecl):
+            # An enum is a type, and a type is not a value: the program
+            # that declares it writes nothing, the way a protocol does.
+            self.enums[node.name] = node
         elif isinstance(node, ast.ProtocolDecl):
             # A protocol is a type, and a type is not a value: the program
             # that declares it runs the same with it and without it.
@@ -750,6 +757,11 @@ class Compiler:
                 self.compile_expr(node.index, code)
                 emit(code, OP_INDEX, None, node)
         elif isinstance(node, ast.MethodCall):
+            variant = self._enum_method_variant(node)
+            if variant is not None:
+                self._compile_enum_value(variant[0], variant[1], node.args,
+                                        code, node)
+                return
             self.compile_expr(node.receiver, code)
             for arg_node in node.args:
                 self.compile_expr(arg_node, code)
@@ -769,6 +781,12 @@ class Compiler:
                          (part.spec, part.conv, part.source_text), node)
             emit(code, OP_BUILD_STRING, len(node.parts), node)
         elif isinstance(node, ast.Call):
+            if isinstance(node.callee, ast.Attribute):
+                variant = self._enum_variant(node.callee)
+                if variant is not None:
+                    self._compile_enum_value(variant[0], variant[1],
+                                           node.args, code, node)
+                    return
             declaration = None
             if isinstance(node.callee, ast.Identifier):
                 declaration = self.structs.get(node.callee.name)
@@ -786,6 +804,11 @@ class Compiler:
                     emit(code, OP_DICT_SET, None, node)
             emit(code, OP_CALL, (len(node.args), bool(node.kwargs)), node)
         elif isinstance(node, ast.Attribute):
+            variant = self._enum_variant(node)
+            if variant is not None:
+                self._compile_enum_value(variant[0], variant[1], [], code,
+                                        node)
+                return
             self.compile_expr(node.object, code)
             emit(code, OP_GET_FIELD, node.name, node)
         elif isinstance(node, ast.Unwrap):
@@ -814,6 +837,64 @@ class Compiler:
             self.compile_expr(field.default, code)
         emit(code, OP_MAKE_STRUCT,
              (declaration.name, [field.name for field in fields]), node)
+
+    def _enum_variant(self, node):
+        """The variant an attribute expression names, if it names one."""
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        declaration = self.enums.get(node.object.name)
+        if declaration is None:
+            return None
+        return (node.object.name, node.name, declaration)
+
+    def _enum_method_variant(self, node):
+        """The variant a method call names, if it names one.
+
+        The fields of a variant are written like the arguments of a
+        method, so the call of a variant is a method call on the name
+        of its enum.
+        """
+        if not isinstance(node, ast.MethodCall):
+            return None
+        if not isinstance(node.receiver, ast.Identifier):
+            return None
+        if node.receiver.name not in self.enums:
+            return None
+        return (node.receiver.name, node.method, self.enums[node.receiver.name])
+
+    def _compile_enum_value(self, enum_name, variant_name, arg_nodes, code,
+                            node):
+        """Compile the construction of the value of a variant.
+
+        The value of a variant is a dict with three entries - the name
+        of the enum, the name of the variant, and the list of the fields
+        - so the construction is written with the two opcodes a dict
+        literal is written with, and no opcode of its own.
+        """
+        variant = None
+        for item in self.enums[enum_name].variants:
+            if item.name == variant_name:
+                variant = item
+                break
+        if variant is None:
+            raise CompileError(
+                "enum '%s' has no variant '%s'" % (enum_name, variant_name))
+        if len(arg_nodes) != len(variant.field_types):
+            raise CompileError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(variant.field_types),
+                   len(arg_nodes)))
+        emit(code, OP_LOAD_CONST, "type", node)
+        emit(code, OP_LOAD_CONST, enum_name, node)
+        emit(code, OP_LOAD_CONST, "kind", node)
+        emit(code, OP_LOAD_CONST, variant_name, node)
+        emit(code, OP_LOAD_CONST, "fields", node)
+        for arg_node in arg_nodes:
+            self.compile_expr(arg_node, code)
+        emit(code, OP_BUILD_LIST, len(arg_nodes), node)
+        emit(code, OP_BUILD_DICT, 3, node)
 
     def _compile_unpack_store(self, leaf, code, node, mutable=None):
         """Store one unpacked value into its target."""

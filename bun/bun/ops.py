@@ -1,5 +1,6 @@
 from .dict import BunDict, DICT_METHODS
 from .errors import BunRuntimeError
+from .generators import is_generator
 from .ints import check as check_int
 from .methods import LIST_METHODS, SECRET_METHODS, STRING_METHODS
 from .set import BunSet, SET_METHODS
@@ -60,6 +61,61 @@ def struct_method(type_name, method):
         raise BunRuntimeError(
             "unknown method '%s' on %s" % (method, type_name))
     return table[method]
+
+
+def has_next(value):
+    """Whether a value answers a `next` method.
+
+    A value of a struct is an iterator when its type declares the
+    method, the way a type is a part of a protocol in the type system.
+    """
+    return (isinstance(value, BunStruct)
+            and "next" in STRUCT_METHODS.get(value.type_name, {}))
+
+
+def protocol_iterator(value, call):
+    """The items a value gives one at a time through `next`.
+
+    A value may answer with an option: `some(item)` is the next item and
+    `none()` is the end of the sequence, so the answers themselves say
+    when the loop is over. `call` runs the `next` method of the value
+    and is given by the engine that walks the loop, because a method of
+    a struct borrows its receiver and only the engine may borrow.
+    """
+    while True:
+        step = call()
+        if not isinstance(step, BunDict):
+            raise BunRuntimeError(
+                "the 'next' method of %s has to answer with an option"
+                % value.type_name)
+        if step.has("some"):
+            yield step.get("some")
+            continue
+        if step.has("none"):
+            return
+        raise BunRuntimeError(
+            "the 'next' method of %s has to answer with an option"
+            % value.type_name)
+
+
+def iterate(value):
+    """The iterator of the items of a value.
+
+    A dict gives its keys, a set gives its values, and a list and a
+    string give their items, the way they always did. A generator
+    gives its own values one at a time. A value of another kind is
+    not iterable here: an engine that wants the `next` of a struct
+    asks for `protocol_iterator` with its own way of calling a method.
+    """
+    if isinstance(value, (list, str)):
+        return iter(value)
+    if isinstance(value, BunDict):
+        return iter(value.keys())
+    if isinstance(value, BunSet):
+        return iter(value.values())
+    if is_generator(value):
+        return iter(value)
+    raise BunRuntimeError("value is not iterable")
 
 
 def binary_op(op, left, right):
@@ -631,20 +687,29 @@ def _unpack_seq(plans, items, values):
 
 
 def unwrap_result(value):
-    """Take the `ok` value of a Result, or report that it is an `err`.
+    """Take the payload of a Result or of an option, or hand it back.
 
-    A Result is a dict with an `ok` key or an `err` key.  The `ok` key
-    wins when both are present.  A value that is not a Result is an
-    error.  The return is `(ok, payload)`: `ok` is true when the
-    payload is the unwrapped value, and false when the payload is the
-    Result that the enclosing function has to return.
+    A Result is a dict with an `ok` key or an `err` key, and an option
+    is a dict with a `some` key or a `none` key. The payload key wins
+    when the dict has one, so `Ok` wins over `Err` and `some` wins over
+    `none`. A value that is neither is an error.
+
+    The return is `(ok, payload)`: `ok` is true when the payload is the
+    unwrapped value, and false when the payload is the value the
+    enclosing function has to return, so a `?` on a value that carries
+    nothing gives the value back to the caller.
     """
     if not isinstance(value, BunDict):
         raise BunRuntimeError(
-            "'?' expects a Result value, got %s" % type_name(value))
+            "'?' expects a Result or an option value, got %s"
+            % type_name(value))
     if value.has("ok"):
         return True, value.get("ok")
+    if value.has("some"):
+        return True, value.get("some")
     if value.has("err"):
         return False, value
-    raise BunRuntimeError("'?' expects a Result value")
+    if value.has("none"):
+        return False, value
+    raise BunRuntimeError("'?' expects a Result or an option value")
 

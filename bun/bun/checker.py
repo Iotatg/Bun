@@ -25,6 +25,7 @@ class Checker:
         self.name_stack = []
         self.function_depth = 0
         self.structs = {}
+        self.enums = {}
         self.impls = {}
         self.protocols = {}
         self.type_vars = []
@@ -36,6 +37,7 @@ class Checker:
             scope = {}
         self._collect_functions(program.statements, scope)
         self._collect_structs(program.statements, scope)
+        self._collect_enums(program.statements)
         self._collect_protocols(program.statements)
         self._collect_module_names(program.statements)
         self._statements(program.statements, scope)
@@ -54,6 +56,8 @@ class Checker:
             elif isinstance(statement, ast.FnDecl):
                 self.module_names.add(statement.name)
             elif isinstance(statement, ast.StructDecl):
+                self.module_names.add(statement.name)
+            elif isinstance(statement, ast.EnumDecl):
                 self.module_names.add(statement.name)
             elif isinstance(statement, ast.ProtocolDecl):
                 self.module_names.add(statement.name)
@@ -200,6 +204,19 @@ class Checker:
                 methods = self.impls.setdefault(statement.type_name, {})
                 for method in statement.methods:
                     methods[method.name] = method
+
+    def _collect_enums(self, statements):
+        """Collect the enums of the program.
+
+        The enums are collected before the statements are checked, so
+        an enum may be used before the declaration that names it, the
+        way a struct may.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = {
+                    variant.name: variant.field_types
+                    for variant in statement.variants}
 
     def _collect_protocols(self, statements):
         """Collect the protocols of the program.
@@ -349,6 +366,8 @@ class Checker:
                 self._expr(node.target, scope)
         elif isinstance(node, ast.StructDecl):
             self._check_struct(node, scope)
+        elif isinstance(node, ast.EnumDecl):
+            self._check_enum(node, scope)
         elif isinstance(node, ast.ImplDecl):
             self._check_impl(node, scope)
         elif isinstance(node, ast.ProtocolDecl):
@@ -382,8 +401,7 @@ class Checker:
             finally:
                 self.loop_depth -= 1
         elif isinstance(node, ast.ForStmt):
-            item_type = self._expr(node.iterable, scope)
-            element = self._element_type(item_type)
+            element = self._walked_element(node.iterable, scope, node)
             loop_scope = dict(scope)
             for name in node.targets:
                 loop_scope[name] = Binding(element or types.ANY)
@@ -403,6 +421,7 @@ class Checker:
         elif isinstance(node, ast.MatchStmt):
             self._expr(node.subject, scope)
             for pattern, body in node.cases:
+                self._check_pattern(pattern)
                 case_scope = dict(scope)
                 for name in patterns.pattern_names(pattern):
                     case_scope[name] = Binding(types.ANY)
@@ -530,7 +549,8 @@ class Checker:
         if self._is_type_var(name):
             return
         base = types.base_type(name)
-        if types.is_known_type(base) or base in self.structs:
+        if (types.is_known_type(base) or base in self.structs
+                or base in self.enums):
             for arg in types.type_args(name):
                 self._check_annotation(arg, node)
             return
@@ -563,6 +583,107 @@ class Checker:
             if field.default is not None:
                 self._expr(field.default, scope)
         scope[node.name] = Binding(types.STRUCT, mutable=False)
+
+    def _check_enum(self, node, scope):
+        """Check an enum: the names of its variants and their fields.
+
+        A variant has a type of its own, but the name of the enum is
+        not a value: a program writes `Color.Red` and never `Color`, so
+        the name of the enum is a type and nothing else.
+        """
+        seen = set()
+        for variant in node.variants:
+            if variant.name in seen:
+                raise BunTypeError(
+                    "duplicate variant '%s' on enum '%s'"
+                    % (variant.name, node.name), variant.line, variant.col)
+            seen.add(variant.name)
+            for field_type in variant.field_types:
+                self._check_annotation(field_type, variant)
+        scope[node.name] = Binding(types.ENUM, mutable=False)
+
+    def _check_pattern(self, pattern):
+        """Check a pattern of a match: the struct names and their fields.
+
+        A pattern of a struct names a struct and its fields, so the name
+        has to be the name of a struct and a field has to be a field of
+        it. The name of a field that the struct does not have is the
+        mistake the checker catches, the way it catches the wrong count
+        of the arguments of a constructor.
+        """
+        kind = pattern.pattern_kind
+        if kind == "struct":
+            struct = self.structs.get(pattern.value)
+            if struct is None:
+                raise BunTypeError(
+                    "unknown struct '%s' in a pattern" % pattern.value,
+                    pattern.line, pattern.col)
+            fields = [field.name for field in struct.fields]
+            for field, sub in pattern.entries:
+                if field not in fields:
+                    raise BunTypeError(
+                        "unknown field '%s' on struct '%s' in a pattern"
+                        % (field, pattern.value), pattern.line, pattern.col)
+                self._check_pattern(sub)
+            return
+        for sub in getattr(pattern, "items", []):
+            self._check_pattern(sub)
+        if getattr(pattern, "tail", None) is not None:
+            self._check_pattern(pattern.tail)
+        for _, sub in getattr(pattern, "entries", []):
+            self._check_pattern(sub)
+
+    def _enum_variant_of(self, node):
+        """The variant an attribute expression names, if it names one.
+
+        `Color.Red` is the variant `Red` of the enum `Color`: the name
+        of the enum is a type, so the expression is resolved when the
+        program is checked and not when it runs.
+        """
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        variants = self.enums.get(node.object.name)
+        if variants is None:
+            return None
+        if node.name not in variants:
+            raise BunTypeError(
+                "enum '%s' has no variant '%s'" % (node.object.name,
+                                                   node.name),
+                node.line, node.col)
+        return (node.object.name, node.name, variants[node.name])
+
+    def _enum_variant_type(self, variant, node):
+        enum_name, _name, fields = variant
+        if fields:
+            raise BunTypeError(
+                "variant '%s.%s' needs %d field(s), write '%s.%s(...)'"
+                % (enum_name, _name, len(fields), enum_name, _name),
+                node.line, node.col)
+        return enum_name
+
+    def _enum_call(self, node, variant, arg_types):
+        """Check the construction of a variant.
+
+        The fields of a variant are bound by position: every field has
+        the type the declaration of the variant gives it, and the value
+        of the call is a value of the enum.
+        """
+        enum_name, variant_name, fields = variant
+        if len(arg_types) != len(fields):
+            raise BunTypeError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(fields), len(arg_types)),
+                node.line, node.col)
+        for index, (arg_type, field_type) in enumerate(zip(arg_types,
+                                                           fields)):
+            self._check_assignable(
+                arg_type, field_type, node,
+                "argument %d of '%s.%s' is a value of type '%%s', "
+                "expected '%s'" % (index + 1, enum_name, variant_name,
+                                   field_type))
+        return enum_name
 
     def _check_impl(self, node, scope):
         if node.type_name not in self.structs:
@@ -724,8 +845,18 @@ class Checker:
                     raise BunTypeError(
                         "protocol '%s' is not a value" % node.name,
                         node.line, node.col)
+                if node.name in self.enums:
+                    raise BunTypeError(
+                        "enum '%s' is not a value" % node.name,
+                        node.line, node.col)
+                if node.name in types.BUILTIN_SIGNATURES:
+                    return types.FN
                 self._check_known_name(node)
                 return types.ANY
+            if binding.type == types.ENUM:
+                raise BunTypeError(
+                    "enum '%s' is not a value" % node.name,
+                    node.line, node.col)
             return binding.type
         if isinstance(node, ast.ListLiteral):
             for element in node.elements:
@@ -780,6 +911,9 @@ class Checker:
         if isinstance(node, ast.MethodCall):
             return self._method_call(node, scope)
         if isinstance(node, ast.Attribute):
+            variant = self._enum_variant_of(node)
+            if variant is not None:
+                return self._enum_variant_type(variant, node)
             obj_type = self._expr(node.object, scope)
             if obj_type == types.ANY:
                 return types.ANY
@@ -807,26 +941,32 @@ class Checker:
         """Check a postfix `?`.
 
         The operator is only legal inside a function, and the function
-        has to return a `result` (or leave the type unknown).  A value
-        whose type is known and is not a `result` is an error; a value
-        of type `any` is left to the runtime.
+        has to give back a value of the same kind as the operand: an
+        `Ok` inside a function that returns a `result`, a `some` inside
+        a function that returns an `option` (or a type that is not known
+        yet).  The `?` hands a value that carries nothing - an `Err` or
+        a `none` - back to the caller, so the kind of the operand and
+        the kind of the return type are the same kind.  A value whose
+        type is known and is neither is an error; a value of type `any`
+        is left to the runtime.
         """
         if self.function_depth == 0:
             raise BunTypeError(
                 "the '?' operator is only allowed inside a function",
                 node.line, node.col)
-        if self.return_stack:
-            declared = self.return_stack[-1]
-            if declared is not None and declared != types.RESULT \
-                    and declared != types.ANY:
-                raise BunTypeError(
-                    "the '?' operator needs a function that returns 'result'",
-                    node.line, node.col)
         source = self._expr(node.expr, scope)
-        if source not in (types.RESULT, types.ANY, types.DICT):
+        if source not in (types.RESULT, types.OPTION, types.ANY, types.DICT):
             raise BunTypeError(
                 "cannot use '?' on a value of type '%s'" % source,
                 node.line, node.col)
+        if self.return_stack:
+            declared = self.return_stack[-1]
+            if declared is None or declared == types.ANY:
+                return types.ANY
+            if source not in (types.ANY, types.DICT) and declared != source:
+                raise BunTypeError(
+                    "the '?' operator needs a function that returns "
+                    "'%s'" % source, node.line, node.col)
         return types.ANY
 
     def _comprehension(self, node, scope):
@@ -837,7 +977,7 @@ class Checker:
         """
         local = dict(scope)
         for clause in node.clauses:
-            self._expr(clause.iterable, local)
+            self._walked_element(clause.iterable, local, node)
             local[clause.target] = Binding(types.ANY, mutable=True)
         for clause in node.clauses:
             if clause.condition is not None:
@@ -878,6 +1018,10 @@ class Checker:
 
     def _call(self, node, scope):
         arg_types = [self._expr(arg, scope) for arg in node.args]
+        if isinstance(node.callee, ast.Attribute):
+            variant = self._enum_variant_of(node.callee)
+            if variant is not None:
+                return self._enum_call(node, variant, arg_types)
         kwarg_types = {}
         for name, value_node in node.kwargs:
             kwarg_types[name] = self._expr(value_node, scope)
@@ -1006,6 +1150,21 @@ class Checker:
             return args[1]
         return None
 
+    def _walked_element(self, source, scope, site):
+        """The elements of a container a `for` walks.
+
+        A Result and an Option are a success or a failure, not a
+        sequence: the one key they happen to hold is no sequence, so
+        walking one is refused.
+        """
+        name = self._expr(source, scope)
+        base = types.base_type(name)
+        if base in (types.RESULT, types.OPTION):
+            raise BunTypeError(
+                "'%s' is not walked by a 'for'" % base,
+                site.line, site.col)
+        return self._element_type(name)
+
     def _infer_type(self, node, scope):
         """The type of an expression, with the type of a literal worked out.
 
@@ -1128,6 +1287,17 @@ class Checker:
         return name
 
     def _method_call(self, node, scope):
+        if (isinstance(node.receiver, ast.Identifier)
+                and node.receiver.name in self.enums):
+            # The fields of a variant are written like the arguments of
+            # a method: `Shape.Circle(2.0)` is the variant `Circle` of
+            # the enum `Shape` with one field.
+            variant = self._enum_variant_of(ast.Attribute(
+                node.receiver, node.method, node.line, node.col))
+            if variant is not None:
+                return self._enum_call(node, variant,
+                                       [self._expr(arg, scope)
+                                        for arg in node.args])
         recv_type = self._expr(node.receiver, scope)
         arg_types = [self._expr(arg, scope) for arg in node.args]
         if recv_type in (types.ANY, types.STRUCT):

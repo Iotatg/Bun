@@ -158,6 +158,12 @@ DOCS = {
         "signature": "exit(code: int)",
         "summary": "Stop the program with an exit code.",
     },
+    "enum": {
+        "signature": "enum Name { Variant, Variant(type, ...), ... }",
+        "summary": "A named choice: one value of a set of variants.",
+        "details": "A variant holds no fields or a fixed number of fields, like a struct. The name of the enum is not a value: a variant picks its fields, and the variant is the value. A match pattern binds the fields of a variant and answers for the variant alone.",
+        "example": "enum Color {\n    Red\n    Green\n    Blue\n}\n\nlet c = Color.Green\nmatch c {\n    Color.Red => print(\"warm\")\n    Color.Green => print(\"cool\")\n    Color.Blue => print(\"deep\")\n}\n",
+    },
     "eval": {
         "signature": "eval(source: string) -> any",
         "summary": "Run a piece of Bun source and return the value of its last expression.",
@@ -213,6 +219,12 @@ DOCS = {
         "summary": "Convert a value to an integer, optionally in a given base.",
         "example": "print(int(\"ff\", 16))\n",
     },
+    "iterator": {
+        "signature": "for item in value { ... }",
+        "summary": "Walk a value that answers 'next()'.",
+        "details": "A 'for' walks a list, a string, a dict or a set, and it walks any struct that has a 'next' method: the method answers 'some(item)' for the next item and 'none()' for the end of the sequence. The value is borrowed across the loop, so a 'next' that writes to a field keeps walking. A loop may stop with 'break', and the value keeps its place.",
+        "example": "struct Counter {\n    var count: int\n    var limit: int\n}\n\nimpl Counter {\n    fn next(self) -> option {\n        if self.count >= self.limit {\n            return none()\n        }\n        self.count = self.count + 1\n        return some(self.count)\n    }\n}\n\nfor n in Counter(1, 4) {\n    print(n)\n}\n",
+    },
     "join": {
         "signature": "join(items: list, separator: string) -> string",
         "summary": "Join the items of a list into a string.",
@@ -236,6 +248,24 @@ DOCS = {
     "list_dir": {
         "signature": "list_dir(path: string) -> list",
         "summary": "List the entries of a directory.",
+    },
+    "match": {
+        "signature": "match value { pattern => body, ... }",
+        "summary": "Choose a branch by the shape of a value.",
+        "details": "A case holds one pattern and one body. A pattern is a "
+                   "literal, a name that binds, a '_', a 'type', a range "
+                   "'a..b', a list pattern '[a, b]', a dict pattern "
+                   "'{key: pattern}', a variant of an enum or a struct "
+                   "pattern 'Name(field: pattern, ...)'. A struct pattern "
+                   "answers for a value of the named struct alone: the type "
+                   "is tested, and every field it names is tested or bound "
+                   "by its own pattern. A name that names an unknown struct, "
+                   "or a field the struct does not have, is an error before "
+                   "the program runs.",
+        "example": "struct Point {\n    var x: int\n    var y: int\n}\n\n"
+                   "let p = Point(0, 3)\n"
+                   "match p {\n    Point(x: 0, y) => print(y)\n"
+                   "    Point(x, y) => print(x + y)\n}\n",
     },
     "lock": {
         "signature": "lock(mutex: dict)",
@@ -262,6 +292,12 @@ DOCS = {
         "signature": "ord(text: string) -> int",
         "summary": "Return the Unicode code point of a character.",
         "example": "print(ord(\"A\"))\n",
+    },
+    "option": {
+        "signature": "some(value) -> option, none() -> option",
+        "summary": "A value that may be missing.",
+        "details": "An option holds 'some(value)' or 'none()'. The '?' of an option gives its value in a function that answers an option, and a 'none' is passed along the way a failure is. 'is_some' and 'is_none' tell the two apart, and a 'for' may not walk one: an option is a value, not a sequence.",
+        "example": "fn find(d: dict, key: string) -> option {\n    if d.has(key) {\n        return some(d[key])\n    }\n    return none()\n}\n\nlet d = {\"a\": 1}\nprint(is_some(find(d, \"a\")))\nprint(is_none(find(d, \"b\")))\n",
     },
     "pow_mod": {
         "signature": "pow_mod(base: int, exponent: int, modulus: int) -> int",

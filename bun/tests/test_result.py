@@ -133,7 +133,8 @@ def test_the_question_on_a_value_that_is_not_a_result_is_a_runtime_error():
             "}\n"
             "f()\n",
             filename="<result>.bun", check=False)
-    assert "'?' expects a Result value, got int" in str(info.value)
+    assert "'?' expects a Result or an option value, got int" in str(
+        info.value)
 
 
 def test_the_question_on_a_dict_that_is_not_a_result_is_a_runtime_error():
@@ -146,7 +147,7 @@ def test_the_question_on_a_dict_that_is_not_a_result_is_a_runtime_error():
             "}\n"
             "f()\n",
             filename="<result>.bun", check=False)
-    assert "'?' expects a Result value" in str(info.value)
+    assert "'?' expects a Result or an option value" in str(info.value)
 
 
 ENGINES = ["tree", "vm", "register"]

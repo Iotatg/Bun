@@ -28,7 +28,8 @@ fn make_state(filename, source) {
         "for_depth": 0,
         "loops": [],
         "has_yield": false,
-        "structs": {}
+        "structs": {},
+        "enums": {}
     }
 }
 
@@ -342,6 +343,48 @@ export fn compile_program(filename, source, program) {
     return make_code("<module>", [], code, filename, source)
 }
 
+// The variant a method call names, if it names one: the fields of a
+// variant are written like the arguments of a method, so the call of a
+// variant is a method call on the name of its enum.
+fn enum_variant(st, enum_name, variant_name, args_len) {
+    let decl = st["enums"].get(enum_name)
+    if decl == null {
+        throw "unknown enum '" + enum_name + "'"
+    }
+    let variants = decl["variants"]
+    var i = 0
+    while i < variants.len() {
+        if variants[i]["name"] == variant_name {
+            if variants[i]["field_types"].len() != args_len {
+                throw "variant '" + enum_name + "." + variant_name + "' expects " + variants[i]["field_types"].len() + " argument(s), got " + args_len
+            }
+            return true
+        }
+        i = i + 1
+    }
+    throw "enum '" + enum_name + "' has no variant '" + variant_name + "'"
+}
+
+// Write the construction of the value of a variant. The value is a dict
+// with three entries - the name of the enum, the name of the variant,
+// and the list of the fields - so the construction is written with the
+// two opcodes a dict literal is written with, and no opcode of its own.
+fn compile_enum_value(st, enum_name, variant_name, arg_nodes, code, node) {
+    enum_variant(st, enum_name, variant_name, arg_nodes.len())
+    emit(code, "LOAD_CONST", "type", node)
+    emit(code, "LOAD_CONST", enum_name, node)
+    emit(code, "LOAD_CONST", "kind", node)
+    emit(code, "LOAD_CONST", variant_name, node)
+    emit(code, "LOAD_CONST", "fields", node)
+    var i = 0
+    while i < arg_nodes.len() {
+        compile_expr(st, arg_nodes[i], code)
+        i = i + 1
+    }
+    emit(code, "BUILD_LIST", arg_nodes.len(), node)
+    emit(code, "BUILD_DICT", 3, node)
+}
+
 // Collect the struct declarations of the program. The declarations are
 // collected before the code is written, so a constructor may be called
 // before the declaration that names it.
@@ -351,6 +394,9 @@ fn collect_structs(st, statements) {
         let statement = statements[i]
         if statement["kind"] == "StructDecl" {
             st["structs"][statement["name"]] = statement
+        }
+        if statement["kind"] == "EnumDecl" {
+            st["enums"][statement["name"]] = statement
         }
         i = i + 1
     }
@@ -513,6 +559,11 @@ fn compile_statement(st, node, code) {
     if kind == "StructDecl" {
         // A struct is a type, and a type is not a value: the program
         // that declares it runs the same with it and without it.
+        return
+    }
+    if kind == "EnumDecl" {
+        // An enum is a type, and a type is not a value: the program
+        // that declares it writes nothing, the way a protocol does.
         return
     }
     if kind == "ProtocolDecl" {
@@ -851,6 +902,37 @@ fn pattern_plan(pattern) {
         }
         return ["or", plans]
     }
+    if kind == "struct" {
+        // A pattern of a struct is the name of its type and the pattern
+        // of every field it names: `Point(x: 0, y)` tests the type and
+        // the field `x`, and binds the field `y`.
+        let entries = pattern["entries"]
+        let plans = []
+        var i = 0
+        while i < entries.len() {
+            plans.push([entries[i][0], pattern_plan(entries[i][1])])
+            i = i + 1
+        }
+        return ["struct", pattern["value"], plans]
+    }
+    if kind == "enum" {
+        // A variant of an enum is a value shaped like a dict with the
+        // name of the enum, the name of the variant and the list of the
+        // fields, so the plan of a variant is the plan of that dict: it
+        // is the shape of the value the plan tests, and nothing else.
+        let plans = [["type", ["literal", pattern["value"]]], ["kind", ["literal", pattern["name"]]]]
+        let items = pattern["items"]
+        if items.len() > 0 {
+            let fields = []
+            var i = 0
+            while i < items.len() {
+                fields.push(pattern_plan(items[i]))
+                i = i + 1
+            }
+            plans.push(["fields", ["list", fields, null]])
+        }
+        return ["dict", plans]
+    }
     throw "unknown pattern: " + kind
 }
 
@@ -1001,6 +1083,13 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "MethodCall" {
+        if node["receiver"]["kind"] == "Identifier" and st["enums"].has(node["receiver"]["name"]) {
+            // The fields of a variant are written like the arguments of a
+            // method: `Shape.Circle(2.0)` is the variant `Circle` of the
+            // enum `Shape` with one field.
+            compile_enum_value(st, node["receiver"]["name"], node["method"], node["args"], code, node)
+            return
+        }
         compile_expr(st, node["receiver"], code)
         let args = node["args"]
         var i = 0
@@ -1071,6 +1160,10 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "Attribute" {
+        if node["object"]["kind"] == "Identifier" and st["enums"].has(node["object"]["name"]) {
+            compile_enum_value(st, node["object"]["name"], node["name"], [], code, node)
+            return
+        }
         compile_expr(st, node["object"], code)
         emit(code, "GET_FIELD", node["name"], node)
         return

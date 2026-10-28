@@ -10,7 +10,9 @@ FN = "fn"
 SECRET = "secret"
 SET = "set"
 STRUCT = "struct"
+ENUM = "enum"
 RESULT = "result"
+OPTION = "option"
 
 # The names that are another name.  A `number` is a `float` and a `text` is
 # a `string`: the alias is kept in the message of an error, so a program
@@ -20,7 +22,7 @@ TEXT = "text"
 
 TYPE_NAMES = frozenset(
     {INT, FLOAT, STRING, BOOL, NULL, ANY, LIST, DICT, FN, SECRET, SET,
-     STRUCT, RESULT, NUMBER, TEXT})
+     STRUCT, ENUM, RESULT, OPTION, NUMBER, TEXT})
 
 # The type every alias stands for.
 ALIASES = {NUMBER: FLOAT, TEXT: STRING}
@@ -154,6 +156,10 @@ BUILTIN_SIGNATURES = {
     "Err": [((ANY,), RESULT)],
     "is_ok": [((ANY,), BOOL)],
     "is_err": [((ANY,), BOOL)],
+    "some": [((ANY,), OPTION)],
+    "none": [((), OPTION)],
+    "is_some": [((ANY,), BOOL)],
+    "is_none": [((ANY,), BOOL)],
 }
 
 
