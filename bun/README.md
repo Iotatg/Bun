@@ -920,7 +920,22 @@ after `=>` always starts a block.
 
 `match` is a soft keyword: it only starts a match statement when a
 subject and a block follow it, so `let match = 3` is still a valid
-program.
+program. A match is also an expression: every arm answers a value of
+the same type.
+
+```bun
+var label = match kind {
+    1 => "one"
+    2 => "two"
+    _ => "many"
+}
+```
+
+The compound assignment (`+=`, `-=`, `*=`, `/=` and the rest) reads the
+target once, applies the operator and stores the result. The increment
+and the decrement (`x++`, `++x`) are statements, not expressions. The
+null coalescing `a ?? b` answers `a` when it is not null, and `b` when
+it is.
 
 ### The set
 

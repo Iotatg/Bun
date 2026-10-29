@@ -116,6 +116,7 @@ HALT = "HALT"
 JUMP = "JUMP"
 JUMP_IF_FALSE = "JUMP_IF_FALSE"
 JUMP_IF_TRUE = "JUMP_IF_TRUE"
+JUMP_IF_NULL = "JUMP_IF_NULL"
 
 # The scopes.
 ENTER_SCOPE = "ENTER_SCOPE"
@@ -275,6 +276,7 @@ OPERANDS = {
     JUMP: ("target", None, None),
     JUMP_IF_FALSE: ("slot", "target", None),
     JUMP_IF_TRUE: ("slot", "target", None),
+    JUMP_IF_NULL: ("slot", "target", None),
     ENTER_SCOPE: (None, None, None),
     EXIT_SCOPE: (None, None, None),
     FOR_SETUP: ("slot", None, None),
@@ -393,7 +395,7 @@ def read_slots(code, instruction):
         return list(range(a, a + b + (1 if c else 0)))
     if op == METHOD_CALL:
         return list(range(a, a + b))
-    if op in (JUMP_IF_FALSE, JUMP_IF_TRUE):
+    if op in (JUMP_IF_FALSE, JUMP_IF_TRUE, JUMP_IF_NULL):
         return [a]
     if op == THROW:
         return [a, a + 1] if c else [a]

@@ -1,0 +1,58 @@
+var x = 1
+x += 4
+print(x)
+x -= 2
+print(x)
+x *= 3
+print(x)
+x /= 3
+print(x)
+
+var i = 0
+i++
+print(i)
+++i
+print(i)
+i--
+print(i)
+
+var name = "bun"
+name += " lang"
+print(name)
+
+var items = [1, 2, 3]
+items[0] += 10
+print(items)
+
+var counts = {"a": 1}
+counts["a"] += 4
+counts["b"] = 0
+counts["b"] += 2
+print(counts["a"])
+print(counts["b"])
+
+var maybe = null
+print(maybe ?? 7)
+print(x ?? 7)
+print(null ?? null ?? 9)
+
+var kind = 2
+var label = match kind {
+    1 => "one"
+    2 => "two"
+    _ => "many"
+}
+print(label)
+
+var text = match x {
+    0 => "zero"
+    _ => "other"
+}
+print(text)
+
+var n = match 3 {
+    1 => 10
+    3 => 30
+    _ => 0
+}
+print(n)

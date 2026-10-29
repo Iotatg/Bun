@@ -261,7 +261,9 @@ DOCS = {
                    "is tested, and every field it names is tested or bound "
                    "by its own pattern. A name that names an unknown struct, "
                    "or a field the struct does not have, is an error before "
-                   "the program runs.",
+                   "the program runs. A match is also an expression: every "
+                   "arm answers a value of the same type, and that is the "
+                   "value of the match.",
         "example": "struct Point {\n    var x: int\n    var y: int\n}\n\n"
                    "let p = Point(0, 3)\n"
                    "match p {\n    Point(x: 0, y) => print(y)\n"

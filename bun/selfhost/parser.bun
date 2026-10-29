@@ -679,6 +679,67 @@ fn try_match_stmt(st) {
     return {"kind": "MatchStmt", "subject": subject, "cases": cases, "line": kw["line"], "col": kw["col"]}
 }
 
+fn match_case_pattern(st) {
+    var pattern = match_pattern(st)
+    if check(st, "COMMA") {
+        let alternatives = [pattern]
+        while match_token(st, ["COMMA"]) != null {
+            alternatives.push(match_pattern(st))
+        }
+        pattern = match_pattern_node("or", pattern, "", null, null, alternatives, [])
+    }
+    if check(st, "IF") {
+        advance(st)
+        pattern["guard"] = expression(st)
+    }
+    return pattern
+}
+
+fn try_match_expr(st) {
+    let save = st["pos"]
+    let kw = advance(st)
+    var subject = null
+    var parsed = false
+    try {
+        subject = expression(st)
+        parsed = true
+    } catch err {
+        parsed = false
+    }
+    if !parsed {
+        st["pos"] = save
+        return null
+    }
+    if !check(st, "LBRACE") {
+        st["pos"] = save
+        return null
+    }
+    advance(st)
+    let cases = []
+    while !check(st, "RBRACE") {
+        let pattern = match_case_pattern(st)
+        expect(st, "FAT_ARROW", "expected '=>' after a match pattern")
+        if check(st, "LBRACE") {
+            throw "the arm of a match expression answers a value, not a block"
+        }
+        let body = match_arm_value(st)
+        cases.push([pattern, body])
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after the match cases")
+    return {"kind": "MatchExpr", "subject": subject, "cases": cases, "line": kw["line"], "col": kw["col"]}
+}
+
+fn match_arm_value(st) {
+    let start = st["pos"]
+    var value = expression(st)
+    if check(st, "FAT_ARROW") {
+        st["pos"] = start
+        value = comparison(st)
+    }
+    return value
+}
+
 fn match_body(st) {
     // A block holds many statements; anything else is one statement.  A
     // dict literal as a case body needs parentheses, because a `{` after
@@ -968,7 +1029,10 @@ fn throw_stmt(st) {
 
 fn expr_stmt(st) {
     let start = peek(st)
-    let expr = expression(st)
+    if check(st, "INCREMENT") or check(st, "DECREMENT") {
+        return inc_dec_stmt(st, start, true, null)
+    }
+    let expr = statement_expression(st)
     if check(st, "COMMA") and st["match_body_depth"] == 0 {
         let targets = [unpack_target(st, expr)]
         while match_token(st, ["COMMA"]) != null {
@@ -981,6 +1045,11 @@ fn expr_stmt(st) {
         let value = expression(st)
         let target = {"kind": "UnpackTarget", "target_kind": "tuple", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
         return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
+    }
+    let compound = compound_op(st)
+    if compound != null {
+        let value = expression(st)
+        return {"kind": "OpAssignStmt", "target": assign_target(expr, start), "op": compound, "value": value, "line": start["line"], "col": start["col"]}
     }
     if match_token(st, ["ASSIGN"]) != null {
         let value = expression(st)
@@ -1001,7 +1070,68 @@ fn expr_stmt(st) {
         }
         return {"kind": "AssignStmt", "target": expr, "value": value, "line": start["line"], "col": start["col"]}
     }
+    if check(st, "INCREMENT") or check(st, "DECREMENT") {
+        if peek(st)["line"] != prev_line(st) {
+            return {"kind": "ExprStmt", "expr": expr, "line": start["line"], "col": start["col"]}
+        }
+        return inc_dec_stmt(st, start, false, expr)
+    }
     return {"kind": "ExprStmt", "expr": expr, "line": start["line"], "col": start["col"]}
+}
+
+fn compound_op(st) {
+    let table = {
+        "PLUS_ASSIGN": "+",
+        "MINUS_ASSIGN": "-",
+        "STAR_ASSIGN": "*",
+        "SLASH_ASSIGN": "/",
+        "PERCENT_ASSIGN": "%",
+        "AMP_ASSIGN": "&",
+        "PIPE_ASSIGN": "|",
+        "CARET_ASSIGN": "^",
+        "LSHIFT_ASSIGN": "<<",
+        "RSHIFT_ASSIGN": ">>",
+    }
+    let tok = peek(st)
+    if table.has(tok["type"]) {
+        advance(st)
+        return table.get(tok["type"])
+    }
+    return null
+}
+
+fn assign_target(expr, start) {
+    let kind = expr["kind"]
+    if kind == "Identifier" or kind == "Index" or kind == "Attribute" {
+        return expr
+    }
+    throw "invalid assignment target"
+}
+
+fn inc_dec_stmt(st, start, prefix, expr) {
+    if prefix {
+        let op = advance(st)
+        expr = postfix(st)
+        let kind = expr["kind"]
+        if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
+            throw "invalid target for the increment"
+        }
+        var sign = "-"
+        if op["type"] == "INCREMENT" {
+            sign = "+"
+        }
+        return {"kind": "IncDecStmt", "target": expr, "op": sign, "line": start["line"], "col": start["col"]}
+    }
+    let op = advance(st)
+    let kind = expr["kind"]
+    if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
+        throw "invalid target for the increment"
+    }
+    var sign = "-"
+    if op["type"] == "INCREMENT" {
+        sign = "+"
+    }
+    return {"kind": "IncDecStmt", "target": expr, "op": sign, "line": start["line"], "col": start["col"]}
 }
 
 fn unpack_target(st, expr) {
@@ -1023,7 +1153,24 @@ fn block(st) {
 }
 
 fn expression(st) {
-    return or_expr(st)
+    let expr = coalesce(st)
+    if (check(st, "INCREMENT") or check(st, "DECREMENT")) and peek(st)["line"] == prev_line(st) {
+        throw "the increment is a statement, not an expression"
+    }
+    return expr
+}
+
+fn statement_expression(st) {
+    return coalesce(st)
+}
+
+fn coalesce(st) {
+    let expr = or_expr(st)
+    if check(st, "NULL_COALESCE") {
+        let op = advance(st)
+        return {"kind": "Binary", "left": expr, "op": "??", "right": coalesce(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
 }
 
 fn or_expr(st) {
@@ -1253,6 +1400,12 @@ fn primary(st) {
         return yield_expr(st)
     }
     if t == "IDENT" {
+        if tok["value"] == "match" {
+            let node = try_match_expr(st)
+            if node != null {
+                return node
+            }
+        }
         advance(st)
         return {"kind": "Identifier", "name": tok["value"], "line": tok["line"], "col": tok["col"]}
     }

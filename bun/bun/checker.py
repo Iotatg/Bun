@@ -364,6 +364,47 @@ class Checker:
                 self._check_field_assign(node.target, obj_type, node, scope)
             else:
                 self._expr(node.target, scope)
+        elif isinstance(node, ast.OpAssignStmt):
+            # The compound assignment is an assignment: the name has to be
+            # mutable, and the value has to fit the type of the name.
+            value_type = self._expr(node.value, scope)
+            target = node.target
+            if isinstance(target, ast.Identifier):
+                binding = scope.get(target.name)
+                if binding is not None:
+                    if binding.type != types.ANY:
+                        self._check_assignable(
+                            value_type, binding.type, node,
+                            self._assign_template(target.name))
+                    if not binding.mutable:
+                        raise BunTypeError(
+                            "cannot assign to immutable variable '%s'"
+                            % target.name, node.line, node.col)
+            elif isinstance(target, ast.Attribute):
+                obj_type = self._expr(target.object, scope)
+                self._check_field_assign(target, obj_type, node, scope)
+            else:
+                self._expr(target, scope)
+        elif isinstance(node, ast.IncDecStmt):
+            # The increment and the decrement add one to a number and
+            # store it, so the name has to be mutable and hold a number.
+            target = node.target
+            if isinstance(target, ast.Identifier):
+                binding = scope.get(target.name)
+                if binding is not None:
+                    if not binding.mutable:
+                        raise BunTypeError(
+                            "cannot assign to immutable variable '%s'"
+                            % target.name, node.line, node.col)
+                    if binding.type not in (types.ANY, types.INT, types.FLOAT):
+                        raise BunTypeError(
+                            "cannot increment a value of type '%s'"
+                            % binding.type, node.line, node.col)
+            elif isinstance(target, ast.Attribute):
+                obj_type = self._expr(target.object, scope)
+                self._check_field_assign(target, obj_type, node, scope)
+            else:
+                self._expr(target, scope)
         elif isinstance(node, ast.StructDecl):
             self._check_struct(node, scope)
         elif isinstance(node, ast.EnumDecl):
@@ -429,6 +470,8 @@ class Checker:
                 if guard is not None:
                     self._expr(guard, case_scope)
                 self._statement(body, case_scope)
+        elif isinstance(node, ast.MatchExpr):
+            self._match_expr_type(node, scope)
         elif isinstance(node, ast.ExprStmt):
             self._expr(node.expr, scope)
         elif isinstance(node, ast.DelStmt):
@@ -744,6 +787,33 @@ class Checker:
             return any(self._assigns_self_field(item) for item in node)
         return False
 
+    def _match_expr_type(self, node, scope):
+        """Check a match expression and answer the type of its value.
+
+        Every arm of the match answers a value, and the arms have to
+        answer the same type, because the match answers one value.
+        """
+        self._expr(node.subject, scope)
+        answer = None
+        for pattern, body in node.cases:
+            self._check_pattern(pattern)
+            case_scope = dict(scope)
+            for name in patterns.pattern_names(pattern):
+                case_scope[name] = Binding(types.ANY)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None:
+                self._expr(guard, case_scope)
+            arm_type = self._expr(body, case_scope)
+            if arm_type != types.ANY:
+                if answer is None:
+                    answer = arm_type
+                elif answer != arm_type:
+                    raise BunTypeError(
+                        "the arms of a match answer different types: "
+                        "'%s' and '%s'" % (answer, arm_type),
+                        node.line, node.col)
+        return answer if answer is not None else types.ANY
+
     def _check_field_assign(self, attr, obj_type, node, scope):
         if obj_type == types.ANY:
             return
@@ -894,6 +964,8 @@ class Checker:
             self._expr(node.left, scope)
             self._expr(node.right, scope)
             return types.ANY
+        if isinstance(node, ast.MatchExpr):
+            return self._match_expr_type(node, scope)
         if isinstance(node, ast.Logical):
             self._expr(node.left, scope)
             self._expr(node.right, scope)

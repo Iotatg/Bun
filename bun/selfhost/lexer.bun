@@ -34,6 +34,11 @@ let KEYWORDS = {
     "protocol": "PROTOCOL",
 }
 
+let THREE_CHAR = {
+    "<<=": "LSHIFT_ASSIGN",
+    ">>=": "RSHIFT_ASSIGN",
+}
+
 let TWO_CHAR = {
     "==": "EQ",
     "!=": "NEQ",
@@ -44,6 +49,17 @@ let TWO_CHAR = {
     "**": "DOUBLE_STAR",
     "<<": "LSHIFT",
     ">>": "RSHIFT",
+    "++": "INCREMENT",
+    "--": "DECREMENT",
+    "??": "NULL_COALESCE",
+    "+=": "PLUS_ASSIGN",
+    "-=": "MINUS_ASSIGN",
+    "*=": "STAR_ASSIGN",
+    "/=": "SLASH_ASSIGN",
+    "%=": "PERCENT_ASSIGN",
+    "&=": "AMP_ASSIGN",
+    "|=": "PIPE_ASSIGN",
+    "^=": "CARET_ASSIGN",
 }
 
 let ONE_CHAR = {
@@ -331,6 +347,13 @@ fn operator(st) {
     let line = st["line"]
     let col = st["col"]
     let ch = advance(st)
+    let three = ch + peek_at(st, 0) + peek_at(st, 1)
+    if THREE_CHAR.has(three) {
+        advance(st)
+        advance(st)
+        add_token(st, THREE_CHAR.get(three), three, line, col)
+        return
+    }
     let two = ch + peek_at(st, 0)
     if TWO_CHAR.has(two) {
         advance(st)

@@ -24,6 +24,7 @@ OP_UNARY = "UNARY"
 OP_JUMP = "JUMP"
 OP_JUMP_IF_FALSE = "JUMP_IF_FALSE"
 OP_JUMP_IF_TRUE = "JUMP_IF_TRUE"
+OP_JUMP_IF_NULL = "JUMP_IF_NULL"
 OP_FOR_SETUP = "FOR_SETUP"
 OP_FOR_NEXT = "FOR_NEXT"
 OP_FOR_POP = "FOR_POP"
@@ -66,6 +67,9 @@ OP_REGISTER_IMPL = "REGISTER_IMPL"
 OP_UNWRAP_OR_RETURN = "UNWRAP_OR_RETURN"
 
 MATCH_SUBJECT = "__match_subject"
+MATCH_VALUE = "__match_value"
+COMPOUND_TARGET = "__compound_target"
+COMPOUND_INDEX = "__compound_index"
 
 
 class CompileError(BunTypeError):
@@ -332,6 +336,11 @@ class Compiler:
             self._compile_loop_jump(node, code, "continue")
         elif isinstance(node, ast.MatchStmt):
             self._compile_match(node, code)
+        elif isinstance(node, ast.OpAssignStmt):
+            self._compile_op_assign(node.target, node.op, node.value, node,
+                                    code)
+        elif isinstance(node, ast.IncDecStmt):
+            self._compile_op_assign(node.target, node.op, None, node, code)
         elif isinstance(node, ast.FnDecl):
             emit(code, OP_MAKE_FUNCTION, self.compile_function(node), node)
             if node.decorators:
@@ -449,6 +458,122 @@ class Compiler:
         end = len(code)
         for index in end_jumps:
             patch_to(code, index, end)
+        emit(code, OP_EXIT_SCOPE, None, node)
+        self._scope_depth -= 1
+
+    def _compile_op_assign(self, target, op, value, node, code):
+        """Compile the compound assignment: `x += 1`.
+
+        The target is read once, the operation of the language is applied
+        to the value of the target and the value of the program, and the
+        result is stored in the target.  A value of ``None`` is the one
+        of the increment and of the decrement.
+        """
+        if isinstance(target, ast.Identifier):
+            emit(code, OP_LOAD_NAME, target.name, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_STORE_NAME, target.name, node)
+            return
+        if isinstance(target, ast.Attribute):
+            self.compile_expr(target.object, code)
+            emit(code, OP_DUP, None, node)
+            emit(code, OP_GET_FIELD, target.name, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_SET_FIELD, target.name, node)
+            return
+        if isinstance(target, ast.Index) and not isinstance(target.index,
+                                                             ast.Slice):
+            # The container and the index are kept in hidden names, so
+            # that the element is read once and stored once.
+            self.compile_expr(target.target, code)
+            emit(code, OP_DEFINE_NAME, (COMPOUND_TARGET, False), node)
+            self.compile_expr(target.index, code)
+            emit(code, OP_DEFINE_NAME, (COMPOUND_INDEX, False), node)
+            emit(code, OP_LOAD_NAME, COMPOUND_TARGET, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_INDEX, node)
+            emit(code, OP_INDEX, None, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_TARGET, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_INDEX, node)
+            emit(code, OP_STORE_INDEX, None, node)
+            return
+        raise CompileError("invalid assignment target")
+
+    def _compile_op_value(self, value, node, code):
+        """Compile the value of a compound assignment."""
+        if value is None:
+            emit(code, OP_LOAD_CONST, 1, node)
+            return
+        self.compile_expr(value, code)
+
+    def _compile_coalesce(self, node, code):
+        """Compile the null coalescing: `value ?? other`.
+
+        The right side is computed only when the left side is null, and
+        both sides answer the value of the expression.
+        """
+        self.compile_expr(node.left, code)
+        emit(code, OP_DUP, None, node)
+        null_jump = emit(code, OP_JUMP_IF_NULL, None, node)
+        end_jump = emit(code, OP_JUMP, None, node)
+        null_case = len(code)
+        patch_to(code, null_jump, null_case)
+        emit(code, OP_POP, None, node)
+        self.compile_expr(node.right, code)
+        patch(code, end_jump)
+
+    def _compile_match_expr(self, node, code):
+        """Compile a ``match`` expression.
+
+        The subject is evaluated once and kept in a hidden name, because
+        a case may be tried more than once.  Every case has its own
+        scope, so the names a pattern binds do not leak into the next
+        case, and the arm that matches answers the value of the match.
+        The value of the arm is kept in a hidden name too, so that every
+        path of the match leaves the same number of values on the stack.
+        """
+        emit(code, OP_ENTER_SCOPE, None, node)
+        self._scope_depth += 1
+        self.compile_expr(node.subject, code)
+        emit(code, OP_DEFINE_NAME, (MATCH_SUBJECT, False), node)
+        end_jumps = []
+        for pattern, body in node.cases:
+            emit(code, OP_ENTER_SCOPE, None, node)
+            self._scope_depth += 1
+            emit(code, OP_LOAD_NAME, MATCH_SUBJECT, node)
+            emit(code, OP_MATCH_TEST, patterns.plan_from_ast(pattern), node)
+            body_jump = emit(code, OP_JUMP_IF_TRUE, None, node)
+            emit(code, OP_EXIT_SCOPE, None, node)
+            self._scope_depth -= 1
+            next_jump = emit(code, OP_JUMP, None, node)
+            patch(code, body_jump)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None:
+                # A guard that does not hold sends the case on to the
+                # next one, the same way a pattern that does not match.
+                self.compile_expr(guard, code)
+                guard_jump = emit(code, OP_JUMP_IF_TRUE, None, node)
+                emit(code, OP_EXIT_SCOPE, None, node)
+                self._scope_depth -= 1
+                guard_next_jump = emit(code, OP_JUMP, None, node)
+                patch(code, guard_jump)
+            self.compile_expr(body, code)
+            emit(code, OP_EXIT_SCOPE, None, node)
+            self._scope_depth -= 1
+            emit(code, OP_DEFINE_NAME, (MATCH_VALUE, False), node)
+            end_jumps.append(emit(code, OP_JUMP, None, node))
+            patch(code, next_jump)
+            if guard is not None:
+                patch(code, guard_next_jump)
+        emit(code, OP_LOAD_NAME, MATCH_SUBJECT, node)
+        emit(code, OP_MATCH_FAIL, None, node)
+        end = len(code)
+        for index in end_jumps:
+            patch_to(code, index, end)
+        emit(code, OP_LOAD_NAME, MATCH_VALUE, node)
         emit(code, OP_EXIT_SCOPE, None, node)
         self._scope_depth -= 1
 
@@ -722,6 +847,11 @@ class Compiler:
             self.compile_expr(node.operand, code)
             emit(code, OP_UNARY, node.op, node)
         elif isinstance(node, ast.Binary):
+            if node.op == "??":
+                # The right side of the null coalescing is computed only
+                # when the left side is null.
+                self._compile_coalesce(node, code)
+                return
             self.compile_expr(node.left, code)
             self.compile_expr(node.right, code)
             emit(code, OP_BINARY, node.op, node)
@@ -814,6 +944,8 @@ class Compiler:
         elif isinstance(node, ast.Unwrap):
             self.compile_expr(node.expr, code)
             emit(code, OP_UNWRAP_OR_RETURN, None, node)
+        elif isinstance(node, ast.MatchExpr):
+            self._compile_match_expr(node, code)
         elif isinstance(node, ast.FnDecl):
             emit(code, OP_MAKE_FUNCTION, self.compile_function(node), node)
         else:

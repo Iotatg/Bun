@@ -44,6 +44,7 @@ from .compiler import (
     OP_JUMP,
     OP_JUMP_IF_FALSE,
     OP_JUMP_IF_TRUE,
+    OP_JUMP_IF_NULL,
     OP_LIST_APPEND,
     OP_LOAD_CONST,
     OP_LOAD_NAME,
@@ -370,6 +371,12 @@ def _jump_if_true(self, arg, instruction):
     self.depth -= 1
 
 
+def _jump_if_null(self, arg, instruction):
+    index = self.emit(regcode.JUMP_IF_NULL, self.depth - 1)
+    self.patches.append((index, arg, 1))
+    self.depth -= 1
+
+
 def _enter_scope(self, arg, instruction):
     self.emit(regcode.ENTER_SCOPE)
 
@@ -550,6 +557,7 @@ _HANDLERS = {
     OP_JUMP: _jump,
     OP_JUMP_IF_FALSE: _jump_if_false,
     OP_JUMP_IF_TRUE: _jump_if_true,
+    OP_JUMP_IF_NULL: _jump_if_null,
     OP_ENTER_SCOPE: _enter_scope,
     OP_EXIT_SCOPE: _exit_scope,
     OP_FOR_SETUP: _for_setup,

@@ -544,21 +544,7 @@ class Parser:
         self._advance()
         cases = []
         while not self._check(TokenType.RBRACE):
-            pattern = self._match_pattern()
-            if self._check(TokenType.COMMA):
-                # A case may name more than one pattern.  The first one
-                # that matches wins, so the comma before the '=>' joins
-                # the alternatives of one case.
-                alternatives = [pattern]
-                while self._match(TokenType.COMMA):
-                    alternatives.append(self._match_pattern())
-                pattern = ast.MatchPattern("or", items=alternatives,
-                                            line=pattern.line, col=pattern.col)
-            if self._check(TokenType.IF):
-                # A guard is a condition that has to hold for the case to
-                # match.  It sees the names the pattern binds.
-                self._advance()
-                pattern.guard = self._expression()
+            pattern = self._match_case_pattern()
             self._expect(TokenType.FAT_ARROW,
                          "expected '=>' after a match pattern")
             body = self._match_body()
@@ -566,6 +552,75 @@ class Parser:
             self._match(TokenType.COMMA)
         self._expect(TokenType.RBRACE, "expected '}' after the match cases")
         return ast.MatchStmt(subject, cases, kw.line, kw.col)
+
+    def _match_case_pattern(self):
+        """Parse the pattern of one case.
+
+        A case may name more than one pattern, and it may carry a guard.
+        """
+        pattern = self._match_pattern()
+        if self._check(TokenType.COMMA):
+            # A case may name more than one pattern.  The first one
+            # that matches wins, so the comma before the '=>' joins
+            # the alternatives of one case.
+            alternatives = [pattern]
+            while self._match(TokenType.COMMA):
+                alternatives.append(self._match_pattern())
+            pattern = ast.MatchPattern("or", items=alternatives,
+                                        line=pattern.line, col=pattern.col)
+        if self._check(TokenType.IF):
+            # A guard is a condition that has to hold for the case to
+            # match.  It sees the names the pattern binds.
+            self._advance()
+            pattern.guard = self._expression()
+        return pattern
+
+    def _try_match_expr(self):
+        """Parse a ``match`` expression, or return ``None``.
+
+        The match is a soft keyword, so the name is an ordinary
+        identifier when no subject and a block follow it.  Every arm of
+        the expression answers a value.
+        """
+        save = self.pos
+        kw = self._advance()
+        try:
+            subject = self._expression()
+        except ParseError:
+            self.pos = save
+            return None
+        if not self._check(TokenType.LBRACE):
+            self.pos = save
+            return None
+        self._advance()
+        cases = []
+        while not self._check(TokenType.RBRACE):
+            pattern = self._match_case_pattern()
+            self._expect(TokenType.FAT_ARROW,
+                         "expected '=>' after a match pattern")
+            if self._check(TokenType.LBRACE):
+                tok = self._peek()
+                raise ParseError("the arm of a match expression answers a "
+                                 "value, not a block", tok.line, tok.col)
+            body = self._match_arm_value()
+            cases.append((pattern, body))
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after the match cases")
+        return ast.MatchExpr(subject, cases, kw.line, kw.col)
+
+    def _match_arm_value(self):
+        """Parse the value of one arm of a match expression.
+
+        An arm that answers a value may not swallow the sign of the
+        pattern of the next arm, so the value is parsed again without the
+        additive operators when the parse lands on the '=>' of a case.
+        """
+        start = self.pos
+        value = self._expression()
+        if self._check(TokenType.FAT_ARROW):
+            self.pos = start
+            value = self._comparison()
+        return value
 
     def _match_body(self):
         """Parse the body of one match case.
@@ -839,7 +894,9 @@ class Parser:
 
     def _expr_stmt(self):
         start = self._peek()
-        expr = self._expression()
+        if self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT):
+            return self._inc_dec_stmt(start, True)
+        expr = self._statement_expression()
         if self._check(TokenType.COMMA) and self._match_body_depth == 0:
             targets = [self._unpack_target(expr)]
             while self._match(TokenType.COMMA):
@@ -851,6 +908,11 @@ class Parser:
             target = ast.UnpackTarget("tuple", targets, None, start.line,
                                       start.col)
             return ast.AssignStmt(target, value, start.line, start.col)
+        compound = self._compound_op()
+        if compound is not None:
+            value = self._expression()
+            return ast.OpAssignStmt(self._assign_target(expr, start),
+                                    compound, value, start.line, start.col)
         if self._match(TokenType.ASSIGN):
             value = self._expression()
             if isinstance(expr, ast.ListLiteral):
@@ -862,7 +924,54 @@ class Parser:
             if not isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
                 raise ParseError("invalid assignment target", start.line, start.col)
             return ast.AssignStmt(expr, value, start.line, start.col)
+        if self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT):
+            if self._peek().line != self._prev_line():
+                return ast.ExprStmt(expr, start.line, start.col)
+            return self._inc_dec_stmt(start, False, expr)
         return ast.ExprStmt(expr, start.line, start.col)
+
+    def _compound_op(self):
+        """Read the operator of a compound assignment, if there is one."""
+        table = {
+            TokenType.PLUS_ASSIGN: "+",
+            TokenType.MINUS_ASSIGN: "-",
+            TokenType.STAR_ASSIGN: "*",
+            TokenType.SLASH_ASSIGN: "/",
+            TokenType.PERCENT_ASSIGN: "%",
+            TokenType.AMP_ASSIGN: "&",
+            TokenType.PIPE_ASSIGN: "|",
+            TokenType.CARET_ASSIGN: "^",
+            TokenType.LSHIFT_ASSIGN: "<<",
+            TokenType.RSHIFT_ASSIGN: ">>",
+        }
+        tok = self._peek()
+        if tok.type in table:
+            self._advance()
+            return table[tok.type]
+        return None
+
+    def _assign_target(self, expr, start):
+        """Check that an expression may hold the result of an assignment."""
+        if isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
+            return expr
+        raise ParseError("invalid assignment target", start.line, start.col)
+
+    def _inc_dec_stmt(self, start, prefix, expr=None):
+        """Parse the increment or the decrement of a name.
+
+        The two signs are a statement and not an expression: a language
+        that answers a value for `x++` keeps two rules for one name.
+        """
+        if prefix:
+            op = self._advance()
+            expr = self._postfix()
+        else:
+            op = self._advance()
+        if not isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
+            raise ParseError("invalid target for the increment",
+                             start.line, start.col)
+        sign = "+" if op.type == TokenType.INCREMENT else "-"
+        return ast.IncDecStmt(expr, sign, start.line, start.col)
 
     def _unpack_target(self, expr):
         """Validate one target of an unpacking assignment."""
@@ -882,7 +991,34 @@ class Parser:
         return ast.Block(statements, lbrace.line, lbrace.col)
 
     def _expression(self):
-        return self._or()
+        expr = self._coalesce()
+        if (self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT)) \
+                and self._peek().line == self._prev_line():
+            tok = self._peek()
+            raise ParseError("the increment is a statement, not an expression",
+                             tok.line, tok.col)
+        return expr
+
+    def _statement_expression(self):
+        """Parse the expression of a statement.
+
+        The statement itself reads the increment that follows the
+        expression, so the check of `_expression` does not run here.
+        """
+        return self._coalesce()
+
+    def _coalesce(self):
+        """Parse `a ?? b`.
+
+        The operator of the null binds looser than the words `and` and
+        `or`, and it binds to the right, so `a ?? b ?? c` is
+        `a ?? (b ?? c)`.
+        """
+        expr = self._or()
+        if self._check(TokenType.NULL_COALESCE):
+            op = self._advance()
+            return ast.Binary(expr, "??", self._coalesce(), op.line, op.col)
+        return expr
 
     def _or(self):
         expr = self._and()
@@ -1080,6 +1216,12 @@ class Parser:
         if tok.type == TokenType.YIELD:
             return self._yield_expr()
         if tok.type == TokenType.IDENT:
+            if tok.value == "match":
+                # `match` is a soft keyword: it only starts a match
+                # expression when a subject and a block follow it.
+                node = self._try_match_expr()
+                if node is not None:
+                    return node
             self._advance()
             return ast.Identifier(tok.value, tok.line, tok.col)
         if tok.type == TokenType.FROM:

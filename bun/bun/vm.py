@@ -31,6 +31,7 @@ from .compiler import (
     OP_JUMP,
     OP_JUMP_IF_FALSE,
     OP_JUMP_IF_TRUE,
+    OP_JUMP_IF_NULL,
     OP_LOAD_CONST,
     OP_LIST_APPEND,
     OP_LOAD_NAME,
@@ -829,6 +830,12 @@ class VM:
         if is_truthy(frame.stack.pop()):
             frame.ip = arg
 
+    def _op_jump_if_null(self, frame, arg, line, col):
+        # The null coalescing asks this question of the left side: is
+        # the value null?
+        if frame.stack.pop() is None:
+            frame.ip = arg
+
     def _op_for_setup(self, frame, arg, line, col):
         iterable = frame.stack.pop()
         # A value that answers a `next` method is walked with the answers
@@ -875,6 +882,7 @@ class VM:
         OP_JUMP: _op_jump,
         OP_JUMP_IF_FALSE: _op_jump_if_false,
         OP_JUMP_IF_TRUE: _op_jump_if_true,
+        OP_JUMP_IF_NULL: _op_jump_if_null,
         OP_FOR_SETUP: _op_for_setup,
         OP_FOR_NEXT: _op_for_next,
         OP_FOR_POP: _op_for_pop,

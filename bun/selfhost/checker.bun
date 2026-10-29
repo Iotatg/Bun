@@ -1256,7 +1256,7 @@ fn method_mutates(method) {
 
 fn assigns_self_field(node) {
     let kind = node["kind"]
-    if kind == "AssignStmt" {
+    if kind == "AssignStmt" or kind == "OpAssignStmt" or kind == "IncDecStmt" {
         let target = node["target"]
         if target["kind"] == "Attribute" and target["object"]["kind"] == "Identifier" and target["object"]["name"] == "self" {
             return true
@@ -1306,6 +1306,42 @@ fn field_of(struct_decl, name) {
         i = i + 1
     }
     return null
+}
+
+fn match_expr_type(state, node, scope) {
+    check_expr(state, node["subject"], scope)
+    var answer = null
+    let cases = node["cases"]
+    var i = 0
+    while i < cases.len() {
+        check_pattern(state, cases[i][0])
+        let case_scope = copy_scope(scope)
+        let names = pattern_names(cases[i][0])
+        var j = 0
+        while j < names.len() {
+            case_scope[names[j]] = make_binding("any")
+            j = j + 1
+        }
+        let guard = cases[i][0]["guard"]
+        if guard != null {
+            check_expr(state, guard, case_scope)
+        }
+        let arm_type = check_expr(state, cases[i][1], case_scope)
+        if arm_type != "any" {
+            if answer == null {
+                answer = arm_type
+            } else {
+                if answer != arm_type {
+                    fail("the arms of a match answer different types: '" + answer + "' and '" + arm_type + "'", node)
+                }
+            }
+        }
+        i = i + 1
+    }
+    if answer == null {
+        return "any"
+    }
+    return answer
 }
 
 // Check the write of a field of a struct.
@@ -1633,6 +1669,53 @@ fn check_statement(state, node, scope) {
                 } else {
                     check_expr(state, node["target"], scope)
                 }
+            }
+        }
+        return
+    }
+    if kind == "OpAssignStmt" {
+        let value_type = check_expr(state, node["value"], scope)
+        let target = node["target"]
+        if target["kind"] == "Identifier" {
+            let name = target["name"]
+            if scope.has(name) {
+                let binding = scope[name]
+                if binding["type"] != "any" {
+                    check_assignable(state, value_type, binding["type"], node, "variable", name)
+                }
+                if !binding["mutable"] {
+                    fail("cannot assign to immutable variable '" + name + "'", node)
+                }
+            }
+        } else {
+            if target["kind"] == "Attribute" {
+                let obj_type = check_expr(state, target["object"], scope)
+                check_field_assign(state, target, obj_type, node, scope)
+            } else {
+                check_expr(state, target, scope)
+            }
+        }
+        return
+    }
+    if kind == "IncDecStmt" {
+        let target = node["target"]
+        if target["kind"] == "Identifier" {
+            let name = target["name"]
+            if scope.has(name) {
+                let binding = scope[name]
+                if !binding["mutable"] {
+                    fail("cannot assign to immutable variable '" + name + "'", node)
+                }
+                if binding["type"] != "any" and binding["type"] != "int" and binding["type"] != "float" {
+                    fail("cannot increment a value of type '" + binding["type"] + "'", node)
+                }
+            }
+        } else {
+            if target["kind"] == "Attribute" {
+                let obj_type = check_expr(state, target["object"], scope)
+                check_field_assign(state, target, obj_type, node, scope)
+            } else {
+                check_expr(state, target, scope)
             }
         }
         return
@@ -2013,6 +2096,9 @@ fn check_expr(state, node, scope) {
         check_expr(state, node["left"], scope)
         check_expr(state, node["right"], scope)
         return "any"
+    }
+    if kind == "MatchExpr" {
+        return match_expr_type(state, node, scope)
     }
     if kind == "Logical" {
         check_expr(state, node["left"], scope)

@@ -223,6 +223,16 @@ class Interpreter:
                 self._record_export(node.name, value)
         elif isinstance(node, ast.AssignStmt):
             self._assign(node.target, self.evaluate(node.value, env), env)
+        elif isinstance(node, ast.OpAssignStmt):
+            # The compound assignment reads the target, computes the
+            # operation and stores the result in the target.
+            self._op_assign(node.target, node.op,
+                            lambda: self.evaluate(node.value, env), env)
+        elif isinstance(node, ast.IncDecStmt):
+            # The increment and the decrement add one to a number.
+            op = node.op if node.op in ("+", "-") else (
+                "+" if node.op == "++" else "-")
+            self._op_assign(node.target, op, lambda: 1, env)
         elif isinstance(node, ast.UnpackStmt):
             self._unpack_declare(node, env)
         elif isinstance(node, ast.ExprStmt):
@@ -395,6 +405,31 @@ class Interpreter:
         raise BunRuntimeError("no matching case for %s" % repr_value(value),
                               node.line, node.col)
 
+    def _match_value(self, node, env):
+        """Answer the value of a ``match`` expression.
+
+        The first case whose pattern matches wins, and its arm answers
+        the value of the match.  The names a pattern binds live in the
+        scope of that case alone.
+        """
+        value = self.evaluate(node.subject, env)
+        for pattern, body in node.cases:
+            bindings = []
+            if not patterns.match_pattern(value,
+                                         patterns.plan_from_ast(pattern),
+                                         bindings):
+                continue
+            case_env = Environment(env)
+            for name, bound in bindings:
+                case_env.define(name, bound, True)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None and not is_truthy(self.evaluate(guard,
+                                                                 case_env)):
+                continue
+            return self.evaluate(body, case_env)
+        raise BunRuntimeError("no matching case for %s" % repr_value(value),
+                              node.line, node.col)
+
     def _execute_block(self, block, env):
         block_env = Environment(env)
         for statement in block.statements:
@@ -525,6 +560,34 @@ class Interpreter:
         else:
             raise BunRuntimeError("invalid assignment target")
 
+    def _op_assign(self, target, op, value, env):
+        """Compute an operation on the target of an assignment and store it.
+
+        The target is read once, the operation of the language is applied
+        to the value of the target and the value of the program, and the
+        result is stored in the target.  The value of the program is a
+        function, because it is computed after the target is read.
+        """
+        if isinstance(target, ast.Identifier):
+            current = env.get(target.name)
+            env.assign(target.name,
+                       copy_value(ops.binary_op(op, current, value())))
+        elif isinstance(target, ast.Attribute):
+            obj = self.evaluate(target.object, env)
+            current = ops.get_field(obj, target.name)
+            ops.set_field(obj, target.name,
+                          copy_value(ops.binary_op(op, current, value())))
+        elif isinstance(target, ast.Index):
+            if isinstance(target.index, ast.Slice):
+                raise BunRuntimeError("invalid assignment target")
+            obj = self.evaluate(target.target, env)
+            index = self.evaluate(target.index, env)
+            current = ops.index_value(obj, index)
+            ops.assign_index(obj, index,
+                             copy_value(ops.binary_op(op, current, value())))
+        else:
+            raise BunRuntimeError("invalid assignment target")
+
     def _unpack_declare(self, node, env):
         value = self.evaluate(node.value, env)
         items = ops.unpack_items(value)
@@ -564,6 +627,8 @@ class Interpreter:
             return ops.unary_op(node.op, self.evaluate(node.operand, env))
         if isinstance(node, ast.Binary):
             return self._binary(node, env)
+        if isinstance(node, ast.MatchExpr):
+            return self._match_value(node, env)
         if isinstance(node, ast.Logical):
             left = self.evaluate(node.left, env)
             if node.op == "and":
@@ -679,6 +744,13 @@ class Interpreter:
         return format_fstring_part(part.spec, part.conv, part.source_text, value)
 
     def _binary(self, node, env):
+        if node.op == "??":
+            # The right side of the null coalescing is computed only when
+            # the left side is null.
+            left = self.evaluate(node.left, env)
+            if left is not None:
+                return left
+            return self.evaluate(node.right, env)
         return ops.binary_op(
             node.op,
             self.evaluate(node.left, env),

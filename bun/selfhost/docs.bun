@@ -383,7 +383,7 @@ export let DOCS = {
     "match": {
         "signature": "match value { pattern => body, ... }",
         "summary": "Choose a branch by the shape of a value.",
-        "details": "A case holds one pattern and one body. A pattern is a literal, a name that binds, a '_', a 'type', a range 'a..b', a list pattern '[a, b]', a dict pattern '{key: pattern}', a variant of an enum or a struct pattern 'Name(field: pattern, ...)'. A struct pattern answers for a value of the named struct alone: the type is tested, and every field it names is tested or bound by its own pattern. A name that names an unknown struct, or a field the struct does not have, is an error before the program runs.",
+        "details": "A case holds one pattern and one body. A pattern is a literal, a name that binds, a '_', a 'type', a range 'a..b', a list pattern '[a, b]', a dict pattern '{key: pattern}', a variant of an enum or a struct pattern 'Name(field: pattern, ...)'. A struct pattern answers for a value of the named struct alone: the type is tested, and every field it names is tested or bound by its own pattern. A name that names an unknown struct, or a field the struct does not have, is an error before the program runs. A match is also an expression: every arm answers a value of the same type, and that is the value of the match.",
         "example": "struct Point {\n    var x: int\n    var y: int\n}\n\nlet p = Point(0, 3)\nmatch p {\n    Point(x: 0, y) => print(y)\n    Point(x, y) => print(x + y)\n}\n",
     },
     "lock": {

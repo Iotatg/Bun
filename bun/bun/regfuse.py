@@ -111,7 +111,8 @@ def _targets(instructions):
         op = instruction[0]
         if op == regcode.JUMP:
             targets.add(instruction[1])
-        elif op in (regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE):
+        elif op in (regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE,
+                    regcode.JUMP_IF_NULL):
             targets.add(instruction[2])
         elif op == regcode.FOR_NEXT:
             targets.add(instruction[2])
@@ -163,7 +164,8 @@ def _rewrite(instruction, moved):
     if op == regcode.JUMP:
         return (op, moved.get(instruction[1], instruction[1]), instruction[2],
                 instruction[3])
-    if op in (regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE):
+    if op in (regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE,
+              regcode.JUMP_IF_NULL):
         return (op, instruction[1], moved.get(instruction[2], instruction[2]),
                 instruction[3])
     if op == regcode.FOR_NEXT:

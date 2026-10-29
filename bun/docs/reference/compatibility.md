@@ -41,14 +41,15 @@ The floor division of two negative integers follows Python as well:
 `and` and `or` return one of their operands, exactly as in Python. `!`
 returns a boolean.
 
-There is no ternary `a if c else b` and no null coalescing `a ?? b`.
-Write the branch out:
+There is no ternary `a if c else b`. The match as an expression is the
+answer of the language to that question, and `??` fills a null:
 
 ```bun
-var label = "none"
-if title != "" {
-    label = title
+var label = match title {
+    "" => "none"
+    _ => title
 }
+print(maybe ?? 7)
 ```
 
 ## 3. Mutability

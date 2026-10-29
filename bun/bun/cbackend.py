@@ -67,6 +67,7 @@ FAILING = frozenset([
 # The instructions that jump to another instruction.
 JUMPS = frozenset([
     regcode.JUMP, regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE,
+    regcode.JUMP_IF_NULL,
     regcode.FOR_NEXT, regcode.TRY, regcode.TRY_FINALLY,
 ])
 
@@ -1200,6 +1201,7 @@ class CEmitter:
                     or op == regcode.TRY_FINALLY:
                 targets.add(a)
             elif op == regcode.JUMP_IF_FALSE or op == regcode.JUMP_IF_TRUE \
+                    or op == regcode.JUMP_IF_NULL \
                     or op == regcode.FOR_NEXT:
                 targets.add(b)
         return targets
@@ -1608,6 +1610,8 @@ class CEmitter:
             return ["    if (!bun_truthy(regs[%d])) goto L%d;" % (a, b)]
         if op == regcode.JUMP_IF_TRUE:
             return ["    if (bun_truthy(regs[%d])) goto L%d;" % (a, b)]
+        if op == regcode.JUMP_IF_NULL:
+            return ["    if (regs[%d].tag == BUN_NULL) goto L%d;" % (a, b)]
         if op == regcode.ENTER_SCOPE:
             depth = self.frames[id(code)].scope_depth[position]
             lines = ["    scopes[%d] = env;" % depth]

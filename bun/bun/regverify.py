@@ -62,7 +62,8 @@ def verify(code, name=None):
                     raise VerifyError(
                         "the count %d of '%s' is negative" % (value, where))
         if op == regcode.JUMP or op in (regcode.JUMP_IF_FALSE,
-                                       regcode.JUMP_IF_TRUE):
+                                       regcode.JUMP_IF_TRUE,
+                                       regcode.JUMP_IF_NULL):
             target = instruction[1] if op == regcode.JUMP else instruction[2]
             if not 0 <= target <= last:
                 raise VerifyError(
@@ -95,7 +96,8 @@ def verify(code, name=None):
     # The depth of the expression has to be the same on every path.
     for index, instruction in enumerate(instructions):
         op = instruction[0]
-        if op in (regcode.JUMP, regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE):
+        if op in (regcode.JUMP, regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE,
+                  regcode.JUMP_IF_NULL):
             target = instruction[1] if op == regcode.JUMP else instruction[2]
             expected = _depth_after(depths, index, op)
             if expected is None or target >= len(depths):

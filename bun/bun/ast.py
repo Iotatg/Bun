@@ -27,6 +27,34 @@ class AssignStmt:
 
 
 @record
+class OpAssignStmt:
+    """The compound assignment: `x += 1`.
+
+    The node carries the operator of the assignment, so every engine
+    computes the operation with the code it already has for the operator
+    and stores the result in the target.
+    """
+    target: object
+    op: str
+    value: object
+    line: int = 0
+    col: int = 0
+
+
+@record
+class IncDecStmt:
+    """The increment or the decrement: `x++`, `--x`.
+
+    The node is a statement, not an expression.  A language that answers a
+    value for `x++` keeps two rules for one name.
+    """
+    target: object
+    op: str
+    line: int = 0
+    col: int = 0
+
+
+@record
 class UnpackTarget:
     target_kind: str
     targets: list[object] = field(default_factory=list)
@@ -111,6 +139,20 @@ class MatchPattern:
 
 @record
 class MatchStmt:
+    subject: object
+    cases: list[object] = field(default_factory=list)
+    line: int = 0
+    col: int = 0
+
+
+@record
+class MatchExpr:
+    """The match as an expression.
+
+    Every arm answers a value, and the arms have to answer the same type.
+    The match is the answer of the language to the question of the other
+    languages that ask for a ternary: one construct for one idea.
+    """
     subject: object
     cases: list[object] = field(default_factory=list)
     line: int = 0

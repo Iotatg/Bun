@@ -721,6 +721,13 @@ class RegisterVM:
             frame.ip = b
         frame.sp = a
 
+    def _op_jump_if_null(self, frame, a, b, c):
+        # The null coalescing asks this question of the left side: is
+        # the value null?
+        if frame.slot(a) is None:
+            frame.ip = b
+        frame.sp = a
+
     def _op_enter_scope(self, frame, a, b, c):
         frame.env = Environment(frame.env)
 
@@ -965,6 +972,7 @@ _DISPATCH = {
     regcode.JUMP: RegisterVM._op_jump,
     regcode.JUMP_IF_FALSE: RegisterVM._op_jump_if_false,
     regcode.JUMP_IF_TRUE: RegisterVM._op_jump_if_true,
+    regcode.JUMP_IF_NULL: RegisterVM._op_jump_if_null,
     regcode.ENTER_SCOPE: RegisterVM._op_enter_scope,
     regcode.EXIT_SCOPE: RegisterVM._op_exit_scope,
     regcode.FOR_SETUP: RegisterVM._op_for_setup,

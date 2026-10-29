@@ -3,6 +3,9 @@ fn make_code(name, params, code, filename, source) {
 }
 
 let MATCH_SUBJECT = "__match_subject"
+let MATCH_VALUE = "__match_value"
+let COMPOUND_TARGET = "__compound_target"
+let COMPOUND_INDEX = "__compound_index"
 
 fn emit(code, op, arg, node) {
     code.push([op, arg, node["line"], node["col"]])
@@ -551,6 +554,14 @@ fn compile_statement(st, node, code) {
         }
         return
     }
+    if kind == "OpAssignStmt" {
+        compile_op_assign(st, node["target"], node["op"], node["value"], node, code)
+        return
+    }
+    if kind == "IncDecStmt" {
+        compile_op_assign(st, node["target"], node["op"], null, node, code)
+        return
+    }
     if kind == "ExprStmt" {
         compile_expr(st, node["expr"], code)
         emit(code, "POP", null, node)
@@ -851,6 +862,113 @@ fn compile_match(st, node, code) {
     st["scope_depth"] = st["scope_depth"] - 1
 }
 
+fn compile_op_assign(st, target, op, value, node, code) {
+    if target["kind"] == "Identifier" {
+        emit(code, "LOAD_NAME", target["name"], node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "STORE_NAME", target["name"], node)
+        return
+    }
+    if target["kind"] == "Attribute" {
+        compile_expr(st, target["object"], code)
+        emit(code, "DUP", null, node)
+        emit(code, "GET_FIELD", target["name"], node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "SET_FIELD", target["name"], node)
+        return
+    }
+    if target["kind"] == "Index" and target["index"]["kind"] != "Slice" {
+        compile_expr(st, target["target"], code)
+        emit(code, "DEFINE_NAME", [COMPOUND_TARGET, false], node)
+        compile_expr(st, target["index"], code)
+        emit(code, "DEFINE_NAME", [COMPOUND_INDEX, false], node)
+        emit(code, "LOAD_NAME", COMPOUND_TARGET, node)
+        emit(code, "LOAD_NAME", COMPOUND_INDEX, node)
+        emit(code, "INDEX", null, node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "LOAD_NAME", COMPOUND_TARGET, node)
+        emit(code, "LOAD_NAME", COMPOUND_INDEX, node)
+        emit(code, "STORE_INDEX", null, node)
+        return
+    }
+    throw "invalid assignment target"
+}
+
+fn compile_op_value(st, value, node, code) {
+    if value == null {
+        emit(code, "LOAD_CONST", 1, node)
+        return
+    }
+    compile_expr(st, value, code)
+}
+
+fn compile_coalesce(st, node, code) {
+    compile_expr(st, node["left"], code)
+    emit(code, "DUP", null, node)
+    let null_jump = emit(code, "JUMP_IF_NULL", null, node)
+    let end_jump = emit(code, "JUMP", null, node)
+    let null_case = code.len()
+    patch_to(code, null_jump, null_case)
+    emit(code, "POP", null, node)
+    compile_expr(st, node["right"], code)
+    patch(code, end_jump)
+}
+
+fn compile_match_expr(st, node, code) {
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    compile_expr(st, node["subject"], code)
+    emit(code, "DEFINE_NAME", [MATCH_SUBJECT, false], node)
+    let end_jumps = []
+    let cases = node["cases"]
+    var i = 0
+    while i < cases.len() {
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+        emit(code, "MATCH_TEST", pattern_plan(cases[i][0]), node)
+        let body_jump = emit(code, "JUMP_IF_TRUE", null, node)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        let next_jump = emit(code, "JUMP", null, node)
+        patch(code, body_jump)
+        let guard = cases[i][0]["guard"]
+        var guard_next_jump = 0
+        if guard != null {
+            compile_expr(st, guard, code)
+            let guard_jump = emit(code, "JUMP_IF_TRUE", null, node)
+            emit(code, "EXIT_SCOPE", null, node)
+            st["scope_depth"] = st["scope_depth"] - 1
+            guard_next_jump = emit(code, "JUMP", null, node)
+            patch(code, guard_jump)
+        }
+        compile_expr(st, cases[i][1], code)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        emit(code, "DEFINE_NAME", [MATCH_VALUE, false], node)
+        end_jumps.push(emit(code, "JUMP", null, node))
+        patch(code, next_jump)
+        if guard != null {
+            patch(code, guard_next_jump)
+        }
+        i = i + 1
+    }
+    emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+    emit(code, "MATCH_FAIL", null, node)
+    let end = code.len()
+    var j = 0
+    while j < end_jumps.len() {
+        patch_to(code, end_jumps[j], end)
+        j = j + 1
+    }
+    emit(code, "LOAD_NAME", MATCH_VALUE, node)
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+}
+
 fn pattern_plan(pattern) {
     let kind = pattern["pattern_kind"]
     if kind == "literal" {
@@ -1042,9 +1160,17 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "Binary" {
+        if node["op"] == "??" {
+            compile_coalesce(st, node, code)
+            return
+        }
         compile_expr(st, node["left"], code)
         compile_expr(st, node["right"], code)
         emit(code, "BINARY", node["op"], node)
+        return
+    }
+    if kind == "MatchExpr" {
+        compile_match_expr(st, node, code)
         return
     }
     if kind == "Logical" {
