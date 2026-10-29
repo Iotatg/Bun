@@ -29,7 +29,7 @@ let ALIASES = {
 }
 
 let BUILTIN_SIGNATURES = {
-    "print": [[["any"], "null"]],
+    "print": [[["*"], "null"]],
     "len": [[["any"], "int"]],
     "range": [[["int"], "list"], [["int", "int"], "list"], [["int", "int", "int"], "list"]],
     "str": [[["any"], "string"]],
@@ -163,6 +163,99 @@ let BUILTIN_SIGNATURES = {
 
 fn is_known_type(name) {
     return TYPES.has(name)
+}
+
+// The methods of the containers, by the type of the receiver.  The
+// checker knows the receiver of a method call, so a call of a method
+// that a container does not have is refused before the program runs.
+// The value of a method is the list of the numbers of the arguments it
+// takes and the type it answers.
+let CONTAINER_METHODS = {
+    "string": {
+        "trim": [[0], "string"],
+        "lower": [[0], "string"],
+        "upper": [[0], "string"],
+        "split": [[1], "list"],
+        "contains": [[1], "bool"],
+        "starts_with": [[1], "bool"],
+        "ends_with": [[1], "bool"],
+        "replace": [[2], "string"],
+        "repeat": [[1], "string"],
+        "slice": [[2], "string"],
+        "index_of": [[1], "int"],
+        "len": [[0], "int"],
+    },
+    "list": {
+        "push": [[1], "null"],
+        "pop": [[0], "any"],
+        "shift": [[0], "any"],
+        "len": [[0], "int"],
+        "join": [[1], "string"],
+        "contains": [[1], "bool"],
+        "reverse": [[0], "list"],
+        "slice": [[2], "list"],
+        "sort": [[0, 1], "null"],
+        "sort_by": [[1], "null"],
+        "splice": [[2], "list"],
+        "insert": [[2], "null"],
+        "map": [[1], "list"],
+        "filter": [[1], "list"],
+        "reduce": [[2], "any"],
+        "find": [[1], "any"],
+        "any": [[1], "bool"],
+        "all": [[1], "bool"],
+        "each": [[1], "null"],
+    },
+    "dict": {
+        "len": [[0], "int"],
+        "has": [[1], "bool"],
+        "get": [[1], "any"],
+        "set": [[2], "dict"],
+        "update": [[1], "dict"],
+        "keys": [[0], "list"],
+        "values": [[0], "list"],
+        "items": [[0], "list"],
+        "remove": [[1], "null"],
+    },
+    "set": {
+        "len": [[0], "int"],
+        "add": [[1], "null"],
+        "remove": [[1], "null"],
+        "contains": [[1], "bool"],
+        "values": [[0], "list"],
+        "union": [[1], "set"],
+        "intersection": [[1], "set"],
+        "difference": [[1], "set"],
+    },
+}
+
+// The check of a method of a container: the method has to be one of the
+// methods of the receiver, and it has to take the arguments it takes.
+fn container_method_call(node, recv_type, arg_types) {
+    let table = CONTAINER_METHODS[recv_type]
+    if !table.has(node["method"]) {
+        fail("unknown method '" + node["method"] + "' on " + recv_type, node)
+    }
+    let entry = table[node["method"]]
+    let allowed = entry[0]
+    var matched = false
+    var i = 0
+    while i < allowed.len() {
+        if allowed[i] == arg_types.len() {
+            matched = true
+        }
+        i = i + 1
+    }
+    if !matched {
+        let counts = []
+        var j = 0
+        while j < allowed.len() {
+            counts.push(str(allowed[j]))
+            j = j + 1
+        }
+        fail("'" + node["method"] + "' expects " + counts.join(" or ") + " argument(s), got " + str(arg_types.len()), node)
+    }
+    return entry[1]
 }
 
 // The name of a type, without its type arguments: the type
@@ -1482,6 +1575,10 @@ fn method_call(state, node, scope) {
     if recv_type == "any" or recv_type == "struct" {
         return "any"
     }
+    let container = base_type(recv_type)
+    if CONTAINER_METHODS.has(container) {
+        return container_method_call(node, container, arg_types)
+    }
     if state["protocols"].has(recv_type) {
         return protocol_method_call(state, node, recv_type, arg_types)
     }
@@ -2370,7 +2467,15 @@ fn check_builtin_call(name, node, arg_types) {
         let params = sigs[i][0]
         let return_type = sigs[i][1]
         var matched = true
-        if params.len() != arg_types.len() {
+        if params.len() == 1 and params[0] == "*" {
+            var k = 0
+            while k < arg_types.len() {
+                if !is_assignable(arg_types[k], "any") {
+                    matched = false
+                }
+                k = k + 1
+            }
+        } else if params.len() != arg_types.len() {
             matched = false
         } else {
             var j = 0
@@ -2387,10 +2492,15 @@ fn check_builtin_call(name, node, arg_types) {
         i = i + 1
     }
     let counts = []
-    var k = 0
-    while k < sigs.len() {
-        counts.push(str(sigs[k][0].len()))
-        k = k + 1
+    var m = 0
+    while m < sigs.len() {
+        let params = sigs[m][0]
+        if params.len() == 1 and params[0] == "*" {
+            counts.push("any number of")
+        } else {
+            counts.push(str(params.len()))
+        }
+        m = m + 1
     }
     fail(name + "() received arguments that do not match its signature (expected " + counts.join(" or ") + " argument(s))", node)
     return "any"

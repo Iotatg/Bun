@@ -117,8 +117,30 @@ print(counts.keys())
 String methods: `trim`, `lower`, `upper`, `split`, `contains`, `starts_with`,
 `ends_with`, `replace`, `repeat`, `slice`, `index_of`, `len`.
 List methods: `push`, `pop`, `shift`, `len`, `join`, `contains`, `reverse`,
-`slice`, `sort`, `splice`, `insert`.
-Dict methods: `len`, `has`, `get`, `keys`, `values`, `remove`.
+`slice`, `sort`, `sort_by`, `splice`, `insert`, `map`, `filter`, `reduce`,
+`find`, `any`, `all`, `each`.
+Dict methods: `len`, `has`, `get`, `set`, `update`, `keys`, `values`, `items`,
+`remove`.
+
+The methods that take a function take it as an argument, because Bun has
+no keyword arguments in a call:
+
+```bun
+fn double(n) { return n * 2 }
+fn is_even(n) { return n % 2 == 0 }
+fn add_to(acc, value) { return acc + value }
+
+print([1, 2, 3].map(double))      // [2, 4, 6]
+print([1, 2, 3].filter(is_even))  // [2]
+print([1, 2, 3].reduce(0, add_to)) // the fold, the accumulator first
+print([1, 2, 3].find(is_even))    // the first value the predicate keeps
+print([1, 2, 3].any(is_even))     // true
+print([1, 2, 3].all(is_even))     // false
+```
+
+`sort` keeps its old meaning when it has no argument, so the old code
+keeps its meaning. With a comparator it sorts the way the comparator
+says, and `sort_by` sorts by the key of every value.
 
 File I/O built-ins: `read_file(path)`, `write_file(path, text)`,
 `append_file(path, text)`, `file_exists(path)`.
@@ -2333,3 +2355,5 @@ python3 -m pytest -v
 - Phase 23: the iterator protocol — a `for` walks a struct that answers `next` with `some(item)` and `none()`, the receiver is borrowed across the loop, and the value keeps its place — DONE
 - Phase 24: the struct patterns — a case of a `match` names a struct and its fields, a field pattern tests its value or binds it, a struct of another type never answers it, and the checker refuses an unknown struct or an unknown field before the program runs — DONE
 - Phase 25: the `with` and the `scope` under the C backend — the `with` runs the body between the `__enter__` and the `__exit__` of its targets, the `scope` runs its body in a task group whose tasks are joined before the scope ends, and a failure of a child is the failure of the scope — DONE
+- Phase 26: the everyday syntax — the compound assignment, the `++` and the `--`, the `??` and the match that answers a value — DONE
+- Phase 27: the containers speak — `map`, `filter`, `reduce`, `find`, `any`, `all`, `each`, a `sort` with a comparator, a `sort_by`, the `items()` of a dict, the `len` of a dict and a `print` of many values, and the checker refuses a method a container does not have before the program runs — DONE

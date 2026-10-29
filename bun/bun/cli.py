@@ -219,8 +219,11 @@ def cmd_api(args):
         return 0
     for name in sorted(types.BUILTIN_SIGNATURES):
         for params, return_type in types.BUILTIN_SIGNATURES[name]:
-            rendered = ", ".join("arg%d: %s" % (index, item)
-                                 for index, item in enumerate(params))
+            if params == (types.VARARGS,):
+                rendered = "args: any..."
+            else:
+                rendered = ", ".join("arg%d: %s" % (index, item)
+                                     for index, item in enumerate(params))
             print("%s(%s) -> %s" % (name, rendered, return_type))
     return 0
 

@@ -416,7 +416,14 @@ def _resolve_method(method, receiver):
     return table[method]
 
 
-def method_call(method, receiver, args):
+def method_call(method, receiver, args, call=None):
+    """Run a method of a container.
+
+    The `call` callback runs a function value that was given to a
+    method, the way `map` and `filter` need it.  It is given by the
+    engine that walks the program, because only an engine may run a
+    function of the program.
+    """
     # The method tables are static, so the lookup result only depends on the
     # concrete type of the receiver and the method name. Caching it removes
     # the isinstance chain and the table lookup from every method call.
@@ -428,6 +435,8 @@ def method_call(method, receiver, args):
     if handler is None:
         handler = _resolve_method(method, receiver)
         _METHOD_DISPATCH[key] = handler
+    if getattr(handler, "needs_call", False):
+        return handler(receiver, args, call)
     return handler(receiver, args)
 
 

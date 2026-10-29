@@ -122,21 +122,21 @@ def test_api_json_lists_the_builtins(capsys):
     assert main(["api", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert "print" in data["builtins"]
-    assert data["builtins"]["print"] == [[["any"], "null"]]
+    assert data["builtins"]["print"] == [[["*"], "null"]]
 
 
 def test_api_human_output_lists_the_builtins(capsys):
     assert main(["api"]) == 0
     out = capsys.readouterr().out
-    assert "print(arg0: any) -> null" in out
+    assert "print(args: any...) -> null" in out
     assert "len(arg0: any) -> int" in out
 
 
 def test_doc_prints_a_symbol(capsys):
     assert main(["doc", "print"]) == 0
     out = capsys.readouterr().out
-    assert "print(value: any)" in out
-    assert "Print a value" in out
+    assert "print(values: any...)" in out
+    assert "Print the values" in out
 
 
 def test_doc_without_a_symbol_lists_the_names(capsys):
@@ -151,7 +151,7 @@ def test_doc_json_is_machine_readable(capsys):
 
     assert main(["doc", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["print"]["summary"].startswith("Print a value")
+    assert data["print"]["summary"].startswith("Print the values")
 
 
 def test_doc_unknown_symbol_fails(capsys):

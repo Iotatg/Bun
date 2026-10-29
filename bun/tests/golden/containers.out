@@ -1,0 +1,27 @@
+[2, 4, 6, 8, 10]
+[2, 4]
+15
+2
+true
+false
+value 1
+value 2
+value 3
+value 4
+value 5
+[]
+[]
+null
+false
+true
+7
+[apple, fig, pear]
+[fig, pear, apple]
+[3, 2, 1]
+[1, 2, 3]
+[[a, 1], [b, 2]]
+2
+[a, b]
+[1, 2]
+many 1 true [1, 2] {k: v}
+

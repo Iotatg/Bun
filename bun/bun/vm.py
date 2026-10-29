@@ -167,7 +167,7 @@ class VM:
         }
         return self._execute(code, Environment(self.globals), frame.base_dir)
 
-    def call_function(self, function, args):
+    def call_function(self, function, args, base_dir=None):
         if not isinstance(function, BunFunction):
             raise BunRuntimeError("%s is not callable" % stringify(function))
         instructions = [("LOAD_CONST", function, 0, 0)]
@@ -183,7 +183,20 @@ class VM:
             "source": "",
         }
         frame_env = Environment(self.globals)
-        return self._execute(code, frame_env, os.getcwd())
+        return self._execute(code, frame_env, base_dir or os.getcwd())
+
+    def call_value(self, callee, args, base_dir=None):
+        """Run a function value and answer its result.
+
+        This is the way a method of a container calls the function it
+        was given, the way `map` and `filter` need it.
+        """
+        if isinstance(callee, Builtin):
+            return callee.func(args)
+        if not isinstance(callee, BunFunction):
+            raise BunRuntimeError("%s is not callable" % stringify(callee))
+        return self.call_function(callee, [copy_value(arg) for arg in args],
+                                  base_dir)
 
     def _execute(self, code, env, base_dir, generator=None):
         frame = Frame(code, env, base_dir)
@@ -626,7 +639,9 @@ class VM:
             if isinstance(function, BunFunction):
                 return self._call_function(
                     frame, function, [receiver] + args, {}, borrowed=1)
-        frame.stack.append(ops.method_call(method, receiver, args))
+        frame.stack.append(ops.method_call(
+            method, receiver, args,
+            lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
 
     def _op_make_struct(self, frame, arg, line, col):
         type_name, field_names = arg

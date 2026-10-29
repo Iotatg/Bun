@@ -6,6 +6,7 @@ keeps the order the values came in, so printing a set prints the values
 the way they were added.
 """
 
+from . import types
 from .errors import BunRuntimeError
 from .methods import _arity
 from .dict import make_key
@@ -122,4 +123,18 @@ SET_METHODS = {
     "union": s_union,
     "intersection": s_intersection,
     "difference": s_difference,
+}
+
+
+# The arity and the answer of the methods of a set, so the checker knows
+# a method call before the program runs.
+SET_METHOD_INFO = {
+    "len": ((0,), types.INT),
+    "add": ((1,), types.NULL),
+    "remove": ((1,), types.NULL),
+    "contains": ((1,), types.BOOL),
+    "values": ((0,), types.LIST),
+    "union": ((1,), types.SET),
+    "intersection": ((1,), types.SET),
+    "difference": ((1,), types.SET),
 }

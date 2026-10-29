@@ -49,7 +49,9 @@ def _len(args):
     value = args[0]
     if isinstance(value, (str, list)):
         return len(value)
-    raise BunRuntimeError("len() expects a string or list")
+    if isinstance(value, BunDict):
+        return len(value)
+    raise BunRuntimeError("len() expects a string, a list or a dict")
 
 
 def _range(args):

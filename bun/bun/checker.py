@@ -2,7 +2,21 @@ from __future__ import annotations
 from .records import record
 
 from . import ast, modules, ops, patterns, types
+from .dict import DICT_METHOD_INFO
 from .errors import BunError, BunTypeError
+from .methods import LIST_METHOD_INFO, STRING_METHOD_INFO
+from .set import SET_METHOD_INFO
+
+
+# The methods of the containers, by the type of the receiver.  The
+# checker knows the receiver of a method call, so a call of a method
+# that a container does not have is refused before the program runs.
+CONTAINER_METHODS = {
+    types.STRING: ("string", STRING_METHOD_INFO),
+    types.LIST: ("list", LIST_METHOD_INFO),
+    types.DICT: ("dict", DICT_METHOD_INFO),
+    types.SET: ("set", SET_METHOD_INFO),
+}
 
 
 @record
@@ -1326,6 +1340,13 @@ class Checker:
 
     def _builtin_call(self, name, node, arg_types):
         for params, return_type in types.BUILTIN_SIGNATURES[name]:
+            if params == (types.VARARGS,):
+                for arg_type in arg_types:
+                    if not types.is_assignable(arg_type, types.ANY):
+                        break
+                else:
+                    return return_type
+                continue
             if len(params) != len(arg_types):
                 continue
             for arg_type, ptype in zip(arg_types, params):
@@ -1333,11 +1354,15 @@ class Checker:
                     break
             else:
                 return return_type
-        expected = " or ".join(
-            str(len(params)) for params, _ in types.BUILTIN_SIGNATURES[name])
+        expected = []
+        for params, _ in types.BUILTIN_SIGNATURES[name]:
+            if params == (types.VARARGS,):
+                expected.append("any number of")
+            else:
+                expected.append(str(len(params)))
         raise BunTypeError(
             "%s() received arguments that do not match its signature (expected %s argument(s))"
-            % (name, expected), node.line, node.col)
+            % (name, " or ".join(expected)), node.line, node.col)
 
     def _constructor_call(self, name, arg_types, node):
         struct = self.structs.get(name)
@@ -1374,6 +1399,14 @@ class Checker:
         arg_types = [self._expr(arg, scope) for arg in node.args]
         if recv_type in (types.ANY, types.STRUCT):
             return types.ANY
+        container = CONTAINER_METHODS.get(recv_type)
+        if container is None and "<" in recv_type:
+            # A list of integers is a `list<int>`, and the methods of a
+            # list are the methods of the list.
+            container = CONTAINER_METHODS.get(recv_type.split("<", 1)[0])
+        if container is not None:
+            name, info = container
+            return self._container_method_call(node, info, name, arg_types)
         if recv_type in self.protocols:
             return self._protocol_method_call(node, recv_type, arg_types)
         methods = self.impls.get(recv_type)
@@ -1413,6 +1446,21 @@ class Checker:
                 "argument of type '%s' is not assignable to parameter of type "
                 "'%s' in call to '%s'", node.method)
         return method.return_type or types.ANY
+
+    def _container_method_call(self, node, info, name, arg_types):
+        """Check a method call on a list, a dict, a string or a set."""
+        entry = info.get(node.method)
+        if entry is None:
+            raise BunTypeError(
+                "unknown method '%s' on %s" % (node.method, name),
+                node.line, node.col)
+        allowed, return_type = entry
+        if len(arg_types) not in allowed:
+            raise BunTypeError(
+                "'%s' expects %s argument(s), got %d"
+                % (node.method, " or ".join(str(n) for n in allowed),
+                   len(arg_types)), node.line, node.col)
+        return return_type
 
     def _protocol_method_call(self, node, protocol_name, arg_types):
         """Check the call of a method of a protocol.

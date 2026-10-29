@@ -1,3 +1,4 @@
+from . import types
 from .errors import BunRuntimeError
 from .methods import _arity
 
@@ -73,6 +74,12 @@ def d_values(recv, args):
     return recv.values()
 
 
+def d_items(recv, args):
+    """The pairs of the dict, the key first."""
+    _arity("items", args, 0)
+    return [[key[1], value] for key, value in recv.items.items()]
+
+
 def d_set(recv, args):
     _arity("set", args, 2)
     recv.set(args[0], args[1])
@@ -103,5 +110,21 @@ DICT_METHODS = {
     "update": d_update,
     "keys": d_keys,
     "values": d_values,
+    "items": d_items,
     "remove": d_remove,
+}
+
+
+# The arity and the answer of the methods of a dict, so the checker
+# knows a method call before the program runs.
+DICT_METHOD_INFO = {
+    "len": ((0,), types.INT),
+    "has": ((1,), types.BOOL),
+    "get": ((1,), types.ANY),
+    "set": ((2,), types.DICT),
+    "update": ((1,), types.DICT),
+    "keys": ((0,), types.LIST),
+    "values": ((0,), types.LIST),
+    "items": ((0,), types.LIST),
+    "remove": ((1,), types.NULL),
 }

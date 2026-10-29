@@ -441,3 +441,55 @@ print(7.0 / 2)    // 3.5
 In Python `7 / 2` is `3.5`. In Bun it is `3`, because an integer division
 that quietly produces a float is a source of slow programs, and Bun
 wants the fast path to be the default.
+
+## 13. Containers that work
+
+A list has the methods Python's list comprehensions and `map`/`filter`
+give you, and a dict has the method `items()`:
+
+| Python | Bun |
+|--------|-----|
+| `[x * 2 for x in values]` | `values.map(double)` |
+| `[x for x in values if x % 2 == 0]` | `values.filter(is_even)` |
+| `functools.reduce(add, values, 0)` | `values.reduce(0, add)` |
+| `next(x for x in values if x > 0)` | `values.find(is_positive)` |
+| `any(x > 0 for x in values)` | `values.any(is_positive)` |
+| `all(x > 0 for x in values)` | `values.all(is_positive)` |
+| `for x in values: f(x)` | `values.each(f)` |
+| `sorted(values, key=f)` | `values.sort_by(f)` |
+| `dict.items()` | `d.items()` |
+| `len(d)` | `len(d)` |
+
+The function is always the last argument, and the accumulator of `reduce`
+comes first, because a call in Bun has no keyword arguments:
+
+```bun
+fn double(n) { return n * 2 }
+fn is_even(n) { return n % 2 == 0 }
+fn add(acc, value) { return acc + value }
+
+print([1, 2, 3].map(double))        // [2, 4, 6]
+print([1, 2, 3].filter(is_even))    // [2]
+print([1, 2, 3].reduce(0, add))     // 6
+print([1, 2, 3].find(is_even))      // 2
+print([1, 2, 3].any(is_even))       // true
+print([1, 2, 3].all(is_even))       // false
+```
+
+`find` answers `null` when nothing is kept, and `each` answers `null`.
+`sort` without an argument keeps its old meaning, the list in order of
+its values; with a comparator it sorts the way the comparator says, and
+the comparator answers a number. `sort_by` sorts by the key of every
+value, and the keys must be all numbers or all strings.
+
+`print` takes any number of arguments and writes them with a space
+between them, where Python's `print` separates its arguments by a space
+as well.
+
+The pairs of `d.items()` are two-element lists, because Bun has no
+tuple:
+
+```bun
+let d = { "a": 1, "b": 2 }
+print(d.items())   // [[a, 1], [b, 2]]
+```

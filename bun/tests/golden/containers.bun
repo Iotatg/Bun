@@ -1,0 +1,61 @@
+fn double(n) {
+    return n * 2
+}
+
+fn is_even(n) {
+    return n % 2 == 0
+}
+
+fn add_to(acc, value) {
+    return acc + value
+}
+
+fn show(value) {
+    print("value " + str(value))
+}
+
+fn by_length(word) {
+    return len(word)
+}
+
+fn descending(a, b) {
+    return b - a
+}
+
+var numbers = [1, 2, 3, 4, 5]
+print(numbers.map(double))
+print(numbers.filter(is_even))
+print(numbers.reduce(0, add_to))
+print(numbers.find(is_even))
+print(numbers.any(is_even))
+print(numbers.all(is_even))
+numbers.each(show)
+
+var empty = []
+print(empty.map(double))
+print(empty.filter(is_even))
+print(empty.find(is_even))
+print(empty.any(is_even))
+print(empty.all(is_even))
+print(empty.reduce(7, add_to))
+
+var words = ["pear", "apple", "fig"]
+words.sort()
+print(words)
+words.sort_by(by_length)
+print(words)
+
+var ordered = [3, 1, 2]
+ordered.sort(descending)
+print(ordered)
+ordered.sort()
+print(ordered)
+
+var table = {"a": 1, "b": 2}
+print(table.items())
+print(len(table))
+print(table.keys())
+print(table.values())
+
+print("many", 1, true, [1, 2], {"k": "v"})
+print()

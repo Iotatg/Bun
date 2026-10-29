@@ -816,8 +816,9 @@ class Interpreter:
             function = ops.struct_method(receiver.type_name, inner.method)
             if isinstance(function, BunFunction):
                 return self.call_function(function, [receiver] + args, borrowed=1)
-            return ops.method_call(inner.method, receiver, args)
-        return ops.method_call(inner.method, receiver, args)
+            return ops.method_call(inner.method, receiver, args,
+                                   self.call_value)
+        return ops.method_call(inner.method, receiver, args, self.call_value)
 
     def _index(self, obj, index):
         return ops.index_value(obj, index)

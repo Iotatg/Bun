@@ -376,6 +376,18 @@ export let DOCS = {
         "summary": "Return the length of a string, list or dict.",
         "example": "print(len(\"bun\"))\n",
     },
+    "list": {
+        "signature": "list",
+        "summary": "A list of the values, in the order they were put in.",
+        "details": "A list has the methods \"push\", \"pop\", \"shift\", \"len\", \"join\", \"contains\", \"reverse\", \"slice\", \"sort\", \"sort_by\", \"splice\", \"insert\", \"map\", \"filter\", \"reduce\", \"find\", \"any\", \"all\" and \"each\". The methods that take a function take it as an argument, because Bun has no keyword arguments in a call.",
+        "example": "print([1, 2, 3].len())\n",
+    },
+    "dict": {
+        "signature": "dict",
+        "summary": "A table of the values, by a key.",
+        "details": "A dict has the methods \"len\", \"has\", \"get\", \"set\", \"update\", \"keys\", \"values\", \"items\" and \"remove\". The method \"items\" answers the pairs of the dict, the key first.",
+        "example": "print({\"a\": 1}.items())\n",
+    },
     "list_dir": {
         "signature": "list_dir(path: string) -> list",
         "summary": "List the entries of a directory.",
@@ -451,10 +463,10 @@ export let DOCS = {
         "summary": "Raise a base to a power modulo a modulus.",
     },
     "print": {
-        "signature": "print(value: any)",
-        "summary": "Print a value followed by a newline.",
-        "details": "Exactly one argument is accepted; build strings to join several values.",
-        "example": "print(\"hello\")\n",
+        "signature": "print(values: any...)",
+        "summary": "Print the values with a space between them and a newline.",
+        "details": "Any number of arguments is accepted. Without an argument an empty line is written.",
+        "example": "print(\"hello\", 1)\n",
     },
     "protocol": {
         "signature": "protocol Name { fn method(self, ...) -> type, ... }",

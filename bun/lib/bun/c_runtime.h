@@ -3244,7 +3244,10 @@ static BunValue bun_builtin_len(BunValue *args, int count) {
     if (args[0].tag == BUN_LIST) {
         return bun_int_value((int64_t)args[0].as.obj->count);
     }
-    bun_throw("len() expects a string or list");
+    if (args[0].tag == BUN_DICT) {
+        return bun_int_value((int64_t)args[0].as.obj->count);
+    }
+    bun_throw("len() expects a string, a list or a dict");
     return bun_null_value();
 }
 
@@ -3800,6 +3803,12 @@ static void bun_check_int(const char *name, BunValue value) {
     }
 }
 
+static void bun_check_callable(BunValue value) {
+    if (value.tag != BUN_FUNC && value.tag != BUN_BUILTIN) {
+        bun_throw("%s is not callable", bun_stringify(value));
+    }
+}
+
 static BunValue bun_method_call(BunValue receiver, const char *method,
                                 BunValue *args, int count) {
     if (receiver.tag == BUN_STRUCT) {
@@ -4035,31 +4044,106 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                 return bun_slice(receiver, args[0], args[1], bun_null_value());
             }
             if (strcmp(method, "sort") == 0) {
-                bun_arity(method, count, 0);
-                int numbers = 0;
-                int strings = 0;
-                for (size_t index = 0; index < list->count; index++) {
-                    BunValue item = list->items[index];
-                    if (item.tag == BUN_STR) {
-                        strings++;
-                    } else if (item.tag == BUN_INT || item.tag == BUN_FLOAT) {
-                        numbers++;
-                    } else {
+                if (count > 1) {
+                    bun_throw("'sort' expects 0 or 1 argument(s), got %d",
+                              count);
+                }
+                if (count == 0) {
+                    int numbers = 0;
+                    int strings = 0;
+                    for (size_t index = 0; index < list->count; index++) {
+                        BunValue item = list->items[index];
+                        if (item.tag == BUN_STR) {
+                            strings++;
+                        } else if (item.tag == BUN_INT || item.tag == BUN_FLOAT) {
+                            numbers++;
+                        } else {
+                            bun_throw("cannot sort list with mixed types");
+                        }
+                    }
+                    if (numbers && strings) {
                         bun_throw("cannot sort list with mixed types");
                     }
+                    for (size_t index = 1; index < list->count; index++) {
+                        BunValue item = list->items[index];
+                        size_t at = index;
+                        while (at > 0 && bun_truthy(bun_compare(list->items[at - 1],
+                                                               item, 2))) {
+                            list->items[at] = list->items[at - 1];
+                            at--;
+                        }
+                        list->items[at] = item;
+                    }
+                    return bun_null_value();
                 }
-                if (numbers && strings) {
-                    bun_throw("cannot sort list with mixed types");
-                }
+                bun_check_callable(args[0]);
+                int sort_line = bun_error_line;
+                int sort_col = bun_error_col;
                 for (size_t index = 1; index < list->count; index++) {
                     BunValue item = list->items[index];
                     size_t at = index;
-                    while (at > 0 && bun_truthy(bun_compare(list->items[at - 1],
-                                                           item, 2))) {
+                    while (at > 0) {
+                        BunValue call_args[2];
+                        call_args[0] = list->items[at - 1];
+                        call_args[1] = item;
+                        BunValue answer = bun_call(args[0], call_args, 2,
+                                                   bun_null_value());
+                        if (answer.tag != BUN_INT && answer.tag != BUN_FLOAT) {
+                            bun_at(sort_line, sort_col);
+                            bun_throw("'sort' expects a number from the comparator");
+                        }
+                        if (bun_as_double(answer) <= 0) {
+                            break;
+                        }
                         list->items[at] = list->items[at - 1];
                         at--;
                     }
                     list->items[at] = item;
+                }
+                return bun_null_value();
+            }
+            if (strcmp(method, "sort_by") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                size_t total = list->count;
+                if (total == 0) {
+                    return bun_null_value();
+                }
+                BunValue *keys = (BunValue *)bun_alloc(sizeof(BunValue) * total);
+                int numbers = 0;
+                int strings = 0;
+                int by_line = bun_error_line;
+                int by_col = bun_error_col;
+                for (size_t index = 0; index < total; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue key = bun_call(args[0], call_args, 1,
+                                            bun_null_value());
+                    keys[index] = key;
+                    if (key.tag == BUN_STR) {
+                        strings++;
+                    } else if (key.tag == BUN_INT || key.tag == BUN_FLOAT) {
+                        numbers++;
+                    } else {
+                        bun_at(by_line, by_col);
+                        bun_throw("cannot sort list with mixed types");
+                    }
+                }
+                if (numbers && strings) {
+                    bun_at(by_line, by_col);
+                    bun_throw("cannot sort list with mixed types");
+                }
+                for (size_t index = 1; index < total; index++) {
+                    BunValue item = list->items[index];
+                    BunValue key = keys[index];
+                    size_t at = index;
+                    while (at > 0 && bun_truthy(bun_compare(keys[at - 1], key, 2))) {
+                        list->items[at] = list->items[at - 1];
+                        keys[at] = keys[at - 1];
+                        at--;
+                    }
+                    list->items[at] = item;
+                    keys[at] = key;
                 }
                 return bun_null_value();
             }
@@ -4138,6 +4222,107 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                     bun_list_push(result.as.obj, list->items[index - 1]);
                 }
                 return result;
+            }
+            if (strcmp(method, "reduce") == 0) {
+                bun_arity(method, count, 2);
+                bun_check_callable(args[1]);
+                BunValue acc = args[0];
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[2];
+                    call_args[0] = acc;
+                    call_args[1] = list->items[index];
+                    acc = bun_call(args[1], call_args, 2, bun_null_value());
+                }
+                return acc;
+            }
+            break;
+        case 'm':
+            if (strcmp(method, "map") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                BunValue result = bun_list_new();
+                bun_list_reserve(result.as.obj, list->count);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    bun_list_push(result.as.obj,
+                                  bun_call(args[0], call_args, 1,
+                                           bun_null_value()));
+                }
+                return result;
+            }
+            break;
+        case 'f':
+            if (strcmp(method, "filter") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                BunValue result = bun_list_new();
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        bun_list_push(result.as.obj, list->items[index]);
+                    }
+                }
+                return result;
+            }
+            if (strcmp(method, "find") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        return list->items[index];
+                    }
+                }
+                return bun_null_value();
+            }
+            break;
+        case 'a':
+            if (strcmp(method, "any") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        return bun_bool_value(1);
+                    }
+                }
+                return bun_bool_value(0);
+            }
+            if (strcmp(method, "all") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (!bun_truthy(answer)) {
+                        return bun_bool_value(0);
+                    }
+                }
+                return bun_bool_value(1);
+            }
+            break;
+        case 'e':
+            if (strcmp(method, "each") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    bun_call(args[0], call_args, 1, bun_null_value());
+                }
+                return bun_null_value();
             }
             break;
         case 'i':
@@ -4225,6 +4410,20 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                 BunValue result = bun_list_new();
                 for (size_t index = 0; index < dict->count; index++) {
                     bun_list_push(result.as.obj, dict->values[index]);
+                }
+                return result;
+            }
+            break;
+        case 'i':
+            if (strcmp(method, "items") == 0) {
+                bun_arity(method, count, 0);
+                BunValue result = bun_list_new();
+                bun_list_reserve(result.as.obj, dict->count);
+                for (size_t index = 0; index < dict->count; index++) {
+                    BunValue pair = bun_list_new();
+                    bun_list_push(pair.as.obj, dict->keys[index]);
+                    bun_list_push(pair.as.obj, dict->values[index]);
+                    bun_list_push(result.as.obj, pair);
                 }
                 return result;
             }

@@ -203,12 +203,25 @@ class RegisterVM:
         }
         return self._execute(code, Environment(self.globals), frame.base_dir)
 
-    def call_function(self, function, args):
+    def call_function(self, function, args, base_dir=None):
         if not isinstance(function, BunFunction):
             raise BunRuntimeError("%s is not callable" % stringify(function))
         frame_env = Environment(self.globals)
         return self._execute(
-            self._call_code(function, args), frame_env, os.getcwd())
+            self._call_code(function, args), frame_env, base_dir or os.getcwd())
+
+    def call_value(self, callee, args, base_dir=None):
+        """Run a function value and answer its result.
+
+        This is the way a method of a container calls the function it
+        was given, the way `map` and `filter` need it.
+        """
+        if isinstance(callee, Builtin):
+            return callee.func(args)
+        if not isinstance(callee, BunFunction):
+            raise BunRuntimeError("%s is not callable" % stringify(callee))
+        return self.call_function(callee, [copy_value(arg) for arg in args],
+                                  base_dir)
 
     def _call_code(self, function, args):
         """The code that calls a function and ends with its result."""
@@ -649,7 +662,9 @@ class RegisterVM:
             if isinstance(function, BunFunction):
                 return self._call_function(
                     frame, function, [receiver] + args, {}, a, borrowed=1)
-        frame.push(a, ops.method_call(method, receiver, args))
+        frame.push(a, ops.method_call(
+            method, receiver, args,
+            lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
 
     def _op_make_struct(self, frame, a, b, c):
         type_name, field_names = frame.consts[b]

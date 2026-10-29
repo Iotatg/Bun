@@ -277,6 +277,12 @@ CHECKER_ERROR_CASES = [
     "enum Shape {\n    Dot\n}\nlet s = Shape.Dot\n"
     "match s {\n    Shape(a) => print(a)\n}",
     "let p = 1\nmatch p {\n    Nope(a) => print(a)\n}",
+    'print("abc".reveal())',
+    'print([1, 2].map())',
+    'print([1, 2].sort(1, 2))',
+    'print({"a": 1}.items(1))',
+    'print([1, 2].nope())',
+    'print("ab".nope())',
 ]
 
 

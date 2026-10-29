@@ -62,8 +62,8 @@ HINTS = [
      "an index is a whole number"),
     ("unknown method",
      "the method is not on this type; the methods of a list are push, "
-     "pop, shift, len, join, contains, reverse, slice, sort, splice and "
-     "insert"),
+     "pop, shift, len, join, contains, reverse, slice, sort, sort_by, "
+     "splice, insert, map, filter, reduce, find, any, all and each"),
     ("value is not iterable",
      "a for loop walks a list or a dictionary"),
     ("not enough values to unpack",

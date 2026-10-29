@@ -27,8 +27,12 @@ TYPE_NAMES = frozenset(
 # The type every alias stands for.
 ALIASES = {NUMBER: FLOAT, TEXT: STRING}
 
+# The marker of a builtin that takes any number of arguments, the way
+# `print` does.
+VARARGS = "*"
+
 BUILTIN_SIGNATURES = {
-    "print": [((ANY,), NULL)],
+    "print": [((VARARGS,), NULL)],
     "len": [((ANY,), INT)],
     "range": [((INT,), LIST), ((INT, INT), LIST), ((INT, INT, INT), LIST)],
     "str": [((ANY,), STRING)],
