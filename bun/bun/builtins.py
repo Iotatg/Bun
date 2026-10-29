@@ -23,7 +23,7 @@ from .ops import type_name
 _FFI_ALLOWED = frozenset({
     "math", "time", "random", "json", "hashlib", "base64",
     "urllib.parse", "re", "uuid", "secrets", "string",
-    "socket", "ssl", "cryptography", "binascii",
+    "socket", "ssl", "cryptography", "binascii", "sqlite3",
 })
 
 
@@ -1075,6 +1075,12 @@ def _tcp_connect(args):
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(30)
+    # The small words of a program go out without waiting for the answer of
+    # the net, so the other side never waits for them.
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         sock.connect((host, port))
     except Exception as e:
@@ -1114,6 +1120,12 @@ def _tcp_tls_connect(args):
     import ssl
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(30)
+    # The small words of a program go out without waiting for the answer of
+    # the net, so the other side never waits for them.
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         sock.connect((host, port))
     except Exception as e:
