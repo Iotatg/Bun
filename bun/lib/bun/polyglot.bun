@@ -1,0 +1,51 @@
+// bun:polyglot — call every language of the machine from Bun.
+//
+// The runtime finds the interpreters and compilers of the machine
+// (run_language, installed_languages). This stack gives them the shapes
+// a Bun program likes to hold: an answer with the output, the error and
+// a one-line report, and helpers for the common calls.
+
+export fn run(lang, code) {
+    let raw = run_language(lang, code)
+    return answer_of(raw)
+}
+
+export fn run_with(lang, code, args) {
+    let raw = run_language(lang, code, args)
+    return answer_of(raw)
+}
+
+fn answer_of(raw) {
+    var report = "ok"
+    if !raw["ok"] {
+        report = "failed (" + str(raw["status"]) + ")"
+    }
+    return {
+        "ok": raw["ok"],
+        "output": raw["stdout"],
+        "error": raw["stderr"],
+        "report": report
+    }
+}
+
+export fn output_of(lang, code) {
+    // Run one language and return only its standard output, trimmed.
+    let raw = run_language(lang, code)
+    return raw["stdout"].trim()
+}
+
+export fn python(code) {
+    return output_of("python", code)
+}
+
+export fn javascript(code) {
+    return output_of("javascript", code)
+}
+
+export fn languages() {
+    return installed_languages()
+}
+
+export fn can(lang) {
+    return languages().contains(lang)
+}

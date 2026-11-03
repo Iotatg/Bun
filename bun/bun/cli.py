@@ -25,6 +25,9 @@ Usage:
   bun --engine tree|vm|register|c <file.bun> choose the execution engine (default: vm)
   bun --engine register --tier <file.bun> run with the superinstructions
   bun --front-end python|bun <file.bun> choose the front end (default: python)
+  bun --lang <code>|auto <file.bun>  write Bun in another language (see: bun langs)
+  bun langs [--json]              list the language packs of the keywords
+  bun reverse <binary> [procedure] reverse engineer any binary (via REA)
   bun repl [--json]               a session; with --json it speaks JSON-RPC
   bun api [--json]                list the builtin signatures
   bun doc [<symbol>] [--json]     show the documentation
@@ -38,8 +41,11 @@ Usage:
 
 
 def run_source(source, filename="<stdin>", check=True, engine="vm",
-               program_args=None, tier=False):
-    tokens = Lexer(source).tokenize()
+               program_args=None, tier=False, lang=None):
+    if lang == "auto":
+        from . import langpacks
+        lang = langpacks.detect_auto(source)
+    tokens = Lexer(source, lang=lang).tokenize()
     program = Parser(tokens).parse()
     base_dir = os.path.dirname(os.path.abspath(filename))
     if check:
@@ -106,12 +112,12 @@ def _run_with_c_backend(source, filename, program, program_args, base_dir):
 
 
 def run_file(path, check=True, engine="vm", front_end="python",
-             program_args=None, tier=False):
+             program_args=None, tier=False, lang=None):
     if path == "-":
         source = sys.stdin.read()
         try:
             run_source(source, filename="<stdin>", check=check, engine=engine,
-                       program_args=program_args, tier=tier)
+                       program_args=program_args, tier=tier, lang=lang)
             return 0
         except BunError as error:
             print(format_error(error, source, "<stdin>"), file=sys.stderr)
@@ -127,13 +133,43 @@ def run_file(path, check=True, engine="vm", front_end="python",
             run_front_end(path, "run", check=check)
         else:
             run_source(source, filename=path, check=check, engine=engine,
-                       program_args=program_args, tier=tier)
+                       program_args=program_args, tier=tier, lang=lang)
         return 0
     except NativeExit as exit:
         return exit.status
     except BunError as error:
         print(format_error(error, source, path), file=sys.stderr)
         return 1
+
+
+def cmd_langs(args):
+    """`bun langs [--json]` — the language packs of the keywords."""
+    from . import langpacks
+    as_json = "--json" in args
+    args = [arg for arg in args if arg != "--json"]
+    if args:
+        print("error: langs takes no arguments", file=sys.stderr)
+        return 2
+    rows = langpacks.list_packs()
+    if as_json:
+        print(canonical_dump({
+            "count": len(rows),
+            "languages": [{"code": code, "name": name, "keywords": count}
+                          for code, name, count in rows],
+        }))
+        return 0
+    print("%d language packs; use one with --lang <code> or a first line"
+          " `#!lang <code>`" % len(rows))
+    for code, name, count in rows:
+        print("  %-10s %-38s %2d keywords" % (code, name, count))
+    return 0
+
+
+def cmd_reverse(args):
+    """`bun reverse <binary> [procedure]` — reverse engineer any binary
+    with the REA toolkit behind the scenes."""
+    from . import reatool
+    return reatool.cmd_reverse(args)
 
 
 def cmd_repl(args):
@@ -517,6 +553,21 @@ def main(argv=None):
         if engine != "register":
             print("error: --tier requires --engine register", file=sys.stderr)
             return 2
+    lang = None
+    if "--lang" in args:
+        index = args.index("--lang")
+        if index + 1 >= len(args):
+            print("error: --lang expects a language code (see: bun langs)",
+                  file=sys.stderr)
+            return 2
+        lang = args[index + 1]
+        del args[index:index + 2]
+        if lang != "auto":
+            from . import langpacks
+            if not langpacks.has_pack(lang):
+                print("error: unknown language pack '%s' (see: bun langs)"
+                      % lang, file=sys.stderr)
+                return 2
     if front_end == "bun" and engine == "tree":
         print("error: --front-end bun requires --engine vm", file=sys.stderr)
         return 2
@@ -530,6 +581,10 @@ def main(argv=None):
         return 0
     if args[0] == "repl":
         return cmd_repl(args[1:])
+    if args[0] == "langs":
+        return cmd_langs(args[1:])
+    if args[0] == "reverse":
+        return cmd_reverse(args[1:])
     if args[0] == "api":
         return cmd_api(args[1:])
     if args[0] == "doc":
@@ -543,4 +598,4 @@ def main(argv=None):
         rest = [arg for arg in args[1:] if arg != "--doc"]
         return cmd_test_doc(rest)
     return run_file(args[0], check=check, engine=engine, front_end=front_end,
-                    program_args=args[1:], tier=tier)
+                    program_args=args[1:], tier=tier, lang=lang)

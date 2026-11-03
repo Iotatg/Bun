@@ -1,0 +1,2 @@
+export let value = 1
+let missing = not_defined

@@ -1,3 +1,6 @@
+import unicodedata
+
+from . import langpacks
 from .tokens import Token, TokenType
 from .errors import LexError
 from .ints import fits as fits_int
@@ -74,12 +77,28 @@ _ONE_CHAR = {
 
 
 class Lexer:
-    def __init__(self, source):
+    def __init__(self, source, lang=None):
         self.source = source
         self.pos = 0
         self.line = 1
         self.col = 1
         self.tokens = []
+        if lang is None:
+            lang = langpacks.detect_directive(source)
+        self.lang = lang
+        self._hard = dict(KEYWORDS)
+        self._soft = {}
+        if lang:
+            if not langpacks.has_pack(lang):
+                raise LexError("unknown language pack '%s'" % lang, 1, 1)
+            _, table = langpacks.pack(lang)
+            for english, localized in table.items():
+                if english in langpacks.SOFT_KEYWORDS:
+                    self._soft.setdefault(localized, english)
+                elif english in KEYWORDS:
+                    self._hard.setdefault(localized, KEYWORDS[english])
+        self._split_keys = sorted(set(self._hard) | set(self._soft),
+                                  key=len, reverse=True)
 
     def tokenize(self):
         while self.pos < len(self.source):
@@ -283,13 +302,69 @@ class Lexer:
         self._advance()                 # the closing quote
         self._add(TokenType.FSTRING, body, line, col)
 
+    def _ident_char(self, ch):
+        """A character that may continue an identifier in any script."""
+        return bool(ch) and (ch.isalnum() or ch == "_" or
+                             unicodedata.category(ch) in ("Mn", "Mc", "Me"))
+
+    def _spaceless(self, text):
+        """True when the text needs keyword splitting: the scripts of
+        Chinese, Japanese, Thai and friends do not separate words with
+        spaces, so a keyword may be glued to the name after it."""
+        for ch in text:
+            code = ord(ch)
+            if (0x2E80 <= code <= 0x9FFF or 0xA960 <= code <= 0xA97F
+                    or 0xAC00 <= code <= 0xD7FF or 0x0E00 <= code <= 0x0E7F
+                    or 0x1780 <= code <= 0x17FF or 0x1000 <= code <= 0x109F):
+                return True
+        return False
+
+    def _emit_word(self, text, line, col):
+        """One identifier word: a localized or English keyword, a soft
+        keyword under its English name, or a plain identifier."""
+        if not text:
+            return
+        soft = self._soft.get(text)
+        if soft is not None:
+            self._add(TokenType.IDENT, soft, line, col)
+            return
+        keyword = self._hard.get(text)
+        if keyword is not None:
+            self._add(keyword, text, line, col)
+            return
+        if self.lang and self._spaceless(text):
+            self._split_word(text, line, col)
+            return
+        self._add(TokenType.IDENT, text, line, col)
+
+    def _split_word(self, text, line, col):
+        """Peel localized keywords off the front of a glued word."""
+        index = 0
+        plain = ""
+        while index < len(text):
+            for key in self._split_keys:
+                if text.startswith(key, index):
+                    if plain:
+                        self._add(TokenType.IDENT, plain, line,
+                                  col + index - len(plain))
+                        plain = ""
+                    self._emit_word(key, line, col + index)
+                    index += len(key)
+                    break
+            else:
+                plain += text[index]
+                index += 1
+        if plain:
+            self._add(TokenType.IDENT, plain, line,
+                      col + index - len(plain))
+
     def _identifier(self):
         line, col = self.line, self.col
         start = self.pos
-        while self._peek().isalnum() or self._peek() == "_":
+        while self._ident_char(self._peek()):
             self._advance()
         text = self.source[start:self.pos]
-        self._add(KEYWORDS.get(text, TokenType.IDENT), text, line, col)
+        self._emit_word(text, line, col)
 
     def _operator(self):
         line, col = self.line, self.col

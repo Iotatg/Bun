@@ -1,0 +1,26 @@
+// bun:rea — reverse engineer any binary from a Bun program.
+//
+// Behind this stack stands REA (the Reverse Engineer Anything toolkit)
+// with its analysis providers. Bun hands it a binary — built by C, C++,
+// Rust, Go, or by Bun's own native backend — and gets back an overview,
+// the exported functions and the decompiled code of one procedure.
+
+export fn overview(path) {
+    return rea_analyze(path)
+}
+
+export fn functions(path) {
+    return rea_exports(path)
+}
+
+export fn decompile(path, procedure) {
+    return rea_decompile(path, procedure)
+}
+
+export fn report(path) {
+    // A short human report: what the binary is, what it exposes.
+    let look = overview(path)
+    return "binary: " + str(look["subject.name"]) +
+           " | functions: " + str(look["normalized_result.procedure_count"]) +
+           " | strings: " + str(look["normalized_result.string_count"])
+}

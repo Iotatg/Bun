@@ -1970,6 +1970,48 @@ def _set(args):
     return BunSet(values)
 
 
+
+def _run_language(args):
+    if len(args) < 2 or len(args) > 4:
+        raise BunRuntimeError(
+            "run_language() expects a language, a source string and an"
+            " optional list of arguments and timeout")
+    language = args[0]
+    if not isinstance(language, str):
+        raise BunRuntimeError("run_language() expects a language name")
+    code = args[1]
+    if not isinstance(code, str):
+        raise BunRuntimeError("run_language() expects source code as a string")
+    program_args = []
+    if len(args) >= 3 and args[2] is not None:
+        if not isinstance(args[2], list):
+            raise BunRuntimeError("run_language() expects a list of arguments")
+        for item in args[2]:
+            if not isinstance(item, str):
+                raise BunRuntimeError("run_language() expects string arguments")
+            program_args.append(item)
+    timeout = 30
+    if len(args) == 4:
+        if not isinstance(args[3], (int, float)) or isinstance(args[3], bool):
+            raise BunRuntimeError("run_language() expects a timeout in seconds")
+        timeout = args[3]
+    sandbox.check_exec()
+    from . import polyglot
+    result = polyglot.run_language(language, code, program_args, timeout)
+    answer = BunDict()
+    for key, value in result.items():
+        answer.set(key, value)
+    return answer
+
+
+def _installed_languages(args):
+    if args:
+        raise BunRuntimeError("installed_languages() expects no arguments")
+    sandbox.check_exec()
+    from . import polyglot
+    return polyglot.installed_languages()
+
+
 def register_builtins(env, program_args=None):
     env.define("args", Builtin("args", _make_args(program_args)), False)
     env.define("print", Builtin("print", _print), False)
@@ -2035,6 +2077,9 @@ def register_builtins(env, program_args=None):
     env.define("list_dir", Builtin("list_dir", _list_dir), False)
     env.define("make_dir", Builtin("make_dir", _make_dir), False)
     env.define("exit", Builtin("exit", _exit), False)
+    env.define("run_language", Builtin("run_language", _run_language), False)
+    env.define("installed_languages",
+               Builtin("installed_languages", _installed_languages), False)
     env.define("sha256", Builtin("sha256", _sha256), False)
     env.define("sha1", Builtin("sha1", _sha1), False)
     env.define("md5", Builtin("md5", _md5), False)
@@ -2058,6 +2103,8 @@ def register_builtins(env, program_args=None):
     env.define("tcp_write", Builtin("tcp_write", _tcp_write), False)
     env.define("tcp_read", Builtin("tcp_read", _tcp_read), False)
     env.define("tcp_set_timeout", Builtin("tcp_set_timeout", _tcp_set_timeout), False)
+    from .extras import register_extras
+    register_extras(env)
     env.define("h2_connect", Builtin("h2_connect", _h2_connect), False)
     env.define("h2_request", Builtin("h2_request", _h2_request), False)
     env.define("h2_close", Builtin("h2_close", _h2_close), False)

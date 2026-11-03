@@ -154,6 +154,109 @@ DOCS = {
         "details": "The timeout is optional and counts the seconds the command may run.",
         "example": "var result = exec([\"echo\", \"hi\"], 10)\nprint(result[\"status\"])\n",
     },
+    "installed_languages": {
+        "signature": "installed_languages() -> list",
+        "summary": "The languages of this machine a Bun program can call.",
+        "example": "print(installed_languages())\n",
+    },
+    "run_language": {
+        "signature": "run_language(language: string, code: string, args: list, timeout: number) -> dict",
+        "summary": "Run a piece of code in another language and return its answer.",
+        "details": "The answer carries ok, status, stdout, stderr and seconds. Compiled languages (c, cpp, rust, go, java) are built once and cached. See the languages of the machine with installed_languages().",
+        "example": "let answer = run_language(\"python\", \"print(6 * 7)\")\nprint(answer[\"stdout\"])\n",
+    },
+    "regex_match": {
+        "signature": "regex_match(pattern: string, text: string) -> bool",
+        "summary": "True when the whole text matches the pattern.",
+    },
+    "regex_search": {
+        "signature": "regex_search(pattern: string, text: string) -> string",
+        "summary": "The first piece of the text that matches, or null.",
+    },
+    "regex_findall": {
+        "signature": "regex_findall(pattern: string, text: string) -> list",
+        "summary": "Every piece of the text that matches.",
+    },
+    "regex_replace": {
+        "signature": "regex_replace(pattern: string, replacement: string, text: string) -> string",
+        "summary": "Replace every match of the pattern in the text.",
+    },
+    "regex_groups": {
+        "signature": "regex_groups(pattern: string, text: string) -> list",
+        "summary": "The capture groups of the first match, or null.",
+    },
+    "csv_parse": {
+        "signature": "csv_parse(text: string) -> list",
+        "summary": "The rows of a CSV table as lists of cells.",
+    },
+    "csv_build": {
+        "signature": "csv_build(rows: list) -> string",
+        "summary": "A CSV table built from rows of cells.",
+    },
+    "html_escape": {
+        "signature": "html_escape(text: string) -> string",
+        "summary": "Turn the markup characters of a text into entities.",
+    },
+    "html_unescape": {
+        "signature": "html_unescape(text: string) -> string",
+        "summary": "Turn the entities of a text back into characters.",
+    },
+    "split_lines": {
+        "signature": "split_lines(text: string) -> list",
+        "summary": "The lines of a text, without the line ends.",
+    },
+    "slugify": {
+        "signature": "slugify(text: string) -> string",
+        "summary": "A text turned into a url-friendly slug.",
+    },
+    "gcd": {
+        "signature": "gcd(a: int, b: int) -> int",
+        "summary": "The greatest common divisor.",
+    },
+    "lcm": {
+        "signature": "lcm(a: int, b: int) -> int",
+        "summary": "The least common multiple.",
+    },
+    "factorial": {
+        "signature": "factorial(n: int) -> int",
+        "summary": "The product of 1 to n.",
+    },
+    "clamp": {
+        "signature": "clamp(value: number, low: number, high: number) -> number",
+        "summary": "The value kept inside the bounds.",
+    },
+    "sign": {
+        "signature": "sign(value: number) -> int",
+        "summary": "-1, 0 or 1.",
+    },
+    "now_ms": {
+        "signature": "now_ms() -> int",
+        "summary": "The time of the machine in milliseconds.",
+    },
+    "uuid": {
+        "signature": "uuid() -> string",
+        "summary": "A fresh random UUID (version 4).",
+    },
+    "crc32": {
+        "signature": "crc32(data: any) -> int",
+        "summary": "The CRC-32 checksum of a text or bytes.",
+    },
+    "file_size": {
+        "signature": "file_size(path: string) -> int",
+        "summary": "The size of a file in bytes, or null when it is not there.",
+    },
+    "rea_analyze": {
+        "signature": "rea_analyze(path: string) -> dict",
+        "summary": "The overview REA builds of any binary.",
+    },
+    "rea_exports": {
+        "signature": "rea_exports(path: string) -> string",
+        "summary": "The exported functions REA finds in a binary.",
+    },
+    "rea_decompile": {
+        "signature": "rea_decompile(path: string, procedure: string) -> string",
+        "summary": "The decompiled code of one procedure of a binary.",
+    },
     "exit": {
         "signature": "exit(code: int)",
         "summary": "Stop the program with an exit code.",
