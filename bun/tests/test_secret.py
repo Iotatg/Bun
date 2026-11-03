@@ -3,7 +3,7 @@
 import pytest
 
 from bun.cli import run_source
-from bun.errors import BunRuntimeError
+from bun.errors import BunRuntimeError, BunTypeError
 
 
 def run_both(source, capsys):
@@ -99,7 +99,7 @@ def test_secret_equality_compares_the_wrapped_value(capsys):
 
 
 def test_reveal_on_a_plain_value_is_an_error():
-    with pytest.raises(BunRuntimeError) as info:
+    with pytest.raises(BunTypeError) as info:
         run_source('print("abc".reveal())\n', filename="<test>.bun",
                    check=True, engine="vm")
     assert "reveal" in info.value.msg

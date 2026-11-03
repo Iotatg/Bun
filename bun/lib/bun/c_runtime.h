@@ -27,6 +27,8 @@
 #include <setjmp.h>
 #include <ctype.h>
 #include <errno.h>
+#include <pthread.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* The values                                                          */
@@ -43,7 +45,8 @@ typedef enum {
     BUN_SET,
     BUN_FUNC,
     BUN_BUILTIN,
-    BUN_SECRET
+    BUN_SECRET,
+    BUN_STRUCT
 } BunTag;
 
 typedef struct BunEnv BunEnv;
@@ -74,6 +77,7 @@ typedef struct BunParam {
     int has_default;
     BunFn default_code;
     int slot;              /* the slot of the frame, or -1 for the environment */
+    int borrowed;          /* the value is not copied when it is bound */
 } BunParam;
 
 struct BunObj {
@@ -96,6 +100,8 @@ struct BunObj {
     int *index;          /* the open addressing table of the keys */
     int index_size;
     BunValue secret;     /* the value that a secret holds */
+    const char **field_names;  /* the names of the fields of a struct */
+    BunValue *field_values;    /* the values of the fields of a struct */
 };
 
 #define BUN_VALUE(tag) ((BunValue){ (tag), { 0 } })
@@ -139,6 +145,8 @@ typedef struct BunIter {
     size_t at;
     int is_string;
     BunObj *text;
+    int is_object;        /* the iterator answers 'next' */
+    BunValue object;      /* the value of the iterator protocol */
 } BunIter;
 
 /* ------------------------------------------------------------------ */
@@ -150,7 +158,48 @@ typedef struct BunArenaBlock {
     void *data;
 } BunArenaBlock;
 
-static BunArenaBlock *bun_arena = NULL;
+/* The arena of the thread.  A task of the program runs on a thread of
+   its own, and it allocates in an arena of its own, so a lock is not
+   taken on every allocation.  When the thread of a task ends, its arena
+   moves to the list of the ended tasks: the value a task made is still
+   there for the task that joins it. */
+static _Thread_local BunArenaBlock *bun_thread_arena = NULL;
+static pthread_mutex_t bun_arena_lock = PTHREAD_MUTEX_INITIALIZER;
+static BunArenaBlock *bun_ended_arena = NULL;
+static pthread_key_t bun_arena_key;
+static int bun_arena_key_made = 0;
+
+static void bun_arena_migrate(void) {
+    BunArenaBlock *block;
+    if (bun_thread_arena == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&bun_arena_lock);
+    block = bun_thread_arena;
+    while (block->next != NULL) {
+        block = block->next;
+    }
+    block->next = bun_ended_arena;
+    bun_ended_arena = bun_thread_arena;
+    bun_thread_arena = NULL;
+    pthread_mutex_unlock(&bun_arena_lock);
+}
+
+static void bun_arena_thread_end(void *value) {
+    (void)value;
+    bun_arena_migrate();
+}
+
+static void bun_arena_init_thread(void) {
+    if (!bun_arena_key_made) {
+        if (pthread_key_create(&bun_arena_key, bun_arena_thread_end) == 0) {
+            bun_arena_key_made = 1;
+        }
+    }
+    if (bun_arena_key_made) {
+        pthread_setspecific(bun_arena_key, (void *)&bun_arena_key_made);
+    }
+}
 
 static void *bun_alloc(size_t size) {
     BunArenaBlock *block = (BunArenaBlock *)malloc(sizeof(BunArenaBlock));
@@ -160,20 +209,24 @@ static void *bun_alloc(size_t size) {
         exit(1);
     }
     block->data = data;
-    block->next = bun_arena;
-    bun_arena = block;
+    block->next = bun_thread_arena;
+    bun_thread_arena = block;
     return data;
 }
 
 static void bun_arena_release(void) {
-    BunArenaBlock *block = bun_arena;
+    BunArenaBlock *block;
+    bun_arena_migrate();
+    pthread_mutex_lock(&bun_arena_lock);
+    block = bun_ended_arena;
     while (block) {
         BunArenaBlock *next = block->next;
         free(block->data);
         free(block);
         block = next;
     }
-    bun_arena = NULL;
+    bun_ended_arena = NULL;
+    pthread_mutex_unlock(&bun_arena_lock);
 }
 
 static BunObj *bun_new_obj(BunTag tag) {
@@ -204,8 +257,8 @@ extern const BunHint bun_hints[];
    system keeps the values of a loop in the registers of the machine when
    the two places are written apart, and the loop of a program is the place
    where the speed matters most. */
-static int bun_error_line = 0;
-static int bun_error_col = 0;
+static _Thread_local int bun_error_line = 0;
+static _Thread_local int bun_error_col = 0;
 
 /* Write the position of the source before an instruction that can fail. */
 static void bun_at(int line, int col) {
@@ -272,8 +325,8 @@ typedef struct BunHandler {
     struct BunHandler *prev;
 } BunHandler;
 
-static BunHandler *bun_handler = NULL;
-static char bun_error_message[8192];
+static _Thread_local BunHandler *bun_handler = NULL;
+static _Thread_local char bun_error_message[8192];
 
 static void bun_throw(const char *format, ...) {
     va_list args;
@@ -344,6 +397,11 @@ static size_t bun_hash_name(const char *name) {
     }
     return hash;
 }
+
+/* The copy of a value.  A struct is a value type, so a copy of a struct
+ * is a new struct with the same fields.  Every other value is shared. */
+static BunValue bun_copy_value(BunValue value);
+static const char *bun_type_name(BunValue value);
 
 /* The size of the table of an environment is always a power of two, so
  * the slot of a name is a mask and not a division.  A division costs
@@ -424,7 +482,10 @@ static BunValue bun_env_get(BunEnv *env, const char *name) {
 
 static void bun_env_define(BunEnv *env, const char *name, BunValue value,
                             int mutable) {
-    bun_env_set(env, name, value, mutable);
+    /* A name holds a copy of the value, because a struct is a value
+     * type: the program that holds the name and the program that made
+     * the value do not share it. */
+    bun_env_set(env, name, bun_copy_value(value), mutable);
 }
 
 static void bun_env_assign(BunEnv *env, const char *name, BunValue value) {
@@ -434,7 +495,7 @@ static void bun_env_assign(BunEnv *env, const char *name, BunValue value) {
             if (!env->entries[position].mutable) {
                 bun_throw("cannot assign to immutable variable '%s'", name);
             }
-            env->entries[position].value = value;
+            env->entries[position].value = bun_copy_value(value);
             return;
         }
         env = env->parent;
@@ -552,6 +613,135 @@ static BunValue bun_str_concat(BunValue left, BunValue right) {
     object->len = len;
     object->data = data;
     return bun_obj_value(object);
+}
+
+/* ------------------------------------------------------------------ */
+/* The structs                                                         */
+/* ------------------------------------------------------------------ */
+
+/* A struct is a value type.  The value of a struct is copied when it
+ * is put in a name, when it is given to a function and when it is the
+ * answer of a function, so two names never share one struct.  The copy
+ * is deep: a struct that holds a struct holds a copy of it. */
+
+static BunValue bun_copy_value(BunValue value) {
+    if (value.tag != BUN_STRUCT) {
+        return value;
+    }
+    BunObj *object = value.as.obj;
+    size_t count = object->count;
+    BunObj *copy = bun_new_obj(BUN_STRUCT);
+    copy->name = object->name;
+    copy->count = count;
+    copy->cap = count;
+    copy->field_names = object->field_names;
+    copy->field_values =
+        (BunValue *)bun_alloc(sizeof(BunValue) * (count ? count : 1));
+    for (size_t index = 0; index < count; index++) {
+        copy->field_values[index] = bun_copy_value(object->field_values[index]);
+    }
+    return bun_obj_value(copy);
+}
+
+static BunValue bun_struct_new(const char *type_name, const char **names,
+                                BunValue *values, int count) {
+    BunObj *object = bun_new_obj(BUN_STRUCT);
+    object->name = type_name;
+    object->count = (size_t)count;
+    object->cap = (size_t)count;
+    object->field_names =
+        (const char **)bun_alloc(sizeof(char *) * (count ? count : 1));
+    object->field_values =
+        (BunValue *)bun_alloc(sizeof(BunValue) * (count ? count : 1));
+    for (int index = 0; index < count; index++) {
+        object->field_names[index] = names[index];
+        object->field_values[index] = bun_copy_value(values[index]);
+    }
+    return bun_obj_value(object);
+}
+
+static int bun_struct_field(BunObj *object, const char *name) {
+    for (size_t index = 0; index < object->count; index++) {
+        if (strcmp(object->field_names[index], name) == 0) {
+            return (int)index;
+        }
+    }
+    return -1;
+}
+
+static BunValue bun_get_field(BunValue value, const char *name) {
+    if (value.tag != BUN_STRUCT) {
+        bun_throw("type '%s' has no field '%s'", bun_type_name(value), name);
+    }
+    BunObj *object = value.as.obj;
+    int index = bun_struct_field(object, name);
+    if (index < 0) {
+        bun_throw("unknown field '%s' on %s", name, object->name);
+    }
+    return object->field_values[index];
+}
+
+static void bun_set_field(BunValue value, const char *name, BunValue field) {
+    if (value.tag != BUN_STRUCT) {
+        bun_throw("type '%s' has no field '%s'", bun_type_name(value), name);
+    }
+    BunObj *object = value.as.obj;
+    int index = bun_struct_field(object, name);
+    if (index < 0) {
+        bun_throw("unknown field '%s' on %s", name, object->name);
+    }
+    object->field_values[index] = bun_copy_value(field);
+}
+
+/* The methods of the structs.  The table is filled when the program
+ * runs an `impl` block, and the table of the machine is filled the same
+ * way, so a method is found the same way under both. */
+
+typedef struct BunStructMethod {
+    const char *type_name;
+    const char *method;
+    BunFn fn;
+    BunEnv *closure;
+} BunStructMethod;
+
+#define BUN_MAX_STRUCT_METHODS 256
+static BunStructMethod bun_struct_methods[BUN_MAX_STRUCT_METHODS];
+static int bun_struct_method_count = 0;
+
+static void bun_register_struct_method(const char *type_name, const char *method,
+                                        BunFn fn, BunEnv *closure) {
+    for (int index = 0; index < bun_struct_method_count; index++) {
+        BunStructMethod *entry = &bun_struct_methods[index];
+        if (strcmp(entry->type_name, type_name) == 0 &&
+            strcmp(entry->method, method) == 0) {
+            entry->fn = fn;
+            entry->closure = closure;
+            return;
+        }
+    }
+    if (bun_struct_method_count >= BUN_MAX_STRUCT_METHODS) {
+        bun_throw("too many methods of structs");
+    }
+    BunStructMethod *entry = &bun_struct_methods[bun_struct_method_count++];
+    entry->type_name = type_name;
+    entry->method = method;
+    entry->fn = fn;
+    entry->closure = closure;
+}
+
+static BunFn bun_find_struct_method(const char *type_name, const char *method,
+                                     BunEnv **closure) {
+    for (int index = 0; index < bun_struct_method_count; index++) {
+        BunStructMethod *entry = &bun_struct_methods[index];
+        if (strcmp(entry->type_name, type_name) == 0 &&
+            strcmp(entry->method, method) == 0) {
+            if (closure != NULL) {
+                *closure = entry->closure;
+            }
+            return entry->fn;
+        }
+    }
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1118,6 +1308,26 @@ static int bun_values_equal_slow(BunValue left, BunValue right) {
         }
         return 1;
     }
+    if (left.tag == BUN_STRUCT || right.tag == BUN_STRUCT) {
+        if (left.tag != BUN_STRUCT || right.tag != BUN_STRUCT) {
+            return 0;
+        }
+        BunObj *a = left.as.obj;
+        BunObj *b = right.as.obj;
+        if (strcmp(a->name, b->name) != 0 || a->count != b->count) {
+            return 0;
+        }
+        for (size_t index = 0; index < a->count; index++) {
+            if (strcmp(a->field_names[index], b->field_names[index]) != 0) {
+                return 0;
+            }
+            if (!bun_values_equal(a->field_values[index],
+                                  b->field_values[index])) {
+                return 0;
+            }
+        }
+        return 1;
+    }
     return 0;
 }
 
@@ -1297,6 +1507,38 @@ static char *bun_stringify(BunValue value) {
         snprintf(out, 64, "<builtin %s>", value.as.obj->name);
         return out;
     }
+    case BUN_STRUCT: {
+        BunObj *object = value.as.obj;
+        size_t size = strlen(object->name) + 3;
+        for (size_t index = 0; index < object->count; index++) {
+            size += strlen(object->field_names[index]) +
+                    strlen(bun_stringify(object->field_values[index])) + 4;
+        }
+        char *out = (char *)bun_alloc(size);
+        size_t at = 0;
+        size_t len = strlen(object->name);
+        memcpy(out + at, object->name, len);
+        at += len;
+        out[at++] = '{';
+        for (size_t index = 0; index < object->count; index++) {
+            if (index) {
+                out[at++] = ',';
+                out[at++] = ' ';
+            }
+            len = strlen(object->field_names[index]);
+            memcpy(out + at, object->field_names[index], len);
+            at += len;
+            out[at++] = ':';
+            out[at++] = ' ';
+            const char *item = bun_stringify(object->field_values[index]);
+            len = strlen(item);
+            memcpy(out + at, item, len);
+            at += len;
+        }
+        out[at++] = '}';
+        out[at] = '\0';
+        return out;
+    }
     }
     return "null";
 }
@@ -1410,6 +1652,38 @@ static char *bun_repr(BunValue value) {
         out[at] = '\0';
         return out;
     }
+    if (value.tag == BUN_STRUCT) {
+        BunObj *object = value.as.obj;
+        size_t size = strlen(object->name) + 3;
+        for (size_t index = 0; index < object->count; index++) {
+            size += strlen(object->field_names[index]) +
+                    strlen(bun_repr(object->field_values[index])) + 4;
+        }
+        char *out = (char *)bun_alloc(size);
+        size_t at = 0;
+        size_t len = strlen(object->name);
+        memcpy(out + at, object->name, len);
+        at += len;
+        out[at++] = '{';
+        for (size_t index = 0; index < object->count; index++) {
+            if (index) {
+                out[at++] = ',';
+                out[at++] = ' ';
+            }
+            len = strlen(object->field_names[index]);
+            memcpy(out + at, object->field_names[index], len);
+            at += len;
+            out[at++] = ':';
+            out[at++] = ' ';
+            const char *item = bun_repr(object->field_values[index]);
+            len = strlen(item);
+            memcpy(out + at, item, len);
+            at += len;
+        }
+        out[at++] = '}';
+        out[at] = '\0';
+        return out;
+    }
     return bun_stringify(value);
 }
 
@@ -1439,6 +1713,8 @@ static const char *bun_type_name(BunValue value) {
         return "builtin";
     case BUN_SECRET:
         return "secret";
+    case BUN_STRUCT:
+        return value.as.obj->name;
     }
     return "value";
 }
@@ -1472,6 +1748,8 @@ static const char *bun_public_type_name(BunValue value) {
         return "any";
     case BUN_SECRET:
         return "secret";
+    case BUN_STRUCT:
+        return "any";
     }
     return "any";
 }
@@ -1634,6 +1912,118 @@ static BunValue bun_builtin_dump(BunValue *args, int count) {
         bun_throw("dump() expects 1 argument, got %d", count);
     }
     return bun_str_from_c(bun_canonical_dump(args[0]));
+}
+
+static BunValue bun_builtin_Ok(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("Ok() expects 1 argument");
+    }
+    BunValue result = bun_dict_new();
+    bun_dict_set(result.as.obj, bun_str_from_c("ok"), args[0]);
+    return result;
+}
+
+static BunValue bun_builtin_Err(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("Err() expects 1 argument");
+    }
+    BunValue result = bun_dict_new();
+    bun_dict_set(result.as.obj, bun_str_from_c("err"), args[0]);
+    return result;
+}
+
+static BunValue bun_builtin_is_ok(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_ok() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("ok")));
+}
+
+static BunValue bun_builtin_is_err(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_err() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    BunObj *dict = args[0].as.obj;
+    return bun_bool_value(bun_dict_has(dict, bun_str_from_c("err"))
+                         && !bun_dict_has(dict, bun_str_from_c("ok")));
+}
+
+/* The builtins of an option: `some(v)` is an option that carries a
+   value, `none()` is an option that carries nothing, and the two `is_`
+   builtins report which one it is without taking the value apart. */
+static BunValue bun_builtin_some(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("some() expects 1 argument");
+    }
+    BunValue option = bun_dict_new();
+    bun_dict_set(option.as.obj, bun_str_from_c("some"), args[0]);
+    return option;
+}
+
+static BunValue bun_builtin_none(BunValue *args, int count) {
+    if (count != 0) {
+        bun_throw("none() expects no argument");
+    }
+    (void)args;
+    BunValue option = bun_dict_new();
+    bun_dict_set(option.as.obj, bun_str_from_c("none"), bun_null_value());
+    return option;
+}
+
+static BunValue bun_builtin_is_some(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_some() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("some")));
+}
+
+static BunValue bun_builtin_is_none(BunValue *args, int count) {
+    if (count != 1) {
+        bun_throw("is_none() expects 1 argument");
+    }
+    if (args[0].tag != BUN_DICT) {
+        return bun_bool_value(0);
+    }
+    return bun_bool_value(bun_dict_has(args[0].as.obj, bun_str_from_c("none")));
+}
+
+/* Take the payload of a Result or of an option, or hand it back.
+   A Result is a dict with an `ok` key or an `err` key, and an option is
+   a dict with a `some` key or a `none` key.  The payload key wins when
+   the dict has one, so `Ok` wins over `Err` and `some` wins over `none`.
+   A value that is neither is an error.  The return is 1 when `out` holds
+   the unwrapped value, and 0 when the caller has to return the value
+   itself, so a `?` on a value that carries nothing gives it back to the
+   caller. */
+static int bun_unwrap_result(BunValue value, BunValue *out) {
+    if (value.tag != BUN_DICT) {
+        bun_throw("'?' expects a Result or an option value, got %s", bun_public_type_name(value));
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("ok"))) {
+        *out = bun_dict_get_c(value.as.obj, "ok");
+        return 1;
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("some"))) {
+        *out = bun_dict_get_c(value.as.obj, "some");
+        return 1;
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("err"))) {
+        return 0;
+    }
+    if (bun_dict_has(value.as.obj, bun_str_from_c("none"))) {
+        return 0;
+    }
+    bun_throw("'?' expects a Result or an option value");
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2262,6 +2652,7 @@ typedef struct BunPlan {
 #define BUN_PLAN_LIST 6
 #define BUN_PLAN_DICT 7
 #define BUN_PLAN_OR 8
+#define BUN_PLAN_STRUCT 9
 
 /* The names a pattern binds.  They are collected first and applied after,
  * so a pattern that fails halfway leaves nothing behind. */
@@ -2398,6 +2789,31 @@ static int bun_match_plan(BunValue value, const BunPlan *plan,
             }
         }
         return 0;
+    }
+    case BUN_PLAN_STRUCT: {
+        /* A struct of the named type, with its fields matched the way
+         * the entries of a dict are matched. */
+        if (value.tag != BUN_STRUCT) {
+            return 0;
+        }
+        if (plan->literal.tag != BUN_STR) {
+            return 0;
+        }
+        BunObj *object = value.as.obj;
+        if (strcmp(object->name, plan->literal.as.obj->data) != 0) {
+            return 0;
+        }
+        for (int index = 0; index < plan->count; index++) {
+            int at = bun_struct_field(object, plan->keys[index]);
+            if (at < 0) {
+                return 0;
+            }
+            if (!bun_match_plan(object->field_values[at],
+                                plan->values[index], out)) {
+                return 0;
+            }
+        }
+        return 1;
     }
     }
     return 0;
@@ -2828,7 +3244,10 @@ static BunValue bun_builtin_len(BunValue *args, int count) {
     if (args[0].tag == BUN_LIST) {
         return bun_int_value((int64_t)args[0].as.obj->count);
     }
-    bun_throw("len() expects a string or list");
+    if (args[0].tag == BUN_DICT) {
+        return bun_int_value((int64_t)args[0].as.obj->count);
+    }
+    bun_throw("len() expects a string, a list or a dict");
     return bun_null_value();
 }
 
@@ -3384,8 +3803,30 @@ static void bun_check_int(const char *name, BunValue value) {
     }
 }
 
+static void bun_check_callable(BunValue value) {
+    if (value.tag != BUN_FUNC && value.tag != BUN_BUILTIN) {
+        bun_throw("%s is not callable", bun_stringify(value));
+    }
+}
+
 static BunValue bun_method_call(BunValue receiver, const char *method,
                                 BunValue *args, int count) {
+    if (receiver.tag == BUN_STRUCT) {
+        /* A method of a struct borrows the receiver: the mutation of a
+         * field through `self` is seen by the caller. */
+        BunObj *object = receiver.as.obj;
+        BunEnv *closure = NULL;
+        BunFn fn = bun_find_struct_method(object->name, method, &closure);
+        if (fn == NULL) {
+            bun_throw("unknown method '%s' on %s", method, object->name);
+        }
+        BunValue call_args[count + 1];
+        call_args[0] = receiver;
+        for (int index = 0; index < count; index++) {
+            call_args[index + 1] = args[index];
+        }
+        return fn(closure, call_args, count + 1, bun_null_value());
+    }
     if (receiver.tag == BUN_STR) {
         BunObj *text = receiver.as.obj;
 
@@ -3603,31 +4044,106 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                 return bun_slice(receiver, args[0], args[1], bun_null_value());
             }
             if (strcmp(method, "sort") == 0) {
-                bun_arity(method, count, 0);
-                int numbers = 0;
-                int strings = 0;
-                for (size_t index = 0; index < list->count; index++) {
-                    BunValue item = list->items[index];
-                    if (item.tag == BUN_STR) {
-                        strings++;
-                    } else if (item.tag == BUN_INT || item.tag == BUN_FLOAT) {
-                        numbers++;
-                    } else {
+                if (count > 1) {
+                    bun_throw("'sort' expects 0 or 1 argument(s), got %d",
+                              count);
+                }
+                if (count == 0) {
+                    int numbers = 0;
+                    int strings = 0;
+                    for (size_t index = 0; index < list->count; index++) {
+                        BunValue item = list->items[index];
+                        if (item.tag == BUN_STR) {
+                            strings++;
+                        } else if (item.tag == BUN_INT || item.tag == BUN_FLOAT) {
+                            numbers++;
+                        } else {
+                            bun_throw("cannot sort list with mixed types");
+                        }
+                    }
+                    if (numbers && strings) {
                         bun_throw("cannot sort list with mixed types");
                     }
+                    for (size_t index = 1; index < list->count; index++) {
+                        BunValue item = list->items[index];
+                        size_t at = index;
+                        while (at > 0 && bun_truthy(bun_compare(list->items[at - 1],
+                                                               item, 2))) {
+                            list->items[at] = list->items[at - 1];
+                            at--;
+                        }
+                        list->items[at] = item;
+                    }
+                    return bun_null_value();
                 }
-                if (numbers && strings) {
-                    bun_throw("cannot sort list with mixed types");
-                }
+                bun_check_callable(args[0]);
+                int sort_line = bun_error_line;
+                int sort_col = bun_error_col;
                 for (size_t index = 1; index < list->count; index++) {
                     BunValue item = list->items[index];
                     size_t at = index;
-                    while (at > 0 && bun_truthy(bun_compare(list->items[at - 1],
-                                                           item, 2))) {
+                    while (at > 0) {
+                        BunValue call_args[2];
+                        call_args[0] = list->items[at - 1];
+                        call_args[1] = item;
+                        BunValue answer = bun_call(args[0], call_args, 2,
+                                                   bun_null_value());
+                        if (answer.tag != BUN_INT && answer.tag != BUN_FLOAT) {
+                            bun_at(sort_line, sort_col);
+                            bun_throw("'sort' expects a number from the comparator");
+                        }
+                        if (bun_as_double(answer) <= 0) {
+                            break;
+                        }
                         list->items[at] = list->items[at - 1];
                         at--;
                     }
                     list->items[at] = item;
+                }
+                return bun_null_value();
+            }
+            if (strcmp(method, "sort_by") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                size_t total = list->count;
+                if (total == 0) {
+                    return bun_null_value();
+                }
+                BunValue *keys = (BunValue *)bun_alloc(sizeof(BunValue) * total);
+                int numbers = 0;
+                int strings = 0;
+                int by_line = bun_error_line;
+                int by_col = bun_error_col;
+                for (size_t index = 0; index < total; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue key = bun_call(args[0], call_args, 1,
+                                            bun_null_value());
+                    keys[index] = key;
+                    if (key.tag == BUN_STR) {
+                        strings++;
+                    } else if (key.tag == BUN_INT || key.tag == BUN_FLOAT) {
+                        numbers++;
+                    } else {
+                        bun_at(by_line, by_col);
+                        bun_throw("cannot sort list with mixed types");
+                    }
+                }
+                if (numbers && strings) {
+                    bun_at(by_line, by_col);
+                    bun_throw("cannot sort list with mixed types");
+                }
+                for (size_t index = 1; index < total; index++) {
+                    BunValue item = list->items[index];
+                    BunValue key = keys[index];
+                    size_t at = index;
+                    while (at > 0 && bun_truthy(bun_compare(keys[at - 1], key, 2))) {
+                        list->items[at] = list->items[at - 1];
+                        keys[at] = keys[at - 1];
+                        at--;
+                    }
+                    list->items[at] = item;
+                    keys[at] = key;
                 }
                 return bun_null_value();
             }
@@ -3706,6 +4222,107 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                     bun_list_push(result.as.obj, list->items[index - 1]);
                 }
                 return result;
+            }
+            if (strcmp(method, "reduce") == 0) {
+                bun_arity(method, count, 2);
+                bun_check_callable(args[1]);
+                BunValue acc = args[0];
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[2];
+                    call_args[0] = acc;
+                    call_args[1] = list->items[index];
+                    acc = bun_call(args[1], call_args, 2, bun_null_value());
+                }
+                return acc;
+            }
+            break;
+        case 'm':
+            if (strcmp(method, "map") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                BunValue result = bun_list_new();
+                bun_list_reserve(result.as.obj, list->count);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    bun_list_push(result.as.obj,
+                                  bun_call(args[0], call_args, 1,
+                                           bun_null_value()));
+                }
+                return result;
+            }
+            break;
+        case 'f':
+            if (strcmp(method, "filter") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                BunValue result = bun_list_new();
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        bun_list_push(result.as.obj, list->items[index]);
+                    }
+                }
+                return result;
+            }
+            if (strcmp(method, "find") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        return list->items[index];
+                    }
+                }
+                return bun_null_value();
+            }
+            break;
+        case 'a':
+            if (strcmp(method, "any") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (bun_truthy(answer)) {
+                        return bun_bool_value(1);
+                    }
+                }
+                return bun_bool_value(0);
+            }
+            if (strcmp(method, "all") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    BunValue answer = bun_call(args[0], call_args, 1,
+                                               bun_null_value());
+                    if (!bun_truthy(answer)) {
+                        return bun_bool_value(0);
+                    }
+                }
+                return bun_bool_value(1);
+            }
+            break;
+        case 'e':
+            if (strcmp(method, "each") == 0) {
+                bun_arity(method, count, 1);
+                bun_check_callable(args[0]);
+                for (size_t index = 0; index < list->count; index++) {
+                    BunValue call_args[1];
+                    call_args[0] = list->items[index];
+                    bun_call(args[0], call_args, 1, bun_null_value());
+                }
+                return bun_null_value();
             }
             break;
         case 'i':
@@ -3793,6 +4410,20 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
                 BunValue result = bun_list_new();
                 for (size_t index = 0; index < dict->count; index++) {
                     bun_list_push(result.as.obj, dict->values[index]);
+                }
+                return result;
+            }
+            break;
+        case 'i':
+            if (strcmp(method, "items") == 0) {
+                bun_arity(method, count, 0);
+                BunValue result = bun_list_new();
+                bun_list_reserve(result.as.obj, dict->count);
+                for (size_t index = 0; index < dict->count; index++) {
+                    BunValue pair = bun_list_new();
+                    bun_list_push(pair.as.obj, dict->keys[index]);
+                    bun_list_push(pair.as.obj, dict->values[index]);
+                    bun_list_push(result.as.obj, pair);
                 }
                 return result;
             }
@@ -3890,11 +4521,17 @@ static BunValue bun_method_call(BunValue receiver, const char *method,
 
 static void bun_bind_one(BunEnv *env, BunValue *slots,
                           const BunParam *param, BunValue value) {
+    /* The arguments of a call are copied, because a struct is a value
+     * type.  The receiver of a method is borrowed, and it is not
+     * copied. */
+    if (!param->borrowed) {
+        value = bun_copy_value(value);
+    }
     if (slots != NULL && param->slot >= 0) {
         slots[param->slot] = value;
         return;
     }
-    bun_env_define(env, param->name, value, 1);
+    bun_env_set(env, param->name, value, 1);
 }
 
 /* The slow path of the binding of the arguments.  It is not inlined
@@ -4061,6 +4698,8 @@ static BunIter bun_iter_new(BunValue value) {
     iter.is_string = 0;
     iter.text = NULL;
     iter.items = NULL;
+    iter.is_object = 0;
+    iter.object = value;
     if (value.tag == BUN_LIST) {
         iter.items = value.as.obj->items;
         iter.count = value.as.obj->count;
@@ -4074,6 +4713,15 @@ static BunIter bun_iter_new(BunValue value) {
         iter.is_string = 1;
         iter.text = value.as.obj;
         iter.count = value.as.obj->len;
+    } else if (value.tag == BUN_STRUCT) {
+        /* A value of a struct is an iterator when it has a `next`
+           method: the method answers with an option, a `some` is the
+           next item and a `none` is the end of the sequence. */
+        BunObj *object = value.as.obj;
+        if (bun_find_struct_method(object->name, "next", NULL) == NULL) {
+            bun_throw("value is not iterable");
+        }
+        iter.is_object = 1;
     } else {
         bun_throw("value is not iterable");
     }
@@ -4081,6 +4729,17 @@ static BunIter bun_iter_new(BunValue value) {
 }
 
 static int bun_iter_next(BunIter *iter, BunValue *out) {
+    if (iter->is_object) {
+        BunValue step = bun_method_call(iter->object, "next", NULL, 0);
+        if (step.tag != BUN_DICT) {
+            bun_throw("the 'next' method has to answer with an option");
+        }
+        if (bun_dict_has(step.as.obj, bun_str_from_c("some"))) {
+            *out = bun_dict_get_c(step.as.obj, "some");
+            return 1;
+        }
+        return 0;
+    }
     if (iter->at >= iter->count) {
         return 0;
     }
@@ -4091,6 +4750,309 @@ static int bun_iter_next(BunIter *iter, BunValue *out) {
     }
     iter->at++;
     return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* The tasks and the groups                                            */
+/* ------------------------------------------------------------------ */
+
+/* A task is the record of a `spawn`: its thread, its answer, its failure
+   and the flag of a `cancel`.  A group is the record of a `scope`: the
+   tasks that were spawned while the group was open.  A task of the group
+   is joined before the scope ends, and the first failure of a child is
+   the failure of the scope. */
+
+typedef struct BunTask {
+    int id;
+    pthread_t thread;
+    int started;
+    int done;
+    int cancelled;
+    int has_error;
+    BunValue error;
+    BunValue result;
+    BunValue function;
+    struct BunGroup *group;
+} BunTask;
+
+typedef struct BunGroup {
+    BunTask **items;
+    int count;
+    int size;
+    struct BunGroup *previous;
+} BunGroup;
+
+#define BUN_MAX_TASKS 4096
+
+static BunTask *bun_task_registry[BUN_MAX_TASKS];
+static int bun_task_count = 0;
+static pthread_mutex_t bun_task_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local BunGroup *bun_current_group = NULL;
+static _Thread_local BunTask *bun_current_task = NULL;
+
+static BunTask *bun_task_new(BunValue function) {
+    BunTask *task = (BunTask *)bun_alloc(sizeof(BunTask));
+    task->id = 0;
+    task->started = 0;
+    task->done = 0;
+    task->cancelled = 0;
+    task->has_error = 0;
+    task->error = bun_null_value();
+    task->result = bun_null_value();
+    task->function = function;
+    task->group = bun_current_group;
+    return task;
+}
+
+/* The task is registered in the registry of the program and, while a
+   group is open, in the group of the scope.  The two lists are guarded:
+   the program joins a task while another task is still running, and a
+   task of the group may spawn a task of its own. */
+static int bun_task_register(BunTask *task) {
+    pthread_mutex_lock(&bun_task_lock);
+    if (bun_task_count >= BUN_MAX_TASKS) {
+        pthread_mutex_unlock(&bun_task_lock);
+        return 0;
+    }
+    bun_task_registry[bun_task_count++] = task;
+    task->id = bun_task_count - 1;
+    if (task->group != NULL) {
+        if (task->group->count >= task->group->size) {
+            int size = task->group->size * 2;
+            BunTask **items;
+            if (size == 0) {
+                size = 4;
+            }
+            items = (BunTask **)bun_alloc(sizeof(BunTask *) * size);
+            if (task->group->count > 0) {
+                memcpy(items, task->group->items,
+                       sizeof(BunTask *) * task->group->count);
+            }
+            task->group->items = items;
+            task->group->size = size;
+        }
+        task->group->items[task->group->count++] = task;
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    return 1;
+}
+
+/* Whether a task of the program is still running.  The memory of the
+   program is not freed while a task runs, because the task still uses
+   the values of the program. */
+static int bun_task_running(void) {
+    int index;
+    int running = 0;
+    pthread_mutex_lock(&bun_task_lock);
+    for (index = 0; index < bun_task_count; index++) {
+        BunTask *task = bun_task_registry[index];
+        if (task->started && !task->done) {
+            running = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    return running;
+}
+
+static BunTask *bun_task_lookup(BunValue handle) {
+    int number;
+    if (handle.tag != BUN_DICT) {
+        return NULL;
+    }
+    {
+        BunValue id = bun_dict_get_c(handle.as.obj, "id");
+        if (id.tag != BUN_INT) {
+            return NULL;
+        }
+        number = (int)id.as.i;
+    }
+    pthread_mutex_lock(&bun_task_lock);
+    if (number < 0 || number >= bun_task_count) {
+        pthread_mutex_unlock(&bun_task_lock);
+        return NULL;
+    }
+    {
+        BunTask *task = bun_task_registry[number];
+        pthread_mutex_unlock(&bun_task_lock);
+        return task;
+    }
+}
+
+/* The body of a task runs on a thread of its own.  An error of the body
+   is an error of the task: the place of the failure is kept, and the task
+   that joins it sees the failure instead of an answer. */
+static void *bun_task_thread(void *data) {
+    BunTask *task = (BunTask *)data;
+    BunHandler handler;
+    handler.kind = 0;
+    handler.env = NULL;
+    handler.prev = NULL;
+    bun_current_task = task;
+    bun_current_group = task->group;
+    bun_arena_init_thread();
+    if (setjmp(handler.buf) == 0) {
+        bun_handler = &handler;
+        task->result = bun_call(task->function, NULL, 0, bun_null_value());
+        bun_handler = handler.prev;
+    } else {
+        task->has_error = 1;
+        task->error = bun_str_from_c(bun_error_message);
+    }
+    /* The values of the task move to the list of the ended tasks before
+       the task says that it is done, so the task that joins it never
+       sees a value that is gone. */
+    bun_arena_migrate();
+    task->done = 1;
+    return NULL;
+}
+
+static BunValue bun_builtin_spawn(BunValue *args, int count) {
+    BunTask *task;
+    if (count != 1) {
+        bun_throw("spawn() expects 1 argument");
+    }
+    if (args[0].tag != BUN_FUNC) {
+        bun_throw("spawn() expects a function");
+    }
+    task = bun_task_new(args[0]);
+    if (!bun_task_register(task)) {
+        bun_throw("too many tasks");
+    }
+    if (pthread_create(&task->thread, NULL, bun_task_thread, task) != 0) {
+        bun_throw("cannot start a task");
+    }
+    task->started = 1;
+    {
+        BunValue handle = bun_dict_new();
+        bun_dict_set(handle.as.obj, bun_str_from_c("id"),
+                     bun_int_value(task->id));
+        return handle;
+    }
+}
+
+static BunTask *bun_task_handle(BunValue *args, int count, const char *name) {
+    if (count != 1) {
+        bun_throw("%s() expects 1 argument", name);
+    }
+    {
+        BunTask *task = bun_task_lookup(args[0]);
+        if (task == NULL) {
+            bun_throw("%s() expects a task handle", name);
+        }
+        return task;
+    }
+}
+
+static void bun_task_join(BunTask *task) {
+    if (task->started && pthread_equal(task->thread, pthread_self()) == 0) {
+        pthread_join(task->thread, NULL);
+        task->started = 0;
+    }
+}
+
+static BunValue bun_builtin_task_join(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "task_join");
+    bun_task_join(task);
+    if (task->has_error) {
+        bun_throw("%s", task->error.as.obj->data);
+    }
+    return task->result;
+}
+
+static BunValue bun_builtin_task_done(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "task_done");
+    return bun_bool_value(task->done);
+}
+
+static BunValue bun_builtin_cancel(BunValue *args, int count) {
+    BunTask *task = bun_task_handle(args, count, "cancel");
+    task->cancelled = 1;
+    return bun_null_value();
+}
+
+static BunValue bun_builtin_task_cancelled(BunValue *args, int count) {
+    if (count == 0) {
+        return bun_bool_value(bun_current_task != NULL &&
+                              bun_current_task->cancelled);
+    }
+    if (count != 1) {
+        bun_throw("task_cancelled() expects no argument or a task handle");
+    }
+    {
+        BunTask *task = bun_task_lookup(args[0]);
+        if (task == NULL) {
+            bun_throw("task_cancelled() expects a task handle");
+        }
+        return bun_bool_value(task->cancelled);
+    }
+}
+
+static BunValue bun_builtin_sleep(BunValue *args, int count) {
+    double seconds;
+    struct timespec request;
+    if (count != 1) {
+        bun_throw("sleep() expects 1 argument");
+    }
+    if (args[0].tag == BUN_INT) {
+        seconds = (double)args[0].as.i;
+    } else if (args[0].tag == BUN_FLOAT) {
+        seconds = args[0].as.f;
+    } else {
+        bun_throw("sleep() expects a number of seconds");
+    }
+    if (seconds < 0) {
+        bun_throw("sleep() expects a non-negative number");
+    }
+    request.tv_sec = (time_t)seconds;
+    request.tv_nsec = (long)((seconds - (double)request.tv_sec) * 1000000000.0);
+    nanosleep(&request, NULL);
+    return bun_null_value();
+}
+
+/* The scope of the program.  The group is opened before the body runs
+   and closed after it: every task of the group is joined, and the first
+   failure of a child is raised when the body has no failure of its own. */
+static BunGroup *bun_scope_enter(void) {
+    BunGroup *group = (BunGroup *)bun_alloc(sizeof(BunGroup));
+    group->items = NULL;
+    group->count = 0;
+    group->size = 0;
+    group->previous = bun_current_group;
+    bun_current_group = group;
+    return group;
+}
+
+static void bun_scope_exit(BunPending *pending) {
+    BunGroup *group = bun_current_group;
+    BunTask **tasks;
+    int count;
+    int index;
+    const char *error = NULL;
+    if (group == NULL) {
+        bun_throw("'scope' without an open group");
+    }
+    bun_current_group = group->previous;
+    /* The tasks of the group are copied before they are joined: a task of
+       the group may spawn a task of its own, and the list of the group
+       grows while the group is closed. */
+    pthread_mutex_lock(&bun_task_lock);
+    count = group->count;
+    tasks = (BunTask **)bun_alloc(sizeof(BunTask *) * (count > 0 ? count : 1));
+    if (count > 0) {
+        memcpy(tasks, group->items, sizeof(BunTask *) * count);
+    }
+    pthread_mutex_unlock(&bun_task_lock);
+    for (index = 0; index < count; index++) {
+        BunTask *task = tasks[index];
+        bun_task_join(task);
+        if (error == NULL && task->has_error) {
+            error = task->error.as.obj->data;
+        }
+    }
+    if (error != NULL && !pending->has) {
+        bun_throw("%s", error);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -4132,9 +5094,26 @@ int main(int argc, char **argv) {
     bun_define_builtin(globals, "set", bun_builtin_set);
     bun_define_builtin(globals, "secret", bun_builtin_secret);
     bun_define_builtin(globals, "dump", bun_builtin_dump);
+    bun_define_builtin(globals, "Ok", bun_builtin_Ok);
+    bun_define_builtin(globals, "Err", bun_builtin_Err);
+    bun_define_builtin(globals, "is_ok", bun_builtin_is_ok);
+    bun_define_builtin(globals, "is_err", bun_builtin_is_err);
+    bun_define_builtin(globals, "some", bun_builtin_some);
+    bun_define_builtin(globals, "none", bun_builtin_none);
+    bun_define_builtin(globals, "is_some", bun_builtin_is_some);
+    bun_define_builtin(globals, "is_none", bun_builtin_is_none);
+    bun_define_builtin(globals, "spawn", bun_builtin_spawn);
+    bun_define_builtin(globals, "task_join", bun_builtin_task_join);
+    bun_define_builtin(globals, "task_done", bun_builtin_task_done);
+    bun_define_builtin(globals, "cancel", bun_builtin_cancel);
+    bun_define_builtin(globals, "task_cancelled", bun_builtin_task_cancelled);
+    bun_define_builtin(globals, "sleep", bun_builtin_sleep);
+    bun_arena_init_thread();
     BunValue result = bun_module_code(globals);
     (void)result;
-    bun_arena_release();
+    if (!bun_task_running()) {
+        bun_arena_release();
+    }
     return 0;
 }
 

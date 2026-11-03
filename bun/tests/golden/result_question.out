@@ -1,0 +1,10 @@
+{ok: 6}
+true
+false
+6
+{err: bad input}
+false
+true
+bad input
+false
+false

@@ -1,0 +1,21 @@
+// The first program of every language.
+fn greet(name: string) -> string {
+    return "hello, " + name
+}
+
+print(greet("bun"))
+
+// A variable is written once with `let` and may change with `var`.
+let answer = 42
+var counter = 0
+counter = counter + 1
+
+// A loop over a list.
+let names = ["ada", "grace", "alan"]
+for name in names {
+    print(greet(name))
+}
+
+// A dictionary holds the values under names.
+let ages = {"ada": 36, "grace": 45}
+print(ages["ada"])

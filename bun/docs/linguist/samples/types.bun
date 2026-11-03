@@ -1,0 +1,40 @@
+// A struct holds named fields, and a value of a struct copies.
+struct Point {
+    var x: int,
+    var y: int
+}
+
+// An `impl` gives a struct its methods.
+impl Point {
+    fn sum(self) -> int {
+        return self.x + self.y
+    }
+}
+
+// A protocol names the methods a value must have.
+protocol Shape {
+    fn area(self) -> float
+}
+
+struct Circle {
+    var r: float
+}
+
+impl Circle {
+    fn area(self) -> float {
+        return 3.0 * self.r * self.r
+    }
+}
+
+fn show(shape: Shape) {
+    print(shape.area())
+}
+
+// A type parameter stands for a type that is not known yet.
+fn first<T>(xs: list<T>) -> T {
+    return xs[0]
+}
+
+print(Point(3, 4).sum())
+show(Circle(2.0))
+print(first([1, 2, 3]))

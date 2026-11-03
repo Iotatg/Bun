@@ -1,0 +1,31 @@
+// A struct is a value: a copy of a struct does not share its fields
+// with the value it was copied from.
+struct Box {
+    value: int
+}
+
+impl Box {
+    fn grow(self) {
+        self.value = self.value + 10
+    }
+}
+
+let a = Box(1)
+var b = a
+b.value = 9
+print(a.value)
+print(b.value)
+
+// A struct that is given to a function is a copy as well.
+fn bump(box: Box) {
+    box.value = box.value + 1
+}
+
+let c = Box(5)
+bump(c)
+print(c.value)
+
+// A method that is called on a name works on the value of that name.
+var d = Box(7)
+d.grow()
+print(d.value)

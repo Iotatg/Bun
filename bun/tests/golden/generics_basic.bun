@@ -1,0 +1,36 @@
+// A type parameter stands for a type that is not known yet. The type
+// of the arguments finds it, and the type of the call is the return
+// type with the type arguments in place of the type parameters.
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+// A bound says which types the parameter may not leave.
+fn sum<T: Num>(xs: list<T>) -> T {
+    var total = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+// The type of the elements of a list may be a type parameter.
+fn map<T>(xs: list<T>, f: fn) -> list<T> {
+    var out = []
+    for x in xs {
+        out.push(f(x))
+    }
+    return out
+}
+
+fn first<T>(xs: list<T>) -> T {
+    return xs[0]
+}
+
+print(identity(1))
+print(identity("bun"))
+print(sum([1, 2, 3]))
+print(sum([1.5, 2.5]))
+print(map([1, 2, 3], fn(x) { return x * 2 }))
+print(map(["a", "b"], fn(x) { return x + "!" }))
+print(first([7, 8, 9]))

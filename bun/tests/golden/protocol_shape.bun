@@ -1,0 +1,43 @@
+// A protocol names the methods a value must have. A type satisfies it
+// when it has every method of the protocol.
+protocol Shape {
+    fn area(self) -> float
+    fn name(self) -> string
+}
+
+struct Circle {
+    var r: float
+}
+
+impl Circle {
+    fn area(self) -> float {
+        return 3.0 * self.r * self.r
+    }
+
+    fn name(self) -> string {
+        return "circle"
+    }
+}
+
+struct Square {
+    var side: float
+}
+
+impl Square {
+    fn area(self) -> float {
+        return self.side * self.side
+    }
+
+    fn name(self) -> string {
+        return "square"
+    }
+}
+
+// A function that takes a protocol takes every value that satisfies it.
+fn show(shape: Shape) {
+    print(shape.name())
+    print(shape.area())
+}
+
+show(Circle(2.0))
+show(Square(3.0))

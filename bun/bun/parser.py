@@ -61,6 +61,14 @@ class Parser:
             return self._var_decl(True)
         if t == TokenType.FN:
             return self._fn_decl()
+        if t == TokenType.STRUCT:
+            return self._struct_decl()
+        if t == TokenType.ENUM:
+            return self._enum_decl()
+        if t == TokenType.IMPL:
+            return self._impl_decl()
+        if t == TokenType.PROTOCOL:
+            return self._protocol_decl()
         if t == TokenType.AT:
             return self._decorated_decl()
         if t == TokenType.IF:
@@ -165,9 +173,76 @@ class Parser:
             return "from"
         return self._expect(TokenType.IDENT, "expected variable name").value
 
+    def _struct_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected struct name")
+        self._expect(TokenType.LBRACE, "expected '{' after struct name")
+        fields = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            fields.append(self._struct_field())
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after struct fields")
+        return ast.StructDecl(name.value, fields, kw.line, kw.col)
+
+    def _struct_field(self):
+        start = self._peek()
+        mutable = True
+        if self._match(TokenType.LET):
+            mutable = False
+        elif self._match(TokenType.VAR):
+            mutable = True
+        name = self._expect(TokenType.IDENT, "expected field name")
+        type_ann = self._opt_type()
+        default = None
+        if self._match(TokenType.ASSIGN):
+            default = self._expression()
+        return ast.StructField(name.value, type_ann, mutable, default,
+                               start.line, start.col)
+
+    def _enum_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected enum name")
+        self._expect(TokenType.LBRACE, "expected '{' after enum name")
+        variants = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            variants.append(self._enum_variant())
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after enum variants")
+        return ast.EnumDecl(name.value, variants, kw.line, kw.col)
+
+    def _enum_variant(self):
+        start = self._peek()
+        name = self._expect(TokenType.IDENT, "expected a variant name")
+        field_types = []
+        if self._match(TokenType.LPAREN):
+            if not self._check(TokenType.RPAREN):
+                while True:
+                    field_types.append(self._type_name())
+                    if not self._match(TokenType.COMMA):
+                        break
+                    if self._check(TokenType.RPAREN):
+                        break
+            self._expect(TokenType.RPAREN,
+                         "expected ')' after the fields of a variant")
+        return ast.EnumVariant(name.value, field_types, start.line, start.col)
+
+    def _impl_decl(self):
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected type name after 'impl'")
+        self._expect(TokenType.LBRACE, "expected '{' after impl name")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            if not self._check(TokenType.FN):
+                raise ParseError("expected a method in an impl block",
+                                 self._peek().line, self._peek().col)
+            methods.append(self._fn_decl())
+        self._expect(TokenType.RBRACE, "expected '}' after impl methods")
+        return ast.ImplDecl(name.value, methods, kw.line, kw.col)
+
     def _fn_decl(self):
         kw = self._advance()
         name = self._expect(TokenType.IDENT, "expected function name")
+        type_params = self._type_params()
         self._expect(TokenType.LPAREN, "expected '(' after function name")
         params = self._param_list()
         return_type = None
@@ -175,7 +250,60 @@ class Parser:
             return_type = self._type_name()
         body = self._block()
         return ast.FnDecl(name.value, params, body, kw.line, kw.col,
-                          return_type=return_type)
+                          return_type=return_type, type_params=type_params)
+
+    def _type_params(self):
+        """Parse the type parameters of a function: `<T, U: Num>`.
+
+        The list is empty when the name of the function is followed by
+        anything else than a `<`.
+        """
+        if not self._check(TokenType.LT):
+            return []
+        self._advance()
+        params = []
+        while not self._check(TokenType.GT):
+            tok = self._expect(TokenType.IDENT, "expected type parameter name")
+            bound = None
+            if self._match(TokenType.COLON):
+                bound = self._expect(TokenType.IDENT,
+                                     "expected bound of type parameter").value
+            params.append(ast.TypeParam(tok.value, bound, tok.line, tok.col))
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.GT, "expected '>' after type parameters")
+        return params
+
+    def _protocol_decl(self):
+        """Parse a protocol: a set of method signatures."""
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected protocol name")
+        self._expect(TokenType.LBRACE, "expected '{' after protocol name")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            if not self._check(TokenType.FN):
+                raise ParseError("expected a method signature in a protocol block",
+                                 self._peek().line, self._peek().col)
+            methods.append(self._method_signature())
+        self._expect(TokenType.RBRACE, "expected '}' after protocol methods")
+        return ast.ProtocolDecl(name.value, methods, kw.line, kw.col)
+
+    def _method_signature(self):
+        """Parse the signature of a method: the name, the parameters and the
+        return type, without a body."""
+        kw = self._advance()
+        name = self._expect(TokenType.IDENT, "expected method name")
+        self._expect(TokenType.LPAREN, "expected '(' after method name")
+        params = self._param_list()
+        return_type = None
+        if self._match(TokenType.ARROW):
+            return_type = self._type_name()
+        if not params or params[0].name != "self":
+            raise ParseError(
+                "expected 'self' as the first parameter of a protocol method",
+                kw.line, kw.col)
+        return ast.FnDecl(name.value, params, ast.Block([], kw.line, kw.col),
+                          kw.line, kw.col, return_type=return_type)
 
     def _decorated_decl(self):
         """Parse a function with decorators in front of it.
@@ -256,9 +384,28 @@ class Parser:
         return None
 
     def _type_name(self):
+        """Parse a type: a name, or a name with type arguments.
+
+        A type argument is a plain type name or a type variable, so a
+        type is written `list<T>` and never `list<list<T>>`.
+        """
         if self._check(TokenType.FN):
             return self._advance().value
-        return self._expect(TokenType.IDENT, "expected type name").value
+        name = self._expect(TokenType.IDENT, "expected type name").value
+        if not self._check(TokenType.LT):
+            return name
+        self._advance()
+        args = []
+        while not self._check(TokenType.GT):
+            args.append(self._type_argument())
+            if not self._match(TokenType.COMMA):
+                break
+        self._expect(TokenType.GT, "expected '>' after type arguments")
+        return name + "<" + ", ".join(args) + ">"
+
+    def _type_argument(self):
+        """Parse one type argument: a type name or a type variable."""
+        return self._expect(TokenType.IDENT, "expected type argument").value
 
     def _import_stmt(self):
         kw = self._advance()
@@ -397,21 +544,7 @@ class Parser:
         self._advance()
         cases = []
         while not self._check(TokenType.RBRACE):
-            pattern = self._match_pattern()
-            if self._check(TokenType.COMMA):
-                # A case may name more than one pattern.  The first one
-                # that matches wins, so the comma before the '=>' joins
-                # the alternatives of one case.
-                alternatives = [pattern]
-                while self._match(TokenType.COMMA):
-                    alternatives.append(self._match_pattern())
-                pattern = ast.MatchPattern("or", items=alternatives,
-                                            line=pattern.line, col=pattern.col)
-            if self._check(TokenType.IF):
-                # A guard is a condition that has to hold for the case to
-                # match.  It sees the names the pattern binds.
-                self._advance()
-                pattern.guard = self._expression()
+            pattern = self._match_case_pattern()
             self._expect(TokenType.FAT_ARROW,
                          "expected '=>' after a match pattern")
             body = self._match_body()
@@ -419,6 +552,75 @@ class Parser:
             self._match(TokenType.COMMA)
         self._expect(TokenType.RBRACE, "expected '}' after the match cases")
         return ast.MatchStmt(subject, cases, kw.line, kw.col)
+
+    def _match_case_pattern(self):
+        """Parse the pattern of one case.
+
+        A case may name more than one pattern, and it may carry a guard.
+        """
+        pattern = self._match_pattern()
+        if self._check(TokenType.COMMA):
+            # A case may name more than one pattern.  The first one
+            # that matches wins, so the comma before the '=>' joins
+            # the alternatives of one case.
+            alternatives = [pattern]
+            while self._match(TokenType.COMMA):
+                alternatives.append(self._match_pattern())
+            pattern = ast.MatchPattern("or", items=alternatives,
+                                        line=pattern.line, col=pattern.col)
+        if self._check(TokenType.IF):
+            # A guard is a condition that has to hold for the case to
+            # match.  It sees the names the pattern binds.
+            self._advance()
+            pattern.guard = self._expression()
+        return pattern
+
+    def _try_match_expr(self):
+        """Parse a ``match`` expression, or return ``None``.
+
+        The match is a soft keyword, so the name is an ordinary
+        identifier when no subject and a block follow it.  Every arm of
+        the expression answers a value.
+        """
+        save = self.pos
+        kw = self._advance()
+        try:
+            subject = self._expression()
+        except ParseError:
+            self.pos = save
+            return None
+        if not self._check(TokenType.LBRACE):
+            self.pos = save
+            return None
+        self._advance()
+        cases = []
+        while not self._check(TokenType.RBRACE):
+            pattern = self._match_case_pattern()
+            self._expect(TokenType.FAT_ARROW,
+                         "expected '=>' after a match pattern")
+            if self._check(TokenType.LBRACE):
+                tok = self._peek()
+                raise ParseError("the arm of a match expression answers a "
+                                 "value, not a block", tok.line, tok.col)
+            body = self._match_arm_value()
+            cases.append((pattern, body))
+            self._match(TokenType.COMMA)
+        self._expect(TokenType.RBRACE, "expected '}' after the match cases")
+        return ast.MatchExpr(subject, cases, kw.line, kw.col)
+
+    def _match_arm_value(self):
+        """Parse the value of one arm of a match expression.
+
+        An arm that answers a value may not swallow the sign of the
+        pattern of the next arm, so the value is parsed again without the
+        additive operators when the parse lands on the '=>' of a case.
+        """
+        start = self.pos
+        value = self._expression()
+        if self._check(TokenType.FAT_ARROW):
+            self.pos = start
+            value = self._comparison()
+        return value
 
     def _match_body(self):
         """Parse the body of one match case.
@@ -466,7 +668,17 @@ class Parser:
 
     def _match_pattern(self):
         tok = self._peek()
+        if (tok.type == TokenType.IDENT
+                and self._peek(1).type == TokenType.DOT):
+            # A variant of an enum: `Color.Red`, with the fields of a
+            # variant written in parentheses: `Shape.Circle(radius)`.
+            return self._enum_variant_pattern()
         if tok.type == TokenType.IDENT:
+            if self._peek(1).type == TokenType.LPAREN:
+                # A pattern of a struct: `Point(x: 0, y)`. The value has
+                # to be a struct of the named type, and the fields are
+                # matched one by one.
+                return self._struct_pattern()
             if tok.value == "_":
                 self._advance()
                 return ast.MatchPattern("wildcard", line=tok.line, col=tok.col)
@@ -532,6 +744,64 @@ class Parser:
                                     line=tok.line, col=tok.col)
         return ast.MatchPattern("literal", value=value, line=tok.line,
                                 col=tok.col)
+
+    def _enum_variant_pattern(self):
+        """Parse the pattern of a variant of an enum.
+
+        The pattern of `Color.Red` is the name of the enum, the name of
+        the variant and no field, and the pattern of `Shape.Circle(r)`
+        is the same with one field bound by position.
+        """
+        name_tok = self._advance()
+        self._expect(TokenType.DOT, "expected '.' in a variant pattern")
+        variant = self._expect(TokenType.IDENT, "expected a variant name")
+        items = []
+        if self._match(TokenType.LPAREN):
+            if not self._check(TokenType.RPAREN):
+                while True:
+                    items.append(self._match_pattern())
+                    if not self._match(TokenType.COMMA):
+                        break
+                    if self._check(TokenType.RPAREN):
+                        break
+            self._expect(TokenType.RPAREN,
+                         "expected ')' after the fields of a variant")
+        return ast.MatchPattern("enum", value=name_tok.value,
+                                name=variant.value, items=items,
+                                line=name_tok.line, col=name_tok.col)
+
+    def _struct_pattern(self):
+        """Parse the pattern of a struct.
+
+        `Point(x: 0, y)` names the struct, tests the field `x` against
+        the literal `0` and binds the field `y` to a name. A bare name
+        is the pattern of the field that name holds, so `Point(x, y)`
+        binds both fields.
+        """
+        name_tok = self._advance()
+        self._expect(TokenType.LPAREN,
+                     "expected '(' after the name of a struct pattern")
+        entries = []
+        if not self._check(TokenType.RPAREN):
+            while True:
+                field = self._expect(
+                    TokenType.IDENT,
+                    "expected a field name in a struct pattern")
+                if self._match(TokenType.COLON):
+                    sub = self._match_pattern()
+                else:
+                    sub = ast.MatchPattern("binding", name=field.value,
+                                           line=field.line, col=field.col)
+                entries.append((field.value, sub))
+                if not self._match(TokenType.COMMA):
+                    break
+                if self._check(TokenType.RPAREN):
+                    break
+        self._expect(TokenType.RPAREN,
+                     "expected ')' after the fields of a struct pattern")
+        return ast.MatchPattern("struct", value=name_tok.value,
+                                entries=entries,
+                                line=name_tok.line, col=name_tok.col)
 
     def _literal_pattern_value(self):
         """Parse the value of a literal or range pattern."""
@@ -624,7 +894,9 @@ class Parser:
 
     def _expr_stmt(self):
         start = self._peek()
-        expr = self._expression()
+        if self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT):
+            return self._inc_dec_stmt(start, True)
+        expr = self._statement_expression()
         if self._check(TokenType.COMMA) and self._match_body_depth == 0:
             targets = [self._unpack_target(expr)]
             while self._match(TokenType.COMMA):
@@ -636,6 +908,11 @@ class Parser:
             target = ast.UnpackTarget("tuple", targets, None, start.line,
                                       start.col)
             return ast.AssignStmt(target, value, start.line, start.col)
+        compound = self._compound_op()
+        if compound is not None:
+            value = self._expression()
+            return ast.OpAssignStmt(self._assign_target(expr, start),
+                                    compound, value, start.line, start.col)
         if self._match(TokenType.ASSIGN):
             value = self._expression()
             if isinstance(expr, ast.ListLiteral):
@@ -644,10 +921,57 @@ class Parser:
                 target = ast.UnpackTarget("list", targets, None, start.line,
                                           start.col)
                 return ast.AssignStmt(target, value, start.line, start.col)
-            if not isinstance(expr, (ast.Identifier, ast.Index)):
+            if not isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
                 raise ParseError("invalid assignment target", start.line, start.col)
             return ast.AssignStmt(expr, value, start.line, start.col)
+        if self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT):
+            if self._peek().line != self._prev_line():
+                return ast.ExprStmt(expr, start.line, start.col)
+            return self._inc_dec_stmt(start, False, expr)
         return ast.ExprStmt(expr, start.line, start.col)
+
+    def _compound_op(self):
+        """Read the operator of a compound assignment, if there is one."""
+        table = {
+            TokenType.PLUS_ASSIGN: "+",
+            TokenType.MINUS_ASSIGN: "-",
+            TokenType.STAR_ASSIGN: "*",
+            TokenType.SLASH_ASSIGN: "/",
+            TokenType.PERCENT_ASSIGN: "%",
+            TokenType.AMP_ASSIGN: "&",
+            TokenType.PIPE_ASSIGN: "|",
+            TokenType.CARET_ASSIGN: "^",
+            TokenType.LSHIFT_ASSIGN: "<<",
+            TokenType.RSHIFT_ASSIGN: ">>",
+        }
+        tok = self._peek()
+        if tok.type in table:
+            self._advance()
+            return table[tok.type]
+        return None
+
+    def _assign_target(self, expr, start):
+        """Check that an expression may hold the result of an assignment."""
+        if isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
+            return expr
+        raise ParseError("invalid assignment target", start.line, start.col)
+
+    def _inc_dec_stmt(self, start, prefix, expr=None):
+        """Parse the increment or the decrement of a name.
+
+        The two signs are a statement and not an expression: a language
+        that answers a value for `x++` keeps two rules for one name.
+        """
+        if prefix:
+            op = self._advance()
+            expr = self._postfix()
+        else:
+            op = self._advance()
+        if not isinstance(expr, (ast.Identifier, ast.Index, ast.Attribute)):
+            raise ParseError("invalid target for the increment",
+                             start.line, start.col)
+        sign = "+" if op.type == TokenType.INCREMENT else "-"
+        return ast.IncDecStmt(expr, sign, start.line, start.col)
 
     def _unpack_target(self, expr):
         """Validate one target of an unpacking assignment."""
@@ -667,7 +991,34 @@ class Parser:
         return ast.Block(statements, lbrace.line, lbrace.col)
 
     def _expression(self):
-        return self._or()
+        expr = self._coalesce()
+        if (self._check(TokenType.INCREMENT) or self._check(TokenType.DECREMENT)) \
+                and self._peek().line == self._prev_line():
+            tok = self._peek()
+            raise ParseError("the increment is a statement, not an expression",
+                             tok.line, tok.col)
+        return expr
+
+    def _statement_expression(self):
+        """Parse the expression of a statement.
+
+        The statement itself reads the increment that follows the
+        expression, so the check of `_expression` does not run here.
+        """
+        return self._coalesce()
+
+    def _coalesce(self):
+        """Parse `a ?? b`.
+
+        The operator of the null binds looser than the words `and` and
+        `or`, and it binds to the right, so `a ?? b ?? c` is
+        `a ?? (b ?? c)`.
+        """
+        expr = self._or()
+        if self._check(TokenType.NULL_COALESCE):
+            op = self._advance()
+            return ast.Binary(expr, "??", self._coalesce(), op.line, op.col)
+        return expr
 
     def _or(self):
         expr = self._and()
@@ -808,15 +1159,21 @@ class Parser:
                 expr = ast.Index(expr, index, expr.line, expr.col)
             elif self._check(TokenType.DOT):
                 self._advance()
-                name = self._expect(TokenType.IDENT, "expected method name after '.'")
-                self._expect(TokenType.LPAREN, "expected '(' after method name")
-                args = []
-                if not self._check(TokenType.RPAREN):
-                    args.append(self._expression())
-                    while self._match(TokenType.COMMA):
+                name = self._expect(TokenType.IDENT, "expected name after '.'")
+                if self._check(TokenType.LPAREN):
+                    self._advance()
+                    args = []
+                    if not self._check(TokenType.RPAREN):
                         args.append(self._expression())
-                self._expect(TokenType.RPAREN, "expected ')' after arguments")
-                expr = ast.MethodCall(expr, name.value, args, expr.line, expr.col)
+                        while self._match(TokenType.COMMA):
+                            args.append(self._expression())
+                    self._expect(TokenType.RPAREN, "expected ')' after arguments")
+                    expr = ast.MethodCall(expr, name.value, args, expr.line, expr.col)
+                else:
+                    expr = ast.Attribute(expr, name.value, expr.line, expr.col)
+            elif self._check(TokenType.QUESTION):
+                op = self._advance()
+                expr = ast.Unwrap(expr, op.line, op.col)
             else:
                 break
         return expr
@@ -859,6 +1216,12 @@ class Parser:
         if tok.type == TokenType.YIELD:
             return self._yield_expr()
         if tok.type == TokenType.IDENT:
+            if tok.value == "match":
+                # `match` is a soft keyword: it only starts a match
+                # expression when a subject and a block follow it.
+                node = self._try_match_expr()
+                if node is not None:
+                    return node
             self._advance()
             return ast.Identifier(tok.value, tok.line, tok.col)
         if tok.type == TokenType.FROM:

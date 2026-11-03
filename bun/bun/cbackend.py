@@ -55,6 +55,8 @@ FAILING = frozenset([
     regcode.BUILD_DICT, regcode.DICT_SET,
     regcode.INDEX, regcode.STORE_INDEX, regcode.SLICE, regcode.STORE_SLICE,
     regcode.UNPACK_PLAN, regcode.FORMAT,
+    regcode.MAKE_STRUCT, regcode.GET_FIELD, regcode.SET_FIELD,
+    regcode.UNWRAP_OR_RETURN,
     regcode.CALL, regcode.METHOD_CALL,
     regcode.FOR_SETUP,
     regcode.THROW, regcode.ASSERT,
@@ -65,6 +67,7 @@ FAILING = frozenset([
 # The instructions that jump to another instruction.
 JUMPS = frozenset([
     regcode.JUMP, regcode.JUMP_IF_FALSE, regcode.JUMP_IF_TRUE,
+    regcode.JUMP_IF_NULL,
     regcode.FOR_NEXT, regcode.TRY, regcode.TRY_FINALLY,
 ])
 
@@ -78,6 +81,10 @@ SUPPORTED_BUILTINS = frozenset([
     "zip", "enumerate", "sorted", "reversed",
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "set", "secret", "dump",
+    "Ok", "Err", "is_ok", "is_err",
+    "some", "none", "is_some", "is_none",
+    "spawn", "task_join", "task_done", "cancel", "task_cancelled",
+    "sleep",
 ])
 
 # The builtins of the language.  The list is checked against the runtime
@@ -87,6 +94,7 @@ LANGUAGE_BUILTINS = frozenset([
     "float", "type_of", "bool", "abs", "sum", "any", "all", "min", "max",
     "zip", "enumerate", "sorted", "reversed", "set", "next", "send",
     "dump", "secret", "url_encode", "url_decode",
+    "some", "none", "is_some", "is_none",
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "getenv_or", "json_parse", "json_stringify", "http_get", "http_post",
     "http_get_bytes", "http_post_multipart", "write_bytes", "read_bytes",
@@ -109,6 +117,7 @@ LANGUAGE_BUILTINS = frozenset([
     "bigint_cmp", "bigint_pow_mod", "utf8_bytes", "utf8_string",
     "starts_with", "ends_with", "substring", "index_of", "split", "join",
     "replace", "trim", "lower", "upper",
+    "Ok", "Err", "is_ok", "is_err",
 ])
 
 
@@ -200,8 +209,6 @@ def check_builtins(program):
 # The opcodes the backend does not translate.  The value is the message
 # of the refusal.
 REFUSED = {
-    regcode.SCOPE_ENTER: "the scope statement",
-    regcode.SCOPE_EXIT: "the scope statement",
     regcode.YIELD: "the yield statement",
 }
 
@@ -214,9 +221,10 @@ PLAN_RANGE = 5
 PLAN_LIST = 6
 PLAN_DICT = 7
 PLAN_OR = 8
+PLAN_STRUCT = 9
 
 PLAN_KINDS = ("literal", "wildcard", "binding", "type", "range", "list",
-              "dict", "or")
+              "dict", "or", "struct")
 
 
 def _escape(text):
@@ -280,6 +288,9 @@ class CEmitter:
         # The code objects whose frame of names is a few variables and not
         # an array.  The emitter fills the table when it writes the frame.
         self.scalar_slots = {}
+        # The code objects of the methods of the structs.  The first
+        # argument of a method is the receiver, and it is borrowed.
+        self.methods = set()
 
     # -- the code objects ---------------------------------------------------
 
@@ -291,9 +302,16 @@ class CEmitter:
         self._index[id(code)] = index
         self.functions.append(code)
         self._module_of[index] = module_index
-        for value in code.get("consts", []):
+        consts = code.get("consts", [])
+        for value in consts:
             if isinstance(value, dict) and "code" in value:
                 self.collect(value, module_index)
+        for instruction in code.get("code", []):
+            op, a, b, c = instruction
+            if op == regcode.REGISTER_IMPL:
+                body = consts[c]
+                if isinstance(body, dict) and "code" in body:
+                    self.methods.add(id(body))
         for spec in code.get("param_defs", []):
             default = spec.get("default")
             if isinstance(default, dict) and "code" in default:
@@ -787,6 +805,8 @@ class CEmitter:
                 children.append(plan[2])
         elif kind == "dict":
             children = [sub for _, sub in plan[1]]
+        elif kind == "struct":
+            children = [sub for _, sub in plan[2]]
         elif kind == "or":
             children = list(plan[1])
         for child in children:
@@ -846,6 +866,24 @@ class CEmitter:
             lines.append("static const char *const %s[] = {" % keys)
             for name_of_key, _ in plan[1]:
                 lines.append("    %s," % _c_string(name_of_key))
+            lines.append("};")
+            self._plan_arrays[(index, id(plan), "keys")] = keys
+        elif kind == "struct":
+            # The plan of a struct holds the pattern of every field it
+            # names, the way a dict holds the pattern of its entries:
+            # one array of the plans and one array of the field names.
+            for _, sub in plan[2]:
+                self._plan_array(index, sub, lines, seen)
+            array = "%s_items" % name
+            keys = "%s_fields" % name
+            self._plan_arrays[key] = array
+            lines.append("static const BunPlan *const %s[] = {" % array)
+            for _, sub in plan[2]:
+                lines.append("    &%s," % self._plan_names[(index, id(sub))])
+            lines.append("};")
+            lines.append("static const char *const %s[] = {" % keys)
+            for field, _ in plan[2]:
+                lines.append("    %s," % _c_string(field))
             lines.append("};")
             self._plan_arrays[(index, id(plan), "keys")] = keys
         elif kind == "or":
@@ -908,6 +946,15 @@ class CEmitter:
             lines.append("    %s.kind = %d;" % (name, PLAN_OR))
             lines.append("    %s.count = %d;" % (name, len(plan[1])))
             lines.append("    %s.items = %s;" % (name, self._plan_arrays[
+                (index, id(plan))]))
+        elif kind == "struct":
+            lines.append("    %s.kind = %d;" % (name, PLAN_STRUCT))
+            lines.append("    %s.literal = %s;" % (
+                name, self.value_expr(plan[1])))
+            lines.append("    %s.count = %d;" % (name, len(plan[2])))
+            lines.append("    %s.keys = %s;" % (name, self._plan_arrays[
+                (index, id(plan), "keys")]))
+            lines.append("    %s.values = %s;" % (name, self._plan_arrays[
                 (index, id(plan))]))
         return lines
 
@@ -1154,6 +1201,7 @@ class CEmitter:
                     or op == regcode.TRY_FINALLY:
                 targets.add(a)
             elif op == regcode.JUMP_IF_FALSE or op == regcode.JUMP_IF_TRUE \
+                    or op == regcode.JUMP_IF_NULL \
                     or op == regcode.FOR_NEXT:
                 targets.add(b)
         return targets
@@ -1231,7 +1279,8 @@ class CEmitter:
             if not site.binding.mutable:
                 return ["    bun_throw(\"cannot assign to immutable variable "
                         "'%s'\", %s);" % (consts[b], _c_string(consts[b]))]
-            return ["    %s = regs[%d];" % (self.slot_ref(code, site.slot), a)]
+            return ["    %s = bun_copy_value(regs[%d]);"
+                    % (self.slot_ref(code, site.slot), a)]
         if op == regcode.DEFINE_NAME:
             site = self.frames[id(code)].site_at(position)
             if site.dynamic:
@@ -1247,12 +1296,13 @@ class CEmitter:
                     # environment holds the environment the function closes
                     # over, so a later call of it does not look it up
                     # either.
-                    lines.append("    %s = regs[%d];"
+                    lines.append("    %s = bun_copy_value(regs[%d]);"
                                  % (self.static_globals[key], a))
                     lines.append("    %s = env;"
                                  % self.static_environments[key])
                 return lines
-            return ["    %s = regs[%d];" % (self.slot_ref(code, site.slot), a)]
+            return ["    %s = bun_copy_value(regs[%d]);"
+                    % (self.slot_ref(code, site.slot), a)]
         if op == regcode.POP:
             return []
         if op == regcode.DUP:
@@ -1361,6 +1411,34 @@ class CEmitter:
                 "    }",
                 "    bun_list_push(regs[%d].as.obj, regs[%d]);" % (a, a + 1),
             ]
+        if op == regcode.MAKE_STRUCT:
+            type_name, field_names = consts[b]
+            lines = ["    {",
+                     "        const char *names[%d];" % max(c, 1)]
+            for index, name in enumerate(field_names):
+                lines.append("        names[%d] = %s;"
+                             % (index, _c_string(name)))
+            lines.append("        BunValue values[%d];" % max(c, 1))
+            for index in range(c):
+                lines.append("        values[%d] = regs[%d];"
+                             % (index, a + index))
+            lines.extend([
+                "        regs[%d] = bun_struct_new(%s, names, values, %d);"
+                % (a, _c_string(type_name), c),
+                "    }",
+            ])
+            return lines
+        if op == regcode.GET_FIELD:
+            return ["    regs[%d] = bun_get_field(regs[%d], %s);"
+                    % (a, b, _c_string(consts[c]))]
+        if op == regcode.SET_FIELD:
+            return ["    bun_set_field(regs[%d], %s, regs[%d]);"
+                    % (a, _c_string(consts[c]), b)]
+        if op == regcode.REGISTER_IMPL:
+            body = consts[c]
+            return ["    bun_register_struct_method(%s, %s, %s, env);"
+                    % (_c_string(consts[a]), _c_string(consts[b]),
+                       self.function_name(body))]
         if op == regcode.DICT_SET:
             return [
                 "    if (regs[%d].tag != BUN_DICT) {" % a,
@@ -1506,8 +1584,19 @@ class CEmitter:
                 "    }",
             ])
             return lines
+        if op == regcode.UNWRAP_OR_RETURN:
+            return [
+                "    {",
+                "        BunValue tmp = regs[%d];" % a,
+                "        BunValue out;",
+                "        if (!bun_unwrap_result(tmp, &out)) {",
+                "            return bun_copy_value(tmp);",
+                "        }",
+                "        regs[%d] = out;" % a,
+                "    }",
+            ]
         if op == regcode.RETURN:
-            return ["    return regs[%d];" % a]
+            return ["    return bun_copy_value(regs[%d]);" % a]
         if op == regcode.HALT:
             # The value of the expression of the program is on the top of
             # the stack, one slot below the depth of the instruction.
@@ -1521,6 +1610,8 @@ class CEmitter:
             return ["    if (!bun_truthy(regs[%d])) goto L%d;" % (a, b)]
         if op == regcode.JUMP_IF_TRUE:
             return ["    if (bun_truthy(regs[%d])) goto L%d;" % (a, b)]
+        if op == regcode.JUMP_IF_NULL:
+            return ["    if (regs[%d].tag == BUN_NULL) goto L%d;" % (a, b)]
         if op == regcode.ENTER_SCOPE:
             depth = self.frames[id(code)].scope_depth[position]
             lines = ["    scopes[%d] = env;" % depth]
@@ -1532,6 +1623,15 @@ class CEmitter:
             if depth <= 0:
                 return []
             return ["    env = scopes[%d];" % depth]
+        if op == regcode.SCOPE_ENTER:
+            # The group of the scope is opened before the body runs, and
+            # the tasks that the body spawns belong to the group.
+            return ["    bun_scope_enter();"]
+        if op == regcode.SCOPE_EXIT:
+            # The group is closed: every task of the group is joined, and
+            # the first failure of a child is the failure of the scope
+            # when the body has no failure of its own.
+            return ["    bun_scope_exit(pending);"]
         if op == regcode.FOR_SETUP:
             return ["    iters[iter_count++] = bun_iter_new(regs[%d]);" % a]
         if op == regcode.FOR_NEXT:
@@ -1698,6 +1798,7 @@ class CEmitter:
                 continue
             name = "bun_params_%d" % index
             lines = []
+            method = id(code) in self.methods
             for position, spec in enumerate(defs):
                 kind = spec.get("param_kind", "positional")
                 if kind == "positional":
@@ -1708,17 +1809,20 @@ class CEmitter:
                     code_kind = 2
                 else:
                     code_kind = 3
+                # The first argument of a method is the receiver, and it
+                # is borrowed: the method changes the receiver itself.
+                borrowed = 1 if method and position == 0 else 0
                 default = spec.get("default")
                 if default is None:
-                    lines.append("    { %s, %d, 0, NULL, %d }," % (
+                    lines.append("    { %s, %d, 0, NULL, %d, %d }," % (
                         _c_string(spec["name"]), code_kind, self.param_slot(
-                            info, position)))
+                            info, position), borrowed))
                 else:
                     default_index = self._index[id(default)]
-                    lines.append("    { %s, %d, 1, %s, %d }," % (
+                    lines.append("    { %s, %d, 1, %s, %d, %d }," % (
                         _c_string(spec["name"]), code_kind,
                         self.function_name(default),
-                        self.param_slot(info, position)))
+                        self.param_slot(info, position), borrowed))
             self.param_tables[index] = (name, len(defs), lines)
 
     def param_slot(self, info, position):
@@ -1787,10 +1891,17 @@ class CEmitter:
             if slot < 0:
                 return slow("    ")
             slots.append(slot)
+        # The first argument of a method is the receiver, and it is
+        # borrowed: the other arguments are copied.
+        method = id(code) in self.methods
         lines = ["    if (kwargs.tag != BUN_DICT && argc == %d) {" % count]
         for position, slot in enumerate(slots):
-            lines.append("        %s = args[%d];"
-                         % (self.slot_ref(code, slot), position))
+            if method and position == 0:
+                lines.append("        %s = args[%d];"
+                             % (self.slot_ref(code, slot), position))
+            else:
+                lines.append("        %s = bun_copy_value(args[%d]);"
+                             % (self.slot_ref(code, slot), position))
         lines.append("    } else {")
         lines.extend(slow("        "))
         lines.append("    }")

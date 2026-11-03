@@ -16,12 +16,16 @@ The plan of a pattern is one of:
 | ``["range", low, high]`` | the value is in the range |
 | ``["list", [plan, ...], plan]`` | a list, with the items bound, and a tail |
 | ``["dict", [[key, plan], ...]]`` | a dict with the keys, with the values bound |
+| ``["struct", name, [[field, plan], ...]]`` | a struct of the type, with its fields bound |
 | ``["or", [plan, ...]]`` | one of the patterns, the first one that matches |
+| ``["enum", ...]`` | a variant, as a dict (see `plan_from_ast`) |
 """
 
 from .dict import BunDict
 from .errors import BunRuntimeError
-from .values import BunFunction, BunSecret, is_number, values_equal
+from .values import (
+    BunFunction, BunSecret, BunStruct, is_number, values_equal,
+)
 
 
 def plan_from_ast(pattern):
@@ -46,6 +50,32 @@ def plan_from_ast(pattern):
                          for key, sub in pattern.entries]]
     if kind == "or":
         return ["or", [plan_from_ast(item) for item in pattern.items]]
+    if kind == "struct":
+        # A pattern of a struct is the name of its type and the pattern
+        # of every field it names: `Point(x: 0, y)` tests the type and
+        # the field `x`, and binds the field `y`.
+        return ["struct", pattern.value,
+                [[field, plan_from_ast(sub)]
+                 for field, sub in pattern.entries]]
+    if kind == "enum":
+        # A variant of an enum is a value shaped like a dict with the
+        # name of the enum, the name of the variant and the list of the
+        # fields, so the plan of a variant is the plan of that dict: it
+        # is the shape of the value the plan tests, and nothing else.
+        #
+        # `Color.Red` tests the two names, and `Shape.Circle(r)` tests
+        # the third entry as well: a list with one item, bound by
+        # position.
+        entries = [
+            ("type", ["literal", pattern.value]),
+            ("kind", ["literal", pattern.name]),
+        ]
+        if pattern.items:
+            fields = ["list",
+                      [plan_from_ast(item) for item in pattern.items],
+                      None]
+            entries.append(("fields", fields))
+        return ["dict", entries]
     raise BunRuntimeError("unknown pattern '%s'" % kind)
 
 
@@ -64,6 +94,9 @@ def plan_names(plan):
             names.extend(plan_names(plan[2]))
     elif kind == "dict":
         for _, item in plan[1]:
+            names.extend(plan_names(item))
+    elif kind == "struct":
+        for _, item in plan[2]:
             names.extend(plan_names(item))
     elif kind == "or":
         for item in plan[1]:
@@ -88,7 +121,17 @@ def pattern_names(pattern):
         for _, sub in pattern.entries:
             names.extend(pattern_names(sub))
         return names
+    if kind == "struct":
+        names = []
+        for _, sub in pattern.entries:
+            names.extend(pattern_names(sub))
+        return names
     if kind == "or":
+        names = []
+        for item in pattern.items:
+            names.extend(pattern_names(item))
+        return names
+    if kind == "enum":
         names = []
         for item in pattern.items:
             names.extend(pattern_names(item))
@@ -169,6 +212,22 @@ def match_pattern(value, plan, bindings):
             if not value.has(key):
                 return False
             if not match_pattern(value.get(key), sub, bindings):
+                return False
+        return True
+    if kind == "struct":
+        # The value has to be a struct of the named type, and every
+        # field the pattern names is matched the way a dict entry is:
+        # the field has to be there and its value has to answer the
+        # plan of the field.
+        if not isinstance(value, BunStruct):
+            return False
+        if value.type_name != plan[1]:
+            return False
+        fields = value.fields
+        for field, sub in plan[2]:
+            if field not in fields:
+                return False
+            if not match_pattern(fields[field], sub, bindings):
                 return False
         return True
     if kind == "or":

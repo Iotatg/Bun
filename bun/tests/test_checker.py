@@ -125,8 +125,8 @@ def test_builtin_arg_type_mismatch_errors():
 
 def test_builtin_arity_error():
     with pytest.raises(BunError) as info:
-        check("print(1, 2)")
-    assert "print()" in info.value.msg
+        check("len(1, 2)")
+    assert "len()" in info.value.msg
 
 
 def test_range_both_arities():

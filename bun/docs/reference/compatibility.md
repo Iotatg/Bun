@@ -41,14 +41,15 @@ The floor division of two negative integers follows Python as well:
 `and` and `or` return one of their operands, exactly as in Python. `!`
 returns a boolean.
 
-There is no ternary `a if c else b` and no null coalescing `a ?? b`.
-Write the branch out:
+There is no ternary `a if c else b`. The match as an expression is the
+answer of the language to that question, and `??` fills a null:
 
 ```bun
-var label = "none"
-if title != "" {
-    label = title
+var label = match title {
+    "" => "none"
+    _ => title
 }
+print(maybe ?? 7)
 ```
 
 ## 3. Mutability
@@ -236,7 +237,9 @@ a program.
 - **`eval`**, which runs a piece of Bun source and returns the value of
   its last expression.
 - **`scope`**, a structured concurrency statement: the body runs in a task
-  group, and the scope joins every task it spawned before it ends.
+  group, and the scope joins every task it spawned before it ends. The
+  `with` and the `scope` run under every engine of the language, the C
+  backend included.
 - **Byte lists** as the type for binary data, and the builtins that work
   on them: `sha256`, `md5`, `aes_ige_encrypt`, `aes_ctr_crypt`,
   `rsa_encrypt`, `utf8_bytes`, `bytes_slice`, `bytes_append`, `bigint_*`.
@@ -276,7 +279,24 @@ a program.
   wildcard, a type, a range, a list or a dict. A case may name more than
   one pattern: `301, 302 => print("moved")`, it may have a guard:
   `n if n > 0 => print(n)`, and a list pattern may have a tail:
-  `[first, *rest]`.
+  `[first, *rest]`. A **struct pattern** names a struct and its fields:
+  `Point(x: 0, y)` answers for a value of that struct alone, tests the
+  field `x` against the literal `0` and binds the field `y`, and a field
+  pattern is any pattern, a nested struct included. An unknown struct or
+  an unknown field is a checker error and not a failed match.
+- **The `enum`**, a named choice: a variant holds no fields or the fields
+  of a struct, the name of the enum is not a value, and a `match` pattern
+  binds the fields of a variant. The value is a dict that holds the name of
+  the enum, the name of the variant and the fields, so a `match` of a dict
+  pattern answers for a variant too.
+- **The `option`**, a value that may be missing: `some(value)` holds one
+  and `none()` holds the missing one, `is_some` and `is_none` tell the two
+  apart, the `?` gives the value in a function that answers an option and
+  passes a `none` along, and a `for` refuses to walk one.
+- **The iterator protocol**: a `for` walks any struct that answers `next`
+  with `some(item)` and `none()`. The receiver is borrowed across the loop,
+  so a `next` that writes to a field keeps walking, and the value keeps its
+  place when the loop stops early.
 - **The word `not`**, beside the mark `!`, with Python's precedence: the
   word binds looser than a comparison and tighter than `and`.
 - **A set**: `set([1, 2, 3])` holds the values that are not equal to each
@@ -421,3 +441,55 @@ print(7.0 / 2)    // 3.5
 In Python `7 / 2` is `3.5`. In Bun it is `3`, because an integer division
 that quietly produces a float is a source of slow programs, and Bun
 wants the fast path to be the default.
+
+## 13. Containers that work
+
+A list has the methods Python's list comprehensions and `map`/`filter`
+give you, and a dict has the method `items()`:
+
+| Python | Bun |
+|--------|-----|
+| `[x * 2 for x in values]` | `values.map(double)` |
+| `[x for x in values if x % 2 == 0]` | `values.filter(is_even)` |
+| `functools.reduce(add, values, 0)` | `values.reduce(0, add)` |
+| `next(x for x in values if x > 0)` | `values.find(is_positive)` |
+| `any(x > 0 for x in values)` | `values.any(is_positive)` |
+| `all(x > 0 for x in values)` | `values.all(is_positive)` |
+| `for x in values: f(x)` | `values.each(f)` |
+| `sorted(values, key=f)` | `values.sort_by(f)` |
+| `dict.items()` | `d.items()` |
+| `len(d)` | `len(d)` |
+
+The function is always the last argument, and the accumulator of `reduce`
+comes first, because a call in Bun has no keyword arguments:
+
+```bun
+fn double(n) { return n * 2 }
+fn is_even(n) { return n % 2 == 0 }
+fn add(acc, value) { return acc + value }
+
+print([1, 2, 3].map(double))        // [2, 4, 6]
+print([1, 2, 3].filter(is_even))    // [2]
+print([1, 2, 3].reduce(0, add))     // 6
+print([1, 2, 3].find(is_even))      // 2
+print([1, 2, 3].any(is_even))       // true
+print([1, 2, 3].all(is_even))       // false
+```
+
+`find` answers `null` when nothing is kept, and `each` answers `null`.
+`sort` without an argument keeps its old meaning, the list in order of
+its values; with a comparator it sorts the way the comparator says, and
+the comparator answers a number. `sort_by` sorts by the key of every
+value, and the keys must be all numbers or all strings.
+
+`print` takes any number of arguments and writes them with a space
+between them, where Python's `print` separates its arguments by a space
+as well.
+
+The pairs of `d.items()` are two-element lists, because Bun has no
+tuple:
+
+```bun
+let d = { "a": 1, "b": 2 }
+print(d.items())   // [[a, 1], [b, 2]]
+```

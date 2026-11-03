@@ -1,0 +1,36 @@
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+}
+
+let color = Color.Green
+let shapes = [Shape.Circle(2.0), Shape.Rect(3.0, 4.0)]
+let shapes2 = [Shape.Rect(1.5, 2.5), Shape.Circle(0.5)]
+
+fn area(s: Shape) -> float {
+    match s {
+        Shape.Circle(r) => return 3.14159 * r * r
+        Shape.Rect(w, h) => return w * h
+    }
+    return 0.0
+}
+
+match color {
+    Color.Red => print("red")
+    Color.Green => print("green")
+    Color.Blue => print("blue")
+}
+
+for shape in shapes {
+    print(area(shape))
+}
+
+for shape in shapes2 {
+    print(area(shape))
+}

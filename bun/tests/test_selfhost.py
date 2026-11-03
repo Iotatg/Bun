@@ -233,6 +233,56 @@ CHECKER_ERROR_CASES = [
     "fn f() {\n    match 1 {\n        1 => print(missing_name),\n    }\n}",
     "@missing\nfn one(a) {\n    return a\n}",
     "let x: int = 5\n@x\nfn one(a) {\n    return a\n}",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "struct Point {\n    var x: int\n}\n"
+    "fn show(s: Shape) {\n    print(s.area())\n}\n"
+    "show(Point(1))",
+    "protocol Shape {\n    fn area(self) -> float\n}\nlet s = Shape",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.nope())\n}\n",
+    "protocol Shape {\n    fn area(self) -> float\n    fn area(self) -> float\n}",
+    "protocol Shape {\n    fn scaled(self, factor: int) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.scaled(\"two\"))\n}\n",
+    "protocol Shape {\n    fn scaled(self, factor: int) -> float\n}\n"
+    "fn show(s: Shape) {\n    print(s.scaled())\n}\n",
+    "protocol Shape {\n    fn area(self) -> float\n}\n"
+    "fn show(s: Shape) -> float {\n    return \"two\"\n}",
+    "protocol Shape {\n    fn area(self) -> banana\n}",
+    "let x: T = 1",
+    "fn f<T: Nope>(x: T) -> T {\n    return x\n}",
+    "fn f<T, T>(x: T) -> T {\n    return x\n}",
+    "fn f<T: Num>(x: T) -> T {\n    return x\n}\nlet n: int = f(\"s\")",
+    "fn f<T>(x: T) -> T {\n    return x\n}\nlet n: string = f(1)",
+    "fn f<T>(x: T) -> T {\n    return x\n}\nlet n: int = f(\"s\")",
+    "fn f(xs: list<banana>) -> int {\n    return 0\n}",
+    "fn f<T>(xs: list<T>) -> T {\n    return xs[0]\n}\nlet n: string = f([1])",
+    "let x = Ok(1)?\n",
+    "fn f() -> int {\n    return Ok(1)?\n}\n",
+    "fn f() -> result {\n    let n = 5?\n    return Ok(n)\n}\n",
+    "enum Shape {\n    Dot\n    Dot\n}",
+    "enum Shape {\n    Dot\n}\nlet s = Shape\n",
+    "enum Shape {\n    Circle(float)\n}\nlet s = Shape.Circle(1.0, 2.0)",
+    "enum Shape {\n    Dot\n}\nlet s = Shape.Triangle\n",
+    "enum Shape {\n    Circle(banana)\n}",
+    "fn f() -> option {\n    return none()\n}\nfor v in f() {\n    print(v)\n}",
+    "fn f() -> result {\n    return Ok(1)\n}\nfor v in f() {\n    print(v)\n}",
+    "fn f() -> option {\n    return some\n}",
+    "fn f() -> option {\n    return 1\n}",
+    "fn f() -> option {\n    return Err(1)\n}",
+    "let s: option = some\n",
+    "struct Point {\n    var x: int\n}\nlet p = Point(1)\n"
+    "match p {\n    Point(z) => print(z)\n}",
+    "struct Point {\n    var x: int\n}\nlet p = Point(1)\n"
+    "match p {\n    Point(y) => print(y)\n}",
+    "enum Shape {\n    Dot\n}\nlet s = Shape.Dot\n"
+    "match s {\n    Shape(a) => print(a)\n}",
+    "let p = 1\nmatch p {\n    Nope(a) => print(a)\n}",
+    'print("abc".reveal())',
+    'print([1, 2].map())',
+    'print([1, 2].sort(1, 2))',
+    'print({"a": 1}.items(1))',
+    'print([1, 2].nope())',
+    'print("ab".nope())',
 ]
 
 

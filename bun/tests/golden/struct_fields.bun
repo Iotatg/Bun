@@ -1,0 +1,28 @@
+// A struct is a type of value: it holds named fields, and the fields
+// keep the order in which they are declared.
+struct Point {
+    x: int,
+    y: int
+}
+
+let p = Point(3, 4)
+print(p.x)
+print(p.y)
+
+// The fields of a struct may have a type, and a default value.
+struct Counter {
+    name: string,
+    count: int = 0
+}
+
+let c = Counter("clicks")
+print(c.name)
+print(c.count)
+
+let d = Counter("double", 5)
+print(d.name)
+print(d.count)
+
+// The value of a struct is shown with its type name.
+print(p)
+print(c)

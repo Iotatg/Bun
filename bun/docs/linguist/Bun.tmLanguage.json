@@ -1,0 +1,233 @@
+{
+  "name": "Bun",
+  "scopeName": "source.bun",
+  "fileTypes": [
+    "bun"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#decorators"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.bun",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.bun",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.bun",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.bun",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        },
+        {
+          "name": "string.interpolated.double.bun",
+          "begin": "f\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#escapes"
+            },
+            {
+              "include": "#interpolation"
+            }
+          ]
+        },
+        {
+          "name": "string.interpolated.single.bun",
+          "begin": "f'",
+          "end": "'",
+          "patterns": [
+            {
+              "include": "#escapes"
+            },
+            {
+              "include": "#interpolation"
+            }
+          ]
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.bun",
+      "match": "\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0abfnrtv\\\\'\"])"
+    },
+    "interpolation": {
+      "name": "meta.interpolation.bun",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.bun",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.bun",
+          "match": "\\b0[oO][0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.bun",
+          "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.bun",
+          "match": "\\b[0-9][0-9_]*\\.[0-9_]*(?:[eE][-+]?[0-9]+)?\\b|\\b[0-9][0-9_]*[eE][-+]?[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.bun",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "decorators": {
+      "name": "meta.decorator.bun",
+      "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.decorator.bun"
+        },
+        "2": {
+          "name": "entity.name.function.bun"
+        }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.bun",
+          "match": "\\b(if|else|while|for|in|break|continue|return|match|try|catch|finally|with|as|throw|assert|yield|spawn)\\b"
+        },
+        {
+          "name": "keyword.other.bun",
+          "match": "\\b(and|or|not|import|from|export)\\b"
+        },
+        {
+          "name": "storage.type.bun",
+          "match": "\\b(fn|struct|impl|protocol|let|var)\\b"
+        }
+      ]
+    },
+    "types": {
+      "name": "support.type.bun",
+      "match": "\\b(int|float|string|bool|any|list|dict|fn|secret|set|struct|result|protocol|number|text)\\b"
+    },
+    "constants": {
+      "name": "constant.language.bun",
+      "match": "\\b(true|false|null)\\b"
+    },
+    "builtins": {
+      "name": "support.function.builtin.bun",
+      "match": "\\b(print|len|range|str|input|int|chr|ord|float|type_of|bool|abs|sum|any|all|min|max|zip|enumerate|sorted|reversed|next|send|set|read_file|write_file|append_file|file_exists|getenv|getenv_or|json_parse|json_stringify|http_get|http_post|exec|eval|now|sleep|task_join|task_done|cancel|task_cancelled|sandbox_enter|sandbox_exit|mutex|lock|unlock|ffi_load|list_dir|make_dir|exit|args|sha256|sha1|md5|base64_encode|base64_decode|gzip_decompress|random_bytes|random|random_int|pow_mod|dump|secret|url_encode|url_decode|starts_with|ends_with|substring|index_of|split|join|replace|trim|lower|upper|Ok|Err|is_ok|is_err)\\b"
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "meta.function-call.bun",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.bun"
+            }
+          }
+        },
+        {
+          "name": "entity.name.function.bun",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.fn.bun"
+            },
+            "2": {
+              "name": "entity.name.function.bun"
+            }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.bun",
+      "match": "(\\?\\?|\\?\\.|->|=>|==|!=|<=|>=|&&|\\|\\||[+\\-*/%&|^~!<>=]=?|\\*\\*|<<|>>|\\?)"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.bun",
+          "match": "[,;]"
+        },
+        {
+          "name": "punctuation.accessor.bun",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.bracket.bun",
+          "match": "[()\\[\\]{}]"
+        },
+        {
+          "name": "punctuation.terminator.bun",
+          "match": ":"
+        }
+      ]
+    }
+  }
+}

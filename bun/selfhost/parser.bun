@@ -73,6 +73,18 @@ fn statement(st) {
     if t == "FN" {
         return fn_decl(st)
     }
+    if t == "STRUCT" {
+        return struct_decl(st)
+    }
+    if t == "ENUM" {
+        return enum_decl(st)
+    }
+    if t == "IMPL" {
+        return impl_decl(st)
+    }
+    if t == "PROTOCOL" {
+        return protocol_decl(st)
+    }
     if t == "AT" {
         return decorated_decl(st)
     }
@@ -202,6 +214,7 @@ fn unpack_binding(st) {
 fn fn_decl(st) {
     let kw = advance(st)
     let name = expect(st, "IDENT", "expected function name")
+    let type_params = type_param_list(st)
     expect(st, "LPAREN", "expected '(' after function name")
     let params = param_list(st)
     var return_type = null
@@ -209,7 +222,126 @@ fn fn_decl(st) {
         return_type = type_name(st)
     }
     let body = block(st)
-    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": []}
+    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": type_params}
+}
+
+// Parse a struct: the name of the type and the fields it holds.
+fn struct_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected struct name")
+    expect(st, "LBRACE", "expected '{' after struct name")
+    let fields = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        fields.push(struct_field(st))
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after struct fields")
+    return {"kind": "StructDecl", "name": name["value"], "fields": fields, "line": kw["line"], "col": kw["col"]}
+}
+
+fn struct_field(st) {
+    let start = peek(st)
+    var mutable = true
+    if match_token(st, ["LET"]) != null {
+        mutable = false
+    } else {
+        if match_token(st, ["VAR"]) != null {
+            mutable = true
+        }
+    }
+    let name = expect(st, "IDENT", "expected field name")
+    let type_ann = opt_type(st)
+    var default = null
+    if match_token(st, ["ASSIGN"]) != null {
+        default = expression(st)
+    }
+    return {"kind": "StructField", "name": name["value"], "type_ann": type_ann, "mutable": mutable, "default": default, "line": start["line"], "col": start["col"]}
+}
+
+// Parse an enum: the variants it holds.
+fn enum_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected enum name")
+    expect(st, "LBRACE", "expected '{' after enum name")
+    let variants = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        variants.push(enum_variant(st))
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after enum variants")
+    return {"kind": "EnumDecl", "name": name["value"], "variants": variants, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse one variant of an enum: its name and the types of its fields.
+fn enum_variant(st) {
+    let start = peek(st)
+    let name = expect(st, "IDENT", "expected a variant name")
+    let field_types = []
+    if match_token(st, ["LPAREN"]) != null {
+        if !check(st, "RPAREN") {
+            while true {
+                field_types.push(type_name(st))
+                if match_token(st, ["COMMA"]) == null {
+                    break
+                }
+                if check(st, "RPAREN") {
+                    break
+                }
+            }
+        }
+        expect(st, "RPAREN", "expected ')' after the fields of a variant")
+    }
+    return {"kind": "EnumVariant", "name": name["value"], "field_types": field_types, "line": start["line"], "col": start["col"]}
+}
+
+// Parse an impl block: the methods of a type.
+fn impl_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected type name after 'impl'")
+    expect(st, "LBRACE", "expected '{' after impl name")
+    let methods = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        if !check(st, "FN") {
+            throw "expected a method in an impl block"
+        }
+        methods.push(fn_decl(st))
+    }
+    expect(st, "RBRACE", "expected '}' after impl methods")
+    return {"kind": "ImplDecl", "type_name": name["value"], "methods": methods, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse a protocol: a set of method signatures.
+fn protocol_decl(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected protocol name")
+    expect(st, "LBRACE", "expected '{' after protocol name")
+    let methods = []
+    while !check(st, "RBRACE") and !check(st, "EOF") {
+        if !check(st, "FN") {
+            throw "expected a method signature in a protocol block"
+        }
+        methods.push(method_signature(st))
+    }
+    expect(st, "RBRACE", "expected '}' after protocol methods")
+    return {"kind": "ProtocolDecl", "name": name["value"], "methods": methods, "line": kw["line"], "col": kw["col"]}
+}
+
+// Parse the signature of a method: the name, the parameters and the
+// return type, without a body.
+fn method_signature(st) {
+    let kw = advance(st)
+    let name = expect(st, "IDENT", "expected method name")
+    expect(st, "LPAREN", "expected '(' after method name")
+    let params = param_list(st)
+    var return_type = null
+    if match_token(st, ["ARROW"]) != null {
+        return_type = type_name(st)
+    }
+    if params.len() == 0 or params[0]["name"] != "self" {
+        throw "expected 'self' as the first parameter of a protocol method"
+    }
+    let body = {"kind": "Block", "statements": [], "line": kw["line"], "col": kw["col"]}
+    return {"kind": "FnDecl", "name": name["value"], "params": params, "body": body, "line": kw["line"], "col": kw["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": []}
 }
 
 // Parse a function with decorators in front of it. The decorators are
@@ -297,10 +429,67 @@ fn opt_type(st) {
 }
 
 fn type_name(st) {
+    // A type is a name, or a name with type arguments: `list<T>`. A
+    // type argument is a plain type name or a type variable, so a type
+    // is never written `list<list<T>>`.
     if check(st, "FN") {
         return advance(st)["value"]
     }
-    return expect(st, "IDENT", "expected type name")["value"]
+    let name = expect(st, "IDENT", "expected type name")["value"]
+    if !check(st, "LT") {
+        return name
+    }
+    advance(st)
+    let args = []
+    while !check(st, "GT") {
+        args.push(type_argument(st))
+        if match_token(st, ["COMMA"]) == null {
+            break
+        }
+    }
+    expect(st, "GT", "expected '>' after type arguments")
+    return name + "<" + join_types(args) + ">"
+}
+
+fn type_argument(st) {
+    return expect(st, "IDENT", "expected type argument")["value"]
+}
+
+fn join_types(args) {
+    // The type arguments of a type are written with a comma and a
+    // space between them.
+    var out = ""
+    var i = 0
+    while i < args.len() {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + args[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Parse the type parameters of a function: `<T, U: Num>`.
+fn type_param_list(st) {
+    if !check(st, "LT") {
+        return []
+    }
+    advance(st)
+    let params = []
+    while !check(st, "GT") {
+        let tok = expect(st, "IDENT", "expected type parameter name")
+        var bound = null
+        if match_token(st, ["COLON"]) != null {
+            bound = expect(st, "IDENT", "expected bound of type parameter")["value"]
+        }
+        params.push({"kind": "TypeParam", "name": tok["value"], "bound": bound, "line": tok["line"], "col": tok["col"]})
+        if match_token(st, ["COMMA"]) == null {
+            break
+        }
+    }
+    expect(st, "GT", "expected '>' after type parameters")
+    return params
 }
 
 fn import_stmt(st) {
@@ -490,6 +679,67 @@ fn try_match_stmt(st) {
     return {"kind": "MatchStmt", "subject": subject, "cases": cases, "line": kw["line"], "col": kw["col"]}
 }
 
+fn match_case_pattern(st) {
+    var pattern = match_pattern(st)
+    if check(st, "COMMA") {
+        let alternatives = [pattern]
+        while match_token(st, ["COMMA"]) != null {
+            alternatives.push(match_pattern(st))
+        }
+        pattern = match_pattern_node("or", pattern, "", null, null, alternatives, [])
+    }
+    if check(st, "IF") {
+        advance(st)
+        pattern["guard"] = expression(st)
+    }
+    return pattern
+}
+
+fn try_match_expr(st) {
+    let save = st["pos"]
+    let kw = advance(st)
+    var subject = null
+    var parsed = false
+    try {
+        subject = expression(st)
+        parsed = true
+    } catch err {
+        parsed = false
+    }
+    if !parsed {
+        st["pos"] = save
+        return null
+    }
+    if !check(st, "LBRACE") {
+        st["pos"] = save
+        return null
+    }
+    advance(st)
+    let cases = []
+    while !check(st, "RBRACE") {
+        let pattern = match_case_pattern(st)
+        expect(st, "FAT_ARROW", "expected '=>' after a match pattern")
+        if check(st, "LBRACE") {
+            throw "the arm of a match expression answers a value, not a block"
+        }
+        let body = match_arm_value(st)
+        cases.push([pattern, body])
+        match_token(st, ["COMMA"])
+    }
+    expect(st, "RBRACE", "expected '}' after the match cases")
+    return {"kind": "MatchExpr", "subject": subject, "cases": cases, "line": kw["line"], "col": kw["col"]}
+}
+
+fn match_arm_value(st) {
+    let start = st["pos"]
+    var value = expression(st)
+    if check(st, "FAT_ARROW") {
+        st["pos"] = start
+        value = comparison(st)
+    }
+    return value
+}
+
 fn match_body(st) {
     // A block holds many statements; anything else is one statement.  A
     // dict literal as a case body needs parentheses, because a `{` after
@@ -538,7 +788,18 @@ fn unpack_ahead(st) {
 
 fn match_pattern(st) {
     let tok = peek(st)
+    if tok["type"] == "IDENT" and peek_token(st, 1)["type"] == "DOT" {
+        // A variant of an enum: `Color.Red`, with the fields of a
+        // variant written in parentheses: `Shape.Circle(radius)`.
+        return enum_variant_pattern(st)
+    }
     if tok["type"] == "IDENT" {
+        if peek_token(st, 1)["type"] == "LPAREN" {
+            // A pattern of a struct: `Point(x: 0, y)`. The value has to
+            // be a struct of the named type, and the fields are matched
+            // one by one.
+            return struct_pattern(st)
+        }
         if tok["value"] == "_" {
             advance(st)
             return match_pattern_node("wildcard", tok, "", null, null, [], [])
@@ -606,6 +867,56 @@ fn match_pattern(st) {
         return match_pattern_node("range", tok, "", value, high, [], [])
     }
     return match_pattern_node("literal", tok, "", value, null, [], [])
+}
+
+// Parse the pattern of a variant of an enum: the name of the enum, the
+// name of the variant, and the patterns of its fields, bound by
+// position.
+fn enum_variant_pattern(st) {
+    let name_tok = advance(st)
+    expect(st, "DOT", "expected '.' in a variant pattern")
+    let variant = expect(st, "IDENT", "expected a variant name")
+    let items = []
+    if match_token(st, ["LPAREN"]) != null {
+        if !check(st, "RPAREN") {
+            while true {
+                items.push(match_pattern(st))
+                if match_token(st, ["COMMA"]) == null {
+                    break
+                }
+                if check(st, "RPAREN") {
+                    break
+                }
+            }
+        }
+        expect(st, "RPAREN", "expected ')' after the fields of a variant")
+    }
+    return match_pattern_node("enum", name_tok, variant["value"], name_tok["value"], null, items, [])
+}
+
+fn struct_pattern(st) {
+    let name_tok = advance(st)
+    expect(st, "LPAREN", "expected '(' after the name of a struct pattern")
+    let entries = []
+    if !check(st, "RPAREN") {
+        while true {
+            let field = expect(st, "IDENT", "expected a field name in a struct pattern")
+            if match_token(st, ["COLON"]) != null {
+                entries.push([field["value"], match_pattern(st)])
+            } else {
+                // A bare name binds the field that name holds.
+                entries.push([field["value"], match_pattern_node("binding", field, field["value"], null, null, [], [])])
+            }
+            if match_token(st, ["COMMA"]) == null {
+                break
+            }
+            if check(st, "RPAREN") {
+                break
+            }
+        }
+    }
+    expect(st, "RPAREN", "expected ')' after the fields of a struct pattern")
+    return match_pattern_node("struct", name_tok, "", name_tok["value"], null, [], entries)
 }
 
 fn match_pattern_node(kind, tok, name, value, high, items, entries) {
@@ -718,7 +1029,10 @@ fn throw_stmt(st) {
 
 fn expr_stmt(st) {
     let start = peek(st)
-    let expr = expression(st)
+    if check(st, "INCREMENT") or check(st, "DECREMENT") {
+        return inc_dec_stmt(st, start, true, null)
+    }
+    let expr = statement_expression(st)
     if check(st, "COMMA") and st["match_body_depth"] == 0 {
         let targets = [unpack_target(st, expr)]
         while match_token(st, ["COMMA"]) != null {
@@ -731,6 +1045,11 @@ fn expr_stmt(st) {
         let value = expression(st)
         let target = {"kind": "UnpackTarget", "target_kind": "tuple", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
         return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
+    }
+    let compound = compound_op(st)
+    if compound != null {
+        let value = expression(st)
+        return {"kind": "OpAssignStmt", "target": assign_target(expr, start), "op": compound, "value": value, "line": start["line"], "col": start["col"]}
     }
     if match_token(st, ["ASSIGN"]) != null {
         let value = expression(st)
@@ -746,17 +1065,78 @@ fn expr_stmt(st) {
             let target = {"kind": "UnpackTarget", "target_kind": "list", "targets": targets, "name": null, "line": start["line"], "col": start["col"]}
             return {"kind": "AssignStmt", "target": target, "value": value, "line": start["line"], "col": start["col"]}
         }
-        if !(kind == "Identifier" or kind == "Index") {
+        if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
             throw "invalid assignment target"
         }
         return {"kind": "AssignStmt", "target": expr, "value": value, "line": start["line"], "col": start["col"]}
     }
+    if check(st, "INCREMENT") or check(st, "DECREMENT") {
+        if peek(st)["line"] != prev_line(st) {
+            return {"kind": "ExprStmt", "expr": expr, "line": start["line"], "col": start["col"]}
+        }
+        return inc_dec_stmt(st, start, false, expr)
+    }
     return {"kind": "ExprStmt", "expr": expr, "line": start["line"], "col": start["col"]}
+}
+
+fn compound_op(st) {
+    let table = {
+        "PLUS_ASSIGN": "+",
+        "MINUS_ASSIGN": "-",
+        "STAR_ASSIGN": "*",
+        "SLASH_ASSIGN": "/",
+        "PERCENT_ASSIGN": "%",
+        "AMP_ASSIGN": "&",
+        "PIPE_ASSIGN": "|",
+        "CARET_ASSIGN": "^",
+        "LSHIFT_ASSIGN": "<<",
+        "RSHIFT_ASSIGN": ">>",
+    }
+    let tok = peek(st)
+    if table.has(tok["type"]) {
+        advance(st)
+        return table.get(tok["type"])
+    }
+    return null
+}
+
+fn assign_target(expr, start) {
+    let kind = expr["kind"]
+    if kind == "Identifier" or kind == "Index" or kind == "Attribute" {
+        return expr
+    }
+    throw "invalid assignment target"
+}
+
+fn inc_dec_stmt(st, start, prefix, expr) {
+    if prefix {
+        let op = advance(st)
+        expr = postfix(st)
+        let kind = expr["kind"]
+        if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
+            throw "invalid target for the increment"
+        }
+        var sign = "-"
+        if op["type"] == "INCREMENT" {
+            sign = "+"
+        }
+        return {"kind": "IncDecStmt", "target": expr, "op": sign, "line": start["line"], "col": start["col"]}
+    }
+    let op = advance(st)
+    let kind = expr["kind"]
+    if !(kind == "Identifier" or kind == "Index" or kind == "Attribute") {
+        throw "invalid target for the increment"
+    }
+    var sign = "-"
+    if op["type"] == "INCREMENT" {
+        sign = "+"
+    }
+    return {"kind": "IncDecStmt", "target": expr, "op": sign, "line": start["line"], "col": start["col"]}
 }
 
 fn unpack_target(st, expr) {
     let kind = expr["kind"]
-    if kind == "Identifier" or kind == "Index" {
+    if kind == "Identifier" or kind == "Index" or kind == "Attribute" {
         return expr
     }
     throw "invalid assignment target"
@@ -773,7 +1153,24 @@ fn block(st) {
 }
 
 fn expression(st) {
-    return or_expr(st)
+    let expr = coalesce(st)
+    if (check(st, "INCREMENT") or check(st, "DECREMENT")) and peek(st)["line"] == prev_line(st) {
+        throw "the increment is a statement, not an expression"
+    }
+    return expr
+}
+
+fn statement_expression(st) {
+    return coalesce(st)
+}
+
+fn coalesce(st) {
+    let expr = or_expr(st)
+    if check(st, "NULL_COALESCE") {
+        let op = advance(st)
+        return {"kind": "Binary", "left": expr, "op": "??", "right": coalesce(st), "line": op["line"], "col": op["col"]}
+    }
+    return expr
 }
 
 fn or_expr(st) {
@@ -937,25 +1334,34 @@ fn postfix(st) {
             } else {
                 if check(st, "DOT") {
                     advance(st)
-                    let name = expect(st, "IDENT", "expected method name after '.'")
-                    expect(st, "LPAREN", "expected '(' after method name")
-                    let args = []
-                    if !check(st, "RPAREN") {
-                        args.push(expression(st))
-                        while match_token(st, ["COMMA"]) != null {
+                    let name = expect(st, "IDENT", "expected name after '.'")
+                    if check(st, "LPAREN") {
+                        advance(st)
+                        let args = []
+                        if !check(st, "RPAREN") {
                             args.push(expression(st))
+                            while match_token(st, ["COMMA"]) != null {
+                                args.push(expression(st))
+                            }
                         }
-                    }
-                    expect(st, "RPAREN", "expected ')' after arguments")
-                    expr = {"kind": "MethodCall", "receiver": expr, "method": name["value"], "args": args, "line": expr["line"], "col": expr["col"]}
-                } else {
-                    if check(st, "LBRACE") and expr["kind"] == "Identifier" and expr["name"] == "spawn" {
-                        // `spawn { ... }` is sugar for `spawn(fn() { ... })`.
-                        let body = block(st)
-                        let function = {"kind": "FnDecl", "name": "", "params": [], "body": body, "line": expr["line"], "col": expr["col"], "exported": false, "return_type": null, "decorators": []}
-                        expr = {"kind": "Call", "callee": expr, "args": [function], "line": expr["line"], "col": expr["col"], "kwargs": []}
+                        expect(st, "RPAREN", "expected ')' after arguments")
+                        expr = {"kind": "MethodCall", "receiver": expr, "method": name["value"], "args": args, "line": expr["line"], "col": expr["col"]}
                     } else {
-                        looping = false
+                        expr = {"kind": "Attribute", "object": expr, "name": name["value"], "line": expr["line"], "col": expr["col"]}
+                    }
+                } else {
+                    if check(st, "QUESTION") {
+                        let op = advance(st)
+                        expr = {"kind": "Unwrap", "expr": expr, "line": op["line"], "col": op["col"]}
+                    } else {
+                        if check(st, "LBRACE") and expr["kind"] == "Identifier" and expr["name"] == "spawn" {
+                            // `spawn { ... }` is sugar for `spawn(fn() { ... })`.
+                            let body = block(st)
+                            let function = {"kind": "FnDecl", "name": "", "params": [], "body": body, "line": expr["line"], "col": expr["col"], "exported": false, "return_type": null, "decorators": [], "type_params": []}
+                            expr = {"kind": "Call", "callee": expr, "args": [function], "line": expr["line"], "col": expr["col"], "kwargs": []}
+                        } else {
+                            looping = false
+                        }
                     }
                 }
             }
@@ -994,6 +1400,12 @@ fn primary(st) {
         return yield_expr(st)
     }
     if t == "IDENT" {
+        if tok["value"] == "match" {
+            let node = try_match_expr(st)
+            if node != null {
+                return node
+            }
+        }
         advance(st)
         return {"kind": "Identifier", "name": tok["value"], "line": tok["line"], "col": tok["col"]}
     }
@@ -1017,7 +1429,7 @@ fn primary(st) {
             return_type = type_name(st)
         }
         let body = block(st)
-        return {"kind": "FnDecl", "name": "", "params": params, "body": body, "line": tok["line"], "col": tok["col"], "exported": false, "return_type": return_type, "decorators": []}
+        return {"kind": "FnDecl", "name": "", "params": params, "body": body, "line": tok["line"], "col": tok["col"], "exported": false, "return_type": return_type, "decorators": [], "type_params": []}
     }
     if t == "LPAREN" {
         advance(st)

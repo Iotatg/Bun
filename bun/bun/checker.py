@@ -2,7 +2,21 @@ from __future__ import annotations
 from .records import record
 
 from . import ast, modules, ops, patterns, types
+from .dict import DICT_METHOD_INFO
 from .errors import BunError, BunTypeError
+from .methods import LIST_METHOD_INFO, STRING_METHOD_INFO
+from .set import SET_METHOD_INFO
+
+
+# The methods of the containers, by the type of the receiver.  The
+# checker knows the receiver of a method call, so a call of a method
+# that a container does not have is refused before the program runs.
+CONTAINER_METHODS = {
+    types.STRING: ("string", STRING_METHOD_INFO),
+    types.LIST: ("list", LIST_METHOD_INFO),
+    types.DICT: ("dict", DICT_METHOD_INFO),
+    types.SET: ("set", SET_METHOD_INFO),
+}
 
 
 @record
@@ -11,6 +25,7 @@ class Binding:
     params: list[dict | None] = None
     return_type: str | None = None
     mutable: bool = True
+    type_params: list | None = None
 
 
 class Checker:
@@ -23,12 +38,21 @@ class Checker:
         self.module_names = set()
         self.name_stack = []
         self.function_depth = 0
+        self.structs = {}
+        self.enums = {}
+        self.impls = {}
+        self.protocols = {}
+        self.type_vars = []
+        self._checking_method = None
 
     def check(self, program, base_dir=None, scope=None):
         self.base_dir = base_dir
         if scope is None:
             scope = {}
         self._collect_functions(program.statements, scope)
+        self._collect_structs(program.statements, scope)
+        self._collect_enums(program.statements)
+        self._collect_protocols(program.statements)
         self._collect_module_names(program.statements)
         self._statements(program.statements, scope)
         return scope
@@ -44,6 +68,12 @@ class Checker:
             if isinstance(statement, ast.LetStmt):
                 self.module_names.add(statement.name)
             elif isinstance(statement, ast.FnDecl):
+                self.module_names.add(statement.name)
+            elif isinstance(statement, ast.StructDecl):
+                self.module_names.add(statement.name)
+            elif isinstance(statement, ast.EnumDecl):
+                self.module_names.add(statement.name)
+            elif isinstance(statement, ast.ProtocolDecl):
                 self.module_names.add(statement.name)
             elif isinstance(statement, ast.UnpackStmt):
                 for name in self._unpack_names(statement.targets):
@@ -68,6 +98,10 @@ class Checker:
         if isinstance(node, ast.LetStmt):
             names.add(node.name)
         elif isinstance(node, ast.FnDecl):
+            names.add(node.name)
+        elif isinstance(node, ast.StructDecl):
+            names.add(node.name)
+        elif isinstance(node, ast.ProtocolDecl):
             names.add(node.name)
         elif isinstance(node, ast.AssignStmt):
             if isinstance(node.target, ast.Identifier):
@@ -136,7 +170,133 @@ class Checker:
             if isinstance(statement, ast.FnDecl):
                 scope[statement.name] = Binding(
                     types.FN, self._param_specs(statement), statement.return_type,
-                    False)
+                    False, statement.type_params)
+
+    def _push_type_vars(self, fn):
+        """Make the type parameters of a function the types in scope.
+
+        A type parameter is a name of a type that is not known yet, so
+        the body of the function is checked with it in place of a type.
+        """
+        frame = {}
+        seen = set()
+        for param in fn.type_params:
+            if param.name in seen:
+                raise BunTypeError(
+                    "duplicate type parameter '%s'" % param.name,
+                    param.line, param.col)
+            if param.bound is not None and param.bound not in types.BOUND_NAMES:
+                raise BunTypeError(
+                    "unknown bound '%s'" % param.bound, param.line, param.col)
+            seen.add(param.name)
+            frame[param.name] = param.bound
+        self.type_vars.append(frame)
+
+    def _pop_type_vars(self):
+        self.type_vars.pop()
+
+    def _is_type_var(self, name):
+        """Report whether a name is a type parameter in scope."""
+        for frame in reversed(self.type_vars):
+            if name in frame:
+                return True
+        return False
+
+    def _type_var_bound(self, name):
+        """The bound of a type parameter in scope."""
+        for frame in reversed(self.type_vars):
+            if name in frame:
+                return frame[name]
+        return None
+
+    def _collect_structs(self, statements, scope):
+        for statement in statements:
+            if isinstance(statement, ast.StructDecl):
+                self.structs[statement.name] = statement
+                scope[statement.name] = Binding(types.STRUCT, mutable=False)
+            elif isinstance(statement, ast.ImplDecl):
+                methods = self.impls.setdefault(statement.type_name, {})
+                for method in statement.methods:
+                    methods[method.name] = method
+
+    def _collect_enums(self, statements):
+        """Collect the enums of the program.
+
+        The enums are collected before the statements are checked, so
+        an enum may be used before the declaration that names it, the
+        way a struct may.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = {
+                    variant.name: variant.field_types
+                    for variant in statement.variants}
+
+    def _collect_protocols(self, statements):
+        """Collect the protocols of the program.
+
+        The protocols are collected before the statements are checked, so
+        a protocol may be used before the declaration that names it.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.ProtocolDecl):
+                methods = {}
+                for method in statement.methods:
+                    methods[method.name] = method
+                self.protocols[statement.name] = methods
+
+    def _missing_method(self, source, protocol_name):
+        """The first method of a protocol that a type does not have.
+
+        A protocol is satisfied by a type that has every method of the
+        protocol, so the check of a protocol is a check of the methods.
+        """
+        if source == types.ANY:
+            return None
+        if source in self.protocols:
+            methods = self.protocols[source]
+        else:
+            methods = self.impls.get(source)
+        if methods is None:
+            methods = {}
+        for name in self.protocols[protocol_name]:
+            if name not in methods:
+                return name
+        return None
+
+    def _check_assignable(self, source, target, node, template, *extra):
+        """Check that a value of the source type fits the target type.
+
+        The message is written only when the check fails.  A protocol
+        says which method is missing, because that is the part the
+        program has to add.  A target that is a type parameter takes any
+        type that satisfies its bound: the type of the parameter is not
+        known yet.
+        """
+        if target in self.protocols:
+            missing = self._missing_method(source, target)
+            if missing is not None:
+                raise BunTypeError(
+                    "type '%s' does not satisfy protocol '%s': missing method '%s'"
+                    % (source, target, missing), node.line, node.col)
+            return
+        if self._is_type_var(target):
+            bound = self._type_var_bound(target)
+            # A type parameter satisfies the bound of another type
+            # parameter: the type is not known yet.
+            if (not self._is_type_var(source)
+                    and not types.satisfies_bound(source, bound)):
+                raise BunTypeError(template % ((source, target) + extra),
+                                   node.line, node.col)
+            return
+        if not types.is_assignable(source, target):
+            raise BunTypeError(template % ((source, target) + extra),
+                               node.line, node.col)
+
+    def _assign_template(self, name):
+        """The message of a value that does not fit the type of a name."""
+        return ("cannot assign value of type '%s' to variable '" + name
+                + "' of type '%s'")
 
     def _param_specs(self, fn):
         specs = []
@@ -157,38 +317,43 @@ class Checker:
         if isinstance(node, ast.LetStmt):
             self._check_annotation(node.type_ann, node)
             value_type = self._expr(node.value, scope)
-            if (node.type_ann is not None
-                    and not types.is_assignable(value_type, node.type_ann)):
-                raise BunTypeError(
-                    "cannot assign value of type '%s' to variable '%s' of type '%s'"
-                    % (value_type, node.name, node.type_ann), node.line, node.col)
+            if node.type_ann is not None:
+                self._check_assignable(
+                    value_type, node.type_ann, node,
+                    self._assign_template(node.name))
             if (isinstance(node.value, ast.FnDecl)
                     and node.type_ann in (None, types.FN)):
                 scope[node.name] = Binding(
                     types.FN, self._param_specs(node.value),
-                    node.value.return_type, node.mutable)
+                    node.value.return_type, node.mutable,
+                    node.value.type_params)
             else:
-                scope[node.name] = Binding(
-                    node.type_ann or types.ANY, mutable=node.mutable)
+                bound_type = node.type_ann or types.ANY
+                if node.type_ann is None and value_type in self.structs:
+                    bound_type = value_type
+                scope[node.name] = Binding(bound_type, mutable=node.mutable)
         elif isinstance(node, ast.FnDecl):
-            self._check_annotation(node.return_type, node)
-            self._check_decorators(node, scope)
-            self._function(node, scope)
+            self._push_type_vars(node)
+            try:
+                self._check_annotation(node.return_type, node)
+                self._check_decorators(node, scope)
+                self._function(node, scope)
+            finally:
+                self._pop_type_vars()
             # The name of the function belongs to the block that holds it,
             # so a function that is defined inside a block may be called
             # there.
             scope[node.name] = Binding(
-                types.FN, self._param_specs(node), node.return_type, False)
+                types.FN, self._param_specs(node), node.return_type, False,
+                node.type_params)
         elif isinstance(node, ast.AssignStmt):
             value_type = self._expr(node.value, scope)
             if isinstance(node.target, ast.Identifier):
                 binding = scope.get(node.target.name)
-                if (binding is not None and binding.type != types.ANY
-                        and not types.is_assignable(value_type, binding.type)):
-                    raise BunTypeError(
-                        "cannot assign value of type '%s' to variable '%s' of type '%s'"
-                        % (value_type, node.target.name, binding.type),
-                        node.line, node.col)
+                if binding is not None and binding.type != types.ANY:
+                    self._check_assignable(
+                        value_type, binding.type, node,
+                        self._assign_template(node.target.name))
                 if binding is not None and not binding.mutable:
                     raise BunTypeError(
                         "cannot assign to immutable variable '%s'"
@@ -200,19 +365,68 @@ class Checker:
                     binding = scope.get(leaf.name)
                     if binding is None:
                         continue
-                    if (binding.type != types.ANY
-                            and not types.is_assignable(value_type,
-                                                       binding.type)):
-                        raise BunTypeError(
-                            "cannot assign value of type '%s' to variable '%s' of type '%s'"
-                            % (value_type, leaf.name, binding.type),
-                            node.line, node.col)
+                    if binding.type != types.ANY:
+                        self._check_assignable(
+                            value_type, binding.type, node,
+                            self._assign_template(leaf.name))
                     if not binding.mutable:
                         raise BunTypeError(
                             "cannot assign to immutable variable '%s'"
                             % leaf.name, node.line, node.col)
+            elif isinstance(node.target, ast.Attribute):
+                obj_type = self._expr(node.target.object, scope)
+                self._check_field_assign(node.target, obj_type, node, scope)
             else:
                 self._expr(node.target, scope)
+        elif isinstance(node, ast.OpAssignStmt):
+            # The compound assignment is an assignment: the name has to be
+            # mutable, and the value has to fit the type of the name.
+            value_type = self._expr(node.value, scope)
+            target = node.target
+            if isinstance(target, ast.Identifier):
+                binding = scope.get(target.name)
+                if binding is not None:
+                    if binding.type != types.ANY:
+                        self._check_assignable(
+                            value_type, binding.type, node,
+                            self._assign_template(target.name))
+                    if not binding.mutable:
+                        raise BunTypeError(
+                            "cannot assign to immutable variable '%s'"
+                            % target.name, node.line, node.col)
+            elif isinstance(target, ast.Attribute):
+                obj_type = self._expr(target.object, scope)
+                self._check_field_assign(target, obj_type, node, scope)
+            else:
+                self._expr(target, scope)
+        elif isinstance(node, ast.IncDecStmt):
+            # The increment and the decrement add one to a number and
+            # store it, so the name has to be mutable and hold a number.
+            target = node.target
+            if isinstance(target, ast.Identifier):
+                binding = scope.get(target.name)
+                if binding is not None:
+                    if not binding.mutable:
+                        raise BunTypeError(
+                            "cannot assign to immutable variable '%s'"
+                            % target.name, node.line, node.col)
+                    if binding.type not in (types.ANY, types.INT, types.FLOAT):
+                        raise BunTypeError(
+                            "cannot increment a value of type '%s'"
+                            % binding.type, node.line, node.col)
+            elif isinstance(target, ast.Attribute):
+                obj_type = self._expr(target.object, scope)
+                self._check_field_assign(target, obj_type, node, scope)
+            else:
+                self._expr(target, scope)
+        elif isinstance(node, ast.StructDecl):
+            self._check_struct(node, scope)
+        elif isinstance(node, ast.EnumDecl):
+            self._check_enum(node, scope)
+        elif isinstance(node, ast.ImplDecl):
+            self._check_impl(node, scope)
+        elif isinstance(node, ast.ProtocolDecl):
+            self._check_protocol(node, scope)
         elif isinstance(node, ast.ReturnStmt):
             if node.value is not None:
                 value_type = self._expr(node.value, scope)
@@ -220,11 +434,11 @@ class Checker:
                 value_type = types.NULL
             if self.return_stack:
                 declared = self.return_stack[-1]
-                if (declared is not None
-                        and not types.is_assignable(value_type, declared)):
-                    raise BunTypeError(
-                        "cannot return value of type '%s' from function with return type '%s'"
-                        % (value_type, declared), node.line, node.col)
+                if declared is not None:
+                    self._check_assignable(
+                        value_type, declared, node,
+                        "cannot return value of type '%s' from function with "
+                        "return type '%s'")
         elif isinstance(node, ast.Block):
             self._statements(node.statements, dict(scope))
         elif isinstance(node, ast.IfStmt):
@@ -242,10 +456,10 @@ class Checker:
             finally:
                 self.loop_depth -= 1
         elif isinstance(node, ast.ForStmt):
-            self._expr(node.iterable, scope)
+            element = self._walked_element(node.iterable, scope, node)
             loop_scope = dict(scope)
             for name in node.targets:
-                loop_scope[name] = Binding(types.ANY)
+                loop_scope[name] = Binding(element or types.ANY)
             self.loop_depth += 1
             try:
                 self._statements(node.body.statements, loop_scope)
@@ -262,6 +476,7 @@ class Checker:
         elif isinstance(node, ast.MatchStmt):
             self._expr(node.subject, scope)
             for pattern, body in node.cases:
+                self._check_pattern(pattern)
                 case_scope = dict(scope)
                 for name in patterns.pattern_names(pattern):
                     case_scope[name] = Binding(types.ANY)
@@ -269,6 +484,8 @@ class Checker:
                 if guard is not None:
                     self._expr(guard, case_scope)
                 self._statement(body, case_scope)
+        elif isinstance(node, ast.MatchExpr):
+            self._match_expr_type(node, scope)
         elif isinstance(node, ast.ExprStmt):
             self._expr(node.expr, scope)
         elif isinstance(node, ast.DelStmt):
@@ -384,8 +601,262 @@ class Checker:
         return names
 
     def _check_annotation(self, name, node):
-        if name is not None and not types.is_known_type(name):
-            raise BunTypeError("unknown type '%s'" % name, node.line, node.col)
+        if name is None:
+            return
+        if self._is_type_var(name):
+            return
+        base = types.base_type(name)
+        if (types.is_known_type(base) or base in self.structs
+                or base in self.enums):
+            for arg in types.type_args(name):
+                self._check_annotation(arg, node)
+            return
+        if name in self.protocols:
+            return
+        raise BunTypeError("unknown type '%s'" % name, node.line, node.col)
+
+    def _check_protocol(self, node, scope):
+        """Check a protocol: the signatures of its methods."""
+        seen = set()
+        for method in node.methods:
+            if method.name in seen:
+                raise BunTypeError(
+                    "duplicate method '%s' on protocol '%s'"
+                    % (method.name, node.name), method.line, method.col)
+            seen.add(method.name)
+            self._check_annotation(method.return_type, method)
+            for param in method.params:
+                self._check_annotation(param.type_name, method)
+
+    def _check_struct(self, node, scope):
+        seen = set()
+        for field in node.fields:
+            if field.name in seen:
+                raise BunTypeError(
+                    "duplicate field '%s' on struct '%s'"
+                    % (field.name, node.name), field.line, field.col)
+            seen.add(field.name)
+            self._check_annotation(field.type_ann, field)
+            if field.default is not None:
+                self._expr(field.default, scope)
+        scope[node.name] = Binding(types.STRUCT, mutable=False)
+
+    def _check_enum(self, node, scope):
+        """Check an enum: the names of its variants and their fields.
+
+        A variant has a type of its own, but the name of the enum is
+        not a value: a program writes `Color.Red` and never `Color`, so
+        the name of the enum is a type and nothing else.
+        """
+        seen = set()
+        for variant in node.variants:
+            if variant.name in seen:
+                raise BunTypeError(
+                    "duplicate variant '%s' on enum '%s'"
+                    % (variant.name, node.name), variant.line, variant.col)
+            seen.add(variant.name)
+            for field_type in variant.field_types:
+                self._check_annotation(field_type, variant)
+        scope[node.name] = Binding(types.ENUM, mutable=False)
+
+    def _check_pattern(self, pattern):
+        """Check a pattern of a match: the struct names and their fields.
+
+        A pattern of a struct names a struct and its fields, so the name
+        has to be the name of a struct and a field has to be a field of
+        it. The name of a field that the struct does not have is the
+        mistake the checker catches, the way it catches the wrong count
+        of the arguments of a constructor.
+        """
+        kind = pattern.pattern_kind
+        if kind == "struct":
+            struct = self.structs.get(pattern.value)
+            if struct is None:
+                raise BunTypeError(
+                    "unknown struct '%s' in a pattern" % pattern.value,
+                    pattern.line, pattern.col)
+            fields = [field.name for field in struct.fields]
+            for field, sub in pattern.entries:
+                if field not in fields:
+                    raise BunTypeError(
+                        "unknown field '%s' on struct '%s' in a pattern"
+                        % (field, pattern.value), pattern.line, pattern.col)
+                self._check_pattern(sub)
+            return
+        for sub in getattr(pattern, "items", []):
+            self._check_pattern(sub)
+        if getattr(pattern, "tail", None) is not None:
+            self._check_pattern(pattern.tail)
+        for _, sub in getattr(pattern, "entries", []):
+            self._check_pattern(sub)
+
+    def _enum_variant_of(self, node):
+        """The variant an attribute expression names, if it names one.
+
+        `Color.Red` is the variant `Red` of the enum `Color`: the name
+        of the enum is a type, so the expression is resolved when the
+        program is checked and not when it runs.
+        """
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        variants = self.enums.get(node.object.name)
+        if variants is None:
+            return None
+        if node.name not in variants:
+            raise BunTypeError(
+                "enum '%s' has no variant '%s'" % (node.object.name,
+                                                   node.name),
+                node.line, node.col)
+        return (node.object.name, node.name, variants[node.name])
+
+    def _enum_variant_type(self, variant, node):
+        enum_name, _name, fields = variant
+        if fields:
+            raise BunTypeError(
+                "variant '%s.%s' needs %d field(s), write '%s.%s(...)'"
+                % (enum_name, _name, len(fields), enum_name, _name),
+                node.line, node.col)
+        return enum_name
+
+    def _enum_call(self, node, variant, arg_types):
+        """Check the construction of a variant.
+
+        The fields of a variant are bound by position: every field has
+        the type the declaration of the variant gives it, and the value
+        of the call is a value of the enum.
+        """
+        enum_name, variant_name, fields = variant
+        if len(arg_types) != len(fields):
+            raise BunTypeError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(fields), len(arg_types)),
+                node.line, node.col)
+        for index, (arg_type, field_type) in enumerate(zip(arg_types,
+                                                           fields)):
+            self._check_assignable(
+                arg_type, field_type, node,
+                "argument %d of '%s.%s' is a value of type '%%s', "
+                "expected '%s'" % (index + 1, enum_name, variant_name,
+                                   field_type))
+        return enum_name
+
+    def _check_impl(self, node, scope):
+        if node.type_name not in self.structs:
+            raise BunTypeError(
+                "impl of unknown type '%s'" % node.type_name,
+                node.line, node.col)
+        struct = self.structs[node.type_name]
+        for method in node.methods:
+            self._check_annotation(method.return_type, method)
+            method.mutating = self._method_mutates(method)
+            local = dict(scope)
+            for spec in self._param_specs(method):
+                self._check_annotation(spec["type"], method)
+                if spec["name"] == "self":
+                    local["self"] = Binding(node.type_name, mutable=True)
+                else:
+                    local[spec["name"]] = Binding(spec["type"] or types.ANY)
+            names = set(spec["name"] for spec in self._param_specs(method))
+            names |= self._bound_names(method.body.statements)
+            self.name_stack.append(names)
+            self.return_stack.append(method.return_type)
+            saved = self._checking_method
+            self._checking_method = (node.type_name, struct)
+            self.function_depth += 1
+            try:
+                self._statements(method.body.statements, local)
+            finally:
+                self.function_depth -= 1
+                self.return_stack.pop()
+                self.name_stack.pop()
+                self._checking_method = saved
+
+    def _method_mutates(self, method):
+        return self._assigns_self_field(method.body)
+
+    def _assigns_self_field(self, node):
+        if isinstance(node, ast.AssignStmt):
+            target = node.target
+            if (isinstance(target, ast.Attribute)
+                    and isinstance(target.object, ast.Identifier)
+                    and target.object.name == "self"):
+                return True
+        if isinstance(node, ast.Block):
+            return any(self._assigns_self_field(s) for s in node.statements)
+        if isinstance(node, ast.IfStmt):
+            if self._assigns_self_field(node.then_branch):
+                return True
+            if node.else_branch is not None:
+                return self._assigns_self_field(node.else_branch)
+            return False
+        if isinstance(node, (ast.WhileStmt, ast.ForStmt)):
+            if self._assigns_self_field(node.body):
+                return True
+            if node.orelse is not None:
+                return self._assigns_self_field(node.orelse)
+            return False
+        if isinstance(node, list):
+            return any(self._assigns_self_field(item) for item in node)
+        return False
+
+    def _match_expr_type(self, node, scope):
+        """Check a match expression and answer the type of its value.
+
+        Every arm of the match answers a value, and the arms have to
+        answer the same type, because the match answers one value.
+        """
+        self._expr(node.subject, scope)
+        answer = None
+        for pattern, body in node.cases:
+            self._check_pattern(pattern)
+            case_scope = dict(scope)
+            for name in patterns.pattern_names(pattern):
+                case_scope[name] = Binding(types.ANY)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None:
+                self._expr(guard, case_scope)
+            arm_type = self._expr(body, case_scope)
+            if arm_type != types.ANY:
+                if answer is None:
+                    answer = arm_type
+                elif answer != arm_type:
+                    raise BunTypeError(
+                        "the arms of a match answer different types: "
+                        "'%s' and '%s'" % (answer, arm_type),
+                        node.line, node.col)
+        return answer if answer is not None else types.ANY
+
+    def _check_field_assign(self, attr, obj_type, node, scope):
+        if obj_type == types.ANY:
+            return
+        struct = self.structs.get(obj_type)
+        if struct is None:
+            raise BunTypeError(
+                "type '%s' has no fields" % obj_type, attr.line, attr.col)
+        field = self._field(struct, attr.name)
+        if field is None:
+            raise BunTypeError(
+                "unknown field '%s' on %s" % (attr.name, obj_type),
+                attr.line, attr.col)
+        if not field.mutable:
+            raise BunTypeError(
+                "cannot assign to immutable field '%s'" % attr.name,
+                attr.line, attr.col)
+        if (isinstance(attr.object, ast.Identifier)
+                and attr.object.name != "self"):
+            binding = scope.get(attr.object.name)
+            if binding is not None and not binding.mutable:
+                raise BunTypeError(
+                    "cannot assign to field of immutable variable '%s'"
+                    % attr.object.name, attr.line, attr.col)
+
+    def _field(self, struct, name):
+        for field in struct.fields:
+            if field.name == name:
+                return field
+        return None
 
     def _import(self, node, scope):
         exports = self._module_exports(node.path, node)
@@ -454,8 +925,22 @@ class Checker:
         if isinstance(node, ast.Identifier):
             binding = scope.get(node.name)
             if binding is None:
+                if node.name in self.protocols:
+                    raise BunTypeError(
+                        "protocol '%s' is not a value" % node.name,
+                        node.line, node.col)
+                if node.name in self.enums:
+                    raise BunTypeError(
+                        "enum '%s' is not a value" % node.name,
+                        node.line, node.col)
+                if node.name in types.BUILTIN_SIGNATURES:
+                    return types.FN
                 self._check_known_name(node)
                 return types.ANY
+            if binding.type == types.ENUM:
+                raise BunTypeError(
+                    "enum '%s' is not a value" % node.name,
+                    node.line, node.col)
             return binding.type
         if isinstance(node, ast.ListLiteral):
             for element in node.elements:
@@ -493,30 +978,82 @@ class Checker:
             self._expr(node.left, scope)
             self._expr(node.right, scope)
             return types.ANY
+        if isinstance(node, ast.MatchExpr):
+            return self._match_expr_type(node, scope)
         if isinstance(node, ast.Logical):
             self._expr(node.left, scope)
             self._expr(node.right, scope)
             return types.ANY
         if isinstance(node, ast.Index):
-            self._expr(node.target, scope)
+            target_type = self._expr(node.target, scope)
             if isinstance(node.index, ast.Slice):
                 for part in (node.index.start, node.index.stop,
                              node.index.step):
                     if part is not None:
                         self._expr(part, scope)
-            else:
-                self._expr(node.index, scope)
-            return types.ANY
+                return target_type
+            self._expr(node.index, scope)
+            return self._element_type(target_type) or types.ANY
         if isinstance(node, ast.MethodCall):
-            self._expr(node.receiver, scope)
-            for arg in node.args:
-                self._expr(arg, scope)
-            return types.ANY
+            return self._method_call(node, scope)
+        if isinstance(node, ast.Attribute):
+            variant = self._enum_variant_of(node)
+            if variant is not None:
+                return self._enum_variant_type(variant, node)
+            obj_type = self._expr(node.object, scope)
+            if obj_type == types.ANY:
+                return types.ANY
+            if obj_type == types.STRUCT:
+                return types.ANY
+            struct = self.structs.get(obj_type)
+            if struct is None:
+                raise BunTypeError(
+                    "type '%s' has no fields" % obj_type, node.line, node.col)
+            field = self._field(struct, node.name)
+            if field is None:
+                raise BunTypeError(
+                    "unknown field '%s' on %s" % (node.name, obj_type),
+                    node.line, node.col)
+            return field.type_ann or types.ANY
         if isinstance(node, ast.Comprehension):
             return self._comprehension(node, scope)
+        if isinstance(node, ast.Unwrap):
+            return self._unwrap(node, scope)
         raise BunTypeError(
             "cannot check expression: %s" % type(node).__name__,
             getattr(node, "line", 0), getattr(node, "col", 0))
+
+    def _unwrap(self, node, scope):
+        """Check a postfix `?`.
+
+        The operator is only legal inside a function, and the function
+        has to give back a value of the same kind as the operand: an
+        `Ok` inside a function that returns a `result`, a `some` inside
+        a function that returns an `option` (or a type that is not known
+        yet).  The `?` hands a value that carries nothing - an `Err` or
+        a `none` - back to the caller, so the kind of the operand and
+        the kind of the return type are the same kind.  A value whose
+        type is known and is neither is an error; a value of type `any`
+        is left to the runtime.
+        """
+        if self.function_depth == 0:
+            raise BunTypeError(
+                "the '?' operator is only allowed inside a function",
+                node.line, node.col)
+        source = self._expr(node.expr, scope)
+        if source not in (types.RESULT, types.OPTION, types.ANY, types.DICT):
+            raise BunTypeError(
+                "cannot use '?' on a value of type '%s'" % source,
+                node.line, node.col)
+        if self.return_stack:
+            declared = self.return_stack[-1]
+            if declared is None or declared == types.ANY:
+                return types.ANY
+            if source not in (types.ANY, types.DICT) and declared != source:
+                raise BunTypeError(
+                    "the '?' operator needs a function that returns "
+                    "'%s'" % source, node.line, node.col)
+        return types.ANY
 
     def _comprehension(self, node, scope):
         """Check a comprehension in its own scope.
@@ -526,7 +1063,7 @@ class Checker:
         """
         local = dict(scope)
         for clause in node.clauses:
-            self._expr(clause.iterable, local)
+            self._walked_element(clause.iterable, local, node)
             local[clause.target] = Binding(types.ANY, mutable=True)
         for clause in node.clauses:
             if clause.condition is not None:
@@ -567,6 +1104,10 @@ class Checker:
 
     def _call(self, node, scope):
         arg_types = [self._expr(arg, scope) for arg in node.args]
+        if isinstance(node.callee, ast.Attribute):
+            variant = self._enum_variant_of(node.callee)
+            if variant is not None:
+                return self._enum_call(node, variant, arg_types)
         kwarg_types = {}
         for name, value_node in node.kwargs:
             kwarg_types[name] = self._expr(value_node, scope)
@@ -582,14 +1123,152 @@ class Checker:
             return types.ANY
         if binding.type == types.ANY:
             return types.ANY
+        if binding.type == types.STRUCT:
+            return self._constructor_call(name, arg_types, node)
         if binding.type != types.FN:
             raise BunTypeError(
                 "'%s' of type '%s' is not callable" % (name, binding.type),
                 node.line, node.col)
         if binding.params is None:
             return types.ANY
+        if binding.type_params:
+            return self._generic_call(
+                name, binding, node, arg_types, kwarg_types, scope)
         self._check_call_args(name, binding.params, arg_types, kwarg_types, node)
         return binding.return_type or types.ANY
+
+    def _generic_call(self, name, binding, node, arg_types, kwarg_types, scope):
+        """Check the call of a generic function and give its type.
+
+        The type arguments are found by matching the declared types of
+        the parameters with the types of the arguments.  A type
+        argument that cannot be found is `any`, a bound that the type
+        does not satisfy is an error, and the type of the call is the
+        declared return type with the type arguments put in place of
+        the type parameters.
+        """
+        type_params = binding.type_params or []
+        type_vars = set(param.name for param in type_params)
+        bindings = {}
+        specs = binding.params or []
+        positional = [spec for spec in specs
+                      if spec["param_kind"] == "positional"]
+        for index, arg in enumerate(node.args):
+            if index >= len(positional):
+                break
+            declared = positional[index]["type"]
+            if declared is None:
+                continue
+            self._unify(declared, self._infer_type(arg, scope),
+                        type_vars, bindings)
+        known = {}
+        for spec in positional:
+            known[spec["name"]] = spec
+        for key, value_node in node.kwargs:
+            spec = known.get(key)
+            if spec is None or spec["type"] is None:
+                continue
+            self._unify(spec["type"], self._infer_type(value_node, scope),
+                        type_vars, bindings)
+        for param in type_params:
+            found = bindings.get(param.name, types.ANY)
+            if not types.satisfies_bound(found, param.bound):
+                raise BunTypeError(
+                    "type '%s' does not satisfy the bound '%s' of type "
+                    "parameter '%s'" % (found, param.bound, param.name),
+                    node.line, node.col)
+        effective = []
+        for spec in specs:
+            filled = dict(spec)
+            filled["type"] = self._substitute(spec["type"], bindings, type_vars)
+            effective.append(filled)
+        self._check_call_args(name, effective, arg_types, kwarg_types, node)
+        return self._substitute(binding.return_type, bindings, type_vars) \
+            or types.ANY
+
+    def _unify(self, declared, actual, type_vars, bindings):
+        """Match a declared type with the type of an argument.
+
+        A type parameter that is not known yet takes the type of the
+        argument.  A type with type arguments is matched argument by
+        argument, so the type of a list gives the type of its elements.
+        """
+        if declared is None:
+            return
+        if declared in type_vars:
+            if declared not in bindings:
+                bindings[declared] = actual
+            return
+        args = types.type_args(declared)
+        if not args:
+            return
+        actual_args = types.type_args(actual)
+        for index, arg in enumerate(args):
+            if index >= len(actual_args):
+                break
+            self._unify(arg, actual_args[index], type_vars, bindings)
+
+    def _substitute(self, name, bindings, type_vars):
+        """Put the type arguments in place of the type parameters."""
+        if name is None:
+            return None
+        if name in type_vars:
+            return bindings.get(name, types.ANY)
+        args = types.type_args(name)
+        if not args:
+            return name
+        filled = [self._substitute(arg, bindings, type_vars) for arg in args]
+        return types.base_type(name) + "<" + ", ".join(filled) + ">"
+
+    def _element_type(self, name):
+        """The type of the elements of a container.
+
+        The type of a `list<int>` gives `int`, and the type of a
+        `list` gives nothing: the type of the elements is not known.
+        """
+        if not name:
+            return None
+        base = types.base_type(name)
+        args = types.type_args(name)
+        if base in (types.LIST, types.SET) and args:
+            return args[0]
+        if base == types.DICT and len(args) > 1:
+            return args[1]
+        return None
+
+    def _walked_element(self, source, scope, site):
+        """The elements of a container a `for` walks.
+
+        A Result and an Option are a success or a failure, not a
+        sequence: the one key they happen to hold is no sequence, so
+        walking one is refused.
+        """
+        name = self._expr(source, scope)
+        base = types.base_type(name)
+        if base in (types.RESULT, types.OPTION):
+            raise BunTypeError(
+                "'%s' is not walked by a 'for'" % base,
+                site.line, site.col)
+        return self._element_type(name)
+
+    def _infer_type(self, node, scope):
+        """The type of an expression, with the type of a literal worked out.
+
+        A list of integers is a `list<int>` and not a `list`: the type
+        arguments of a generic function are found with it.
+        """
+        if isinstance(node, ast.ListLiteral):
+            if not node.elements:
+                return types.LIST
+            element = None
+            for item in node.elements:
+                item_type = self._infer_type(item, scope)
+                if element is None:
+                    element = item_type
+                elif element != item_type:
+                    element = types.ANY
+            return types.LIST + "<" + element + ">"
+        return self._expr(node, scope)
 
     def _check_call_args(self, name, specs, arg_types, kwarg_types, node):
         positional = [spec for spec in specs
@@ -654,13 +1333,20 @@ class Checker:
     def _check_arg_type(self, arg_type, ptype, name, node):
         if ptype is None:
             return
-        if not types.is_assignable(arg_type, ptype):
-            raise BunTypeError(
-                "argument of type '%s' is not assignable to parameter of type '%s' in call to '%s'"
-                % (arg_type, ptype, name), node.line, node.col)
+        self._check_assignable(
+            arg_type, ptype, node,
+            "argument of type '%s' is not assignable to parameter of type '%s' "
+            "in call to '%s'", name)
 
     def _builtin_call(self, name, node, arg_types):
         for params, return_type in types.BUILTIN_SIGNATURES[name]:
+            if params == (types.VARARGS,):
+                for arg_type in arg_types:
+                    if not types.is_assignable(arg_type, types.ANY):
+                        break
+                else:
+                    return return_type
+                continue
             if len(params) != len(arg_types):
                 continue
             for arg_type, ptype in zip(arg_types, params):
@@ -668,8 +1354,137 @@ class Checker:
                     break
             else:
                 return return_type
-        expected = " or ".join(
-            str(len(params)) for params, _ in types.BUILTIN_SIGNATURES[name])
+        expected = []
+        for params, _ in types.BUILTIN_SIGNATURES[name]:
+            if params == (types.VARARGS,):
+                expected.append("any number of")
+            else:
+                expected.append(str(len(params)))
         raise BunTypeError(
             "%s() received arguments that do not match its signature (expected %s argument(s))"
-            % (name, expected), node.line, node.col)
+            % (name, " or ".join(expected)), node.line, node.col)
+
+    def _constructor_call(self, name, arg_types, node):
+        struct = self.structs.get(name)
+        if struct is None:
+            return name
+        required = [field for field in struct.fields if field.default is None]
+        if len(arg_types) < len(required) or len(arg_types) > len(struct.fields):
+            raise BunTypeError(
+                "struct '%s' expects %d argument(s), got %d"
+                % (name, len(required), len(arg_types)), node.line, node.col)
+        for arg_type, field in zip(arg_types, struct.fields):
+            if field.type_ann is None:
+                continue
+            if not types.is_assignable(arg_type, field.type_ann):
+                raise BunTypeError(
+                    "argument of type '%s' is not assignable to field '%s' of type '%s'"
+                    % (arg_type, field.name, field.type_ann),
+                    node.line, node.col)
+        return name
+
+    def _method_call(self, node, scope):
+        if (isinstance(node.receiver, ast.Identifier)
+                and node.receiver.name in self.enums):
+            # The fields of a variant are written like the arguments of
+            # a method: `Shape.Circle(2.0)` is the variant `Circle` of
+            # the enum `Shape` with one field.
+            variant = self._enum_variant_of(ast.Attribute(
+                node.receiver, node.method, node.line, node.col))
+            if variant is not None:
+                return self._enum_call(node, variant,
+                                       [self._expr(arg, scope)
+                                        for arg in node.args])
+        recv_type = self._expr(node.receiver, scope)
+        arg_types = [self._expr(arg, scope) for arg in node.args]
+        if recv_type in (types.ANY, types.STRUCT):
+            return types.ANY
+        container = CONTAINER_METHODS.get(recv_type)
+        if container is None and "<" in recv_type:
+            # A list of integers is a `list<int>`, and the methods of a
+            # list are the methods of the list.
+            container = CONTAINER_METHODS.get(recv_type.split("<", 1)[0])
+        if container is not None:
+            name, info = container
+            return self._container_method_call(node, info, name, arg_types)
+        if recv_type in self.protocols:
+            return self._protocol_method_call(node, recv_type, arg_types)
+        methods = self.impls.get(recv_type)
+        if methods is None:
+            if recv_type in self.structs:
+                raise BunTypeError(
+                    "unknown method '%s' on %s" % (node.method, recv_type),
+                    node.line, node.col)
+            return types.ANY
+        if node.method not in methods:
+            if recv_type in self.structs:
+                raise BunTypeError(
+                    "unknown method '%s' on %s" % (node.method, recv_type),
+                    node.line, node.col)
+            return types.ANY
+        method = methods[node.method]
+        if getattr(method, "mutating", False):
+            if (isinstance(node.receiver, ast.Identifier)
+                    and node.receiver.name != "self"):
+                binding = scope.get(node.receiver.name)
+                if binding is not None and not binding.mutable:
+                    raise BunTypeError(
+                        "cannot call mutating method '%s' on immutable variable '%s'"
+                        % (node.method, node.receiver.name),
+                        node.line, node.col)
+        params = [p for p in method.params if p.name != "self"]
+        if len(arg_types) != len(params):
+            raise BunTypeError(
+                "method '%s' expects %d argument(s), got %d"
+                % (node.method, len(params), len(arg_types)),
+                node.line, node.col)
+        for arg_type, param in zip(arg_types, params):
+            if param.type_name is None:
+                continue
+            self._check_assignable(
+                arg_type, param.type_name, node,
+                "argument of type '%s' is not assignable to parameter of type "
+                "'%s' in call to '%s'", node.method)
+        return method.return_type or types.ANY
+
+    def _container_method_call(self, node, info, name, arg_types):
+        """Check a method call on a list, a dict, a string or a set."""
+        entry = info.get(node.method)
+        if entry is None:
+            raise BunTypeError(
+                "unknown method '%s' on %s" % (node.method, name),
+                node.line, node.col)
+        allowed, return_type = entry
+        if len(arg_types) not in allowed:
+            raise BunTypeError(
+                "'%s' expects %s argument(s), got %d"
+                % (node.method, " or ".join(str(n) for n in allowed),
+                   len(arg_types)), node.line, node.col)
+        return return_type
+
+    def _protocol_method_call(self, node, protocol_name, arg_types):
+        """Check the call of a method of a protocol.
+
+        The signature of the protocol is the contract of the call: the
+        arity and the types of the arguments are the ones it gives.
+        """
+        protocol = self.protocols[protocol_name]
+        signature = protocol.get(node.method)
+        if signature is None:
+            raise BunTypeError(
+                "unknown method '%s' on %s" % (node.method, protocol_name),
+                node.line, node.col)
+        params = [p for p in signature.params if p.name != "self"]
+        if len(arg_types) != len(params):
+            raise BunTypeError(
+                "method '%s' expects %d argument(s), got %d"
+                % (node.method, len(params), len(arg_types)),
+                node.line, node.col)
+        for arg_type, param in zip(arg_types, params):
+            if param.type_name is None:
+                continue
+            self._check_assignable(
+                arg_type, param.type_name, node,
+                "argument of type '%s' is not assignable to parameter of type "
+                "'%s' in call to '%s'", node.method)
+        return signature.return_type or types.ANY

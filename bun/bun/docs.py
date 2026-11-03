@@ -261,6 +261,12 @@ DOCS = {
         "signature": "exit(code: int)",
         "summary": "Stop the program with an exit code.",
     },
+    "enum": {
+        "signature": "enum Name { Variant, Variant(type, ...), ... }",
+        "summary": "A named choice: one value of a set of variants.",
+        "details": "A variant holds no fields or a fixed number of fields, like a struct. The name of the enum is not a value: a variant picks its fields, and the variant is the value. A match pattern binds the fields of a variant and answers for the variant alone.",
+        "example": "enum Color {\n    Red\n    Green\n    Blue\n}\n\nlet c = Color.Green\nmatch c {\n    Color.Red => print(\"warm\")\n    Color.Green => print(\"cool\")\n    Color.Blue => print(\"deep\")\n}\n",
+    },
     "eval": {
         "signature": "eval(source: string) -> any",
         "summary": "Run a piece of Bun source and return the value of its last expression.",
@@ -316,6 +322,12 @@ DOCS = {
         "summary": "Convert a value to an integer, optionally in a given base.",
         "example": "print(int(\"ff\", 16))\n",
     },
+    "iterator": {
+        "signature": "for item in value { ... }",
+        "summary": "Walk a value that answers 'next()'.",
+        "details": "A 'for' walks a list, a string, a dict or a set, and it walks any struct that has a 'next' method: the method answers 'some(item)' for the next item and 'none()' for the end of the sequence. The value is borrowed across the loop, so a 'next' that writes to a field keeps walking. A loop may stop with 'break', and the value keeps its place.",
+        "example": "struct Counter {\n    var count: int\n    var limit: int\n}\n\nimpl Counter {\n    fn next(self) -> option {\n        if self.count >= self.limit {\n            return none()\n        }\n        self.count = self.count + 1\n        return some(self.count)\n    }\n}\n\nfor n in Counter(1, 4) {\n    print(n)\n}\n",
+    },
     "join": {
         "signature": "join(items: list, separator: string) -> string",
         "summary": "Join the items of a list into a string.",
@@ -336,9 +348,50 @@ DOCS = {
         "summary": "Return the length of a string, list or dict.",
         "example": "print(len(\"bun\"))\n",
     },
+    "list": {
+        "signature": "list",
+        "summary": "A list of the values, in the order they were put in.",
+        "details": "A list has the methods \"push\", \"pop\", \"shift\", "
+                   "\"len\", \"join\", \"contains\", \"reverse\", \"slice\", "
+                   "\"sort\", \"sort_by\", \"splice\", \"insert\", \"map\", "
+                   "\"filter\", \"reduce\", \"find\", \"any\", \"all\" and "
+                   "\"each\". The methods that take a function take it as an "
+                   "argument, because Bun has no keyword arguments in a "
+                   "call.",
+        "example": "print([1, 2, 3].len())\n",
+    },
+    "dict": {
+        "signature": "dict",
+        "summary": "A table of the values, by a key.",
+        "details": "A dict has the methods \"len\", \"has\", \"get\", \"set\", "
+                   "\"update\", \"keys\", \"values\", \"items\" and "
+                   "\"remove\". The method \"items\" answers the pairs of the "
+                   "dict, the key first.",
+        "example": "print({\"a\": 1}.items())\n",
+    },
     "list_dir": {
         "signature": "list_dir(path: string) -> list",
         "summary": "List the entries of a directory.",
+    },
+    "match": {
+        "signature": "match value { pattern => body, ... }",
+        "summary": "Choose a branch by the shape of a value.",
+        "details": "A case holds one pattern and one body. A pattern is a "
+                   "literal, a name that binds, a '_', a 'type', a range "
+                   "'a..b', a list pattern '[a, b]', a dict pattern "
+                   "'{key: pattern}', a variant of an enum or a struct "
+                   "pattern 'Name(field: pattern, ...)'. A struct pattern "
+                   "answers for a value of the named struct alone: the type "
+                   "is tested, and every field it names is tested or bound "
+                   "by its own pattern. A name that names an unknown struct, "
+                   "or a field the struct does not have, is an error before "
+                   "the program runs. A match is also an expression: every "
+                   "arm answers a value of the same type, and that is the "
+                   "value of the match.",
+        "example": "struct Point {\n    var x: int\n    var y: int\n}\n\n"
+                   "let p = Point(0, 3)\n"
+                   "match p {\n    Point(x: 0, y) => print(y)\n"
+                   "    Point(x, y) => print(x + y)\n}\n",
     },
     "lock": {
         "signature": "lock(mutex: dict)",
@@ -366,6 +419,12 @@ DOCS = {
         "summary": "Return the Unicode code point of a character.",
         "example": "print(ord(\"A\"))\n",
     },
+    "option": {
+        "signature": "some(value) -> option, none() -> option",
+        "summary": "A value that may be missing.",
+        "details": "An option holds 'some(value)' or 'none()'. The '?' of an option gives its value in a function that answers an option, and a 'none' is passed along the way a failure is. 'is_some' and 'is_none' tell the two apart, and a 'for' may not walk one: an option is a value, not a sequence.",
+        "example": "fn find(d: dict, key: string) -> option {\n    if d.has(key) {\n        return some(d[key])\n    }\n    return none()\n}\n\nlet d = {\"a\": 1}\nprint(is_some(find(d, \"a\")))\nprint(is_none(find(d, \"b\")))\n",
+    },
     "pow_mod": {
         "signature": "pow_mod(base: int, exponent: int, modulus: int) -> int",
         "summary": "Raise a base to a power modulo a modulus.",
@@ -386,11 +445,11 @@ DOCS = {
                    "print(next(g))\n",
     },
     "print": {
-        "signature": "print(value: any)",
-        "summary": "Print a value followed by a newline.",
-        "details": "Exactly one argument is accepted; build strings to join "
-                   "several values.",
-        "example": "print(\"hello\")\n",
+        "signature": "print(values: any...)",
+        "summary": "Print the values with a space between them and a newline.",
+        "details": "Any number of arguments is accepted. Without an argument "
+                   "an empty line is written.",
+        "example": "print(\"hello\", 1)\n",
     },
     "random": {
         "signature": "random() -> float",
@@ -505,6 +564,153 @@ DOCS = {
         "signature": "str(value: any) -> string",
         "summary": "Convert a value to its string form.",
         "example": "print(str(12))\n",
+    },
+    "struct": {
+        "signature": "struct Name { field: type, ... }",
+        "summary": "Declare a type of value that holds named fields.",
+        "details": "A field is written 'let' (read-only), 'var' (writable), or "
+                   "with neither (writable). A field may carry a type and a "
+                   "default value. The name of the struct is its constructor: "
+                   "the arguments are positional and follow the order of the "
+                   "fields. A struct is a value, so an assignment or an "
+                   "argument copies it.",
+        "example": "struct Point {\n"
+                   "    var x: int,\n"
+                   "    var y: int\n"
+                   "}\n"
+                   "let p = Point(3, 4)\n"
+                   "print(p.x + p.y)\n",
+    },
+    "impl": {
+        "signature": "impl Name { fn method(self, ...) { ... } }",
+        "summary": "Give a struct its methods.",
+        "details": "The first parameter of a method is the receiver, and it is "
+                   "named 'self'. A method call borrows the receiver, so a "
+                   "method that writes to 'self.<field>' changes the value it "
+                   "is called on. Such a method may only be called on a 'var' "
+                   "name.",
+        "example": "struct Point {\n"
+                   "    var x: int,\n"
+                   "    var y: int\n"
+                   "}\n"
+                   "impl Point {\n"
+                   "    fn sum(self) -> int {\n"
+                   "        return self.x + self.y\n"
+                   "    }\n"
+                   "}\n"
+                   "print(Point(3, 4).sum())\n",
+    },
+    "protocol": {
+        "signature": "protocol Name { fn method(self, ...) -> type, ... }",
+        "summary": "Name the methods a value must have.",
+        "details": "A protocol holds method signatures without a body. A type "
+                   "satisfies a protocol when it has every method of the "
+                   "protocol. A protocol may be written as the type of a "
+                   "parameter, of a field or of a variable: the value is then "
+                   "checked against the methods of the protocol. A protocol "
+                   "is a type, so it is not a value.",
+        "example": "protocol Shape {\n"
+                   "    fn area(self) -> float\n"
+                   "}\n"
+                   "struct Circle {\n"
+                   "    var r: float\n"
+                   "}\n"
+                   "impl Circle {\n"
+                   "    fn area(self) -> float {\n"
+                   "        return 3.0 * self.r * self.r\n"
+                   "    }\n"
+                   "}\n"
+                   "fn show(shape: Shape) {\n"
+                   "    print(shape.area())\n"
+                   "}\n"
+                   "show(Circle(2.0))\n",
+    },
+    "generics": {
+        "signature": "fn name<T: Bound>(args: list<T>) -> T { ... }",
+        "summary": "Write a function once for many types.",
+        "details": "A name between angle brackets is a type parameter: it "
+                   "stands for a type that the checker finds from the "
+                   "arguments of the call. A bound after the name says which "
+                   "types the parameter may not leave; 'Num' takes the "
+                   "numbers, 'Ord' the numbers and the strings, 'Eq' and "
+                   "'Hash' the types that can be compared or used as a key, "
+                   "and 'Show' every type. A type parameter may stand for "
+                   "the type of the elements of a list, as in 'list<T>'. The "
+                   "type of the call is the return type with the type "
+                   "arguments in place of the type parameters. The types are "
+                   "erased when the program runs: the function is one "
+                   "function for every type.",
+        "example": "fn first<T>(xs: list<T>) -> T {\n"
+                   "    return xs[0]\n"
+                   "}\n"
+                   "fn total<T: Num>(xs: list<T>) -> T {\n"
+                   "    var sum = 0\n"
+                   "    for x in xs {\n"
+                   "        sum = sum + x\n"
+                   "    }\n"
+                   "    return sum\n"
+                   "}\n"
+                   "print(first([1, 2]))\n"
+                   "print(total([1, 2, 3]))\n",
+    },
+    "result": {
+        "signature": "fn name(...) -> result { ... }",
+        "summary": "Name a value that is either a success or a failure.",
+        "details": "A result holds one of two things: a success, made by "
+                   "'Ok(value)', or a failure, made by 'Err(error)'. A result "
+                   "is data, so it may be put in a list, in a field or in a "
+                   "dict. The '?' operator takes the value out of a success "
+                   "and passes a failure along: 'expr?' gives the value of "
+                   "the success, and when the value is a failure the "
+                   "enclosing function returns that failure as it is. The "
+                   "function that uses the '?' has to return a result. The "
+                   "functions 'is_ok' and 'is_err' tell the two apart.",
+        "example": "fn parse(s: string) -> result {\n"
+                   "    if s == \"\" {\n"
+                   "        return Err(\"the text is empty\")\n"
+                   "    }\n"
+                   "    return Ok(len(s))\n"
+                   "}\n"
+                   "fn twice(s: string) -> result {\n"
+                   "    let n = parse(s)?\n"
+                   "    return Ok(n * 2)\n"
+                   "}\n"
+                   "let good = twice(\"bun\")\n"
+                   "print(is_ok(good))\n"
+                   "print(good[\"ok\"])\n"
+                   "let bad = twice(\"\")\n"
+                   "print(is_err(bad))\n"
+                   "print(bad[\"err\"])\n",
+    },
+    "Ok": {
+        "signature": "Ok(value: any) -> result",
+        "summary": "Make a result that holds a success.",
+        "details": "The result holds the value under the key 'ok'. The '?' "
+                   "operator takes that value out of the result.",
+        "example": "let r = Ok(42)\nprint(is_ok(r))\nprint(r[\"ok\"])\n",
+    },
+    "Err": {
+        "signature": "Err(error: any) -> result",
+        "summary": "Make a result that holds a failure.",
+        "details": "The result holds the error under the key 'err'. The '?' "
+                   "operator passes that result along to the function that "
+                   "called the one that made it.",
+        "example": "let r = Err(\"no\")\nprint(is_err(r))\nprint(r[\"err\"])\n",
+    },
+    "is_ok": {
+        "signature": "is_ok(value: any) -> bool",
+        "summary": "Tell whether a result holds a success.",
+        "details": "The value is a success when it is a dict with the key "
+                   "'ok'. Every other value is not a success.",
+        "example": "print(is_ok(Ok(1)))\nprint(is_ok(Err(\"no\")))\n",
+    },
+    "is_err": {
+        "signature": "is_err(value: any) -> bool",
+        "summary": "Tell whether a result holds a failure.",
+        "details": "The value is a failure when it is a dict with the key "
+                   "'err' and without the key 'ok'. Every other value is not "
+                   "a failure.",
+        "example": "print(is_err(Err(\"no\")))\nprint(is_err(Ok(1)))\n",
     },
     "substring": {
         "signature": "substring(text: string, start: int, end: int) -> string",

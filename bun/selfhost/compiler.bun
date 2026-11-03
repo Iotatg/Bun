@@ -1,8 +1,11 @@
 fn make_code(name, params, code, filename, source) {
-    return {"name": name, "params": params, "code": code, "filename": filename, "source": source, "param_defs": []}
+    return {"name": name, "params": params, "code": code, "filename": filename, "source": source, "param_defs": [], "type_params": []}
 }
 
 let MATCH_SUBJECT = "__match_subject"
+let MATCH_VALUE = "__match_value"
+let COMPOUND_TARGET = "__compound_target"
+let COMPOUND_INDEX = "__compound_index"
 
 fn emit(code, op, arg, node) {
     code.push([op, arg, node["line"], node["col"]])
@@ -27,7 +30,9 @@ fn make_state(filename, source) {
         "try_contexts": [],
         "for_depth": 0,
         "loops": [],
-        "has_yield": false
+        "has_yield": false,
+        "structs": {},
+        "enums": {}
     }
 }
 
@@ -331,6 +336,7 @@ export fn compile_program(filename, source, program) {
     let st = make_state(filename, source)
     let code = []
     let statements = program["statements"]
+    collect_structs(st, statements)
     var i = 0
     while i < statements.len() {
         compile_statement(st, statements[i], code)
@@ -338,6 +344,65 @@ export fn compile_program(filename, source, program) {
     }
     code.push(["HALT", null, 0, 0])
     return make_code("<module>", [], code, filename, source)
+}
+
+// The variant a method call names, if it names one: the fields of a
+// variant are written like the arguments of a method, so the call of a
+// variant is a method call on the name of its enum.
+fn enum_variant(st, enum_name, variant_name, args_len) {
+    let decl = st["enums"].get(enum_name)
+    if decl == null {
+        throw "unknown enum '" + enum_name + "'"
+    }
+    let variants = decl["variants"]
+    var i = 0
+    while i < variants.len() {
+        if variants[i]["name"] == variant_name {
+            if variants[i]["field_types"].len() != args_len {
+                throw "variant '" + enum_name + "." + variant_name + "' expects " + variants[i]["field_types"].len() + " argument(s), got " + args_len
+            }
+            return true
+        }
+        i = i + 1
+    }
+    throw "enum '" + enum_name + "' has no variant '" + variant_name + "'"
+}
+
+// Write the construction of the value of a variant. The value is a dict
+// with three entries - the name of the enum, the name of the variant,
+// and the list of the fields - so the construction is written with the
+// two opcodes a dict literal is written with, and no opcode of its own.
+fn compile_enum_value(st, enum_name, variant_name, arg_nodes, code, node) {
+    enum_variant(st, enum_name, variant_name, arg_nodes.len())
+    emit(code, "LOAD_CONST", "type", node)
+    emit(code, "LOAD_CONST", enum_name, node)
+    emit(code, "LOAD_CONST", "kind", node)
+    emit(code, "LOAD_CONST", variant_name, node)
+    emit(code, "LOAD_CONST", "fields", node)
+    var i = 0
+    while i < arg_nodes.len() {
+        compile_expr(st, arg_nodes[i], code)
+        i = i + 1
+    }
+    emit(code, "BUILD_LIST", arg_nodes.len(), node)
+    emit(code, "BUILD_DICT", 3, node)
+}
+
+// Collect the struct declarations of the program. The declarations are
+// collected before the code is written, so a constructor may be called
+// before the declaration that names it.
+fn collect_structs(st, statements) {
+    var i = 0
+    while i < statements.len() {
+        let statement = statements[i]
+        if statement["kind"] == "StructDecl" {
+            st["structs"][statement["name"]] = statement
+        }
+        if statement["kind"] == "EnumDecl" {
+            st["enums"][statement["name"]] = statement
+        }
+        i = i + 1
+    }
 }
 
 fn compile_function(st, node) {
@@ -389,6 +454,14 @@ fn compile_function(st, node) {
     }
     let result = make_code(name, names, code, st["filename"], st["source"])
     result["param_defs"] = defs
+    let type_params = []
+    let params_of_type = node["type_params"]
+    var t = 0
+    while t < params_of_type.len() {
+        type_params.push({"name": params_of_type[t]["name"], "bound": params_of_type[t]["bound"]})
+        t = t + 1
+    }
+    result["type_params"] = type_params
     if st["has_yield"] {
         // A function that gives its values one at a time is a generator.
         result["is_generator"] = true
@@ -469,15 +542,53 @@ fn compile_statement(st, node, code) {
                         emit(code, "STORE_INDEX", null, node)
                     }
                 } else {
-                    throw "invalid assignment target"
+                    if target["kind"] == "Attribute" {
+                        compile_expr(st, target["object"], code)
+                        compile_expr(st, node["value"], code)
+                        emit(code, "SET_FIELD", target["name"], node)
+                    } else {
+                        throw "invalid assignment target"
+                    }
                 }
             }
         }
         return
     }
+    if kind == "OpAssignStmt" {
+        compile_op_assign(st, node["target"], node["op"], node["value"], node, code)
+        return
+    }
+    if kind == "IncDecStmt" {
+        compile_op_assign(st, node["target"], node["op"], null, node, code)
+        return
+    }
     if kind == "ExprStmt" {
         compile_expr(st, node["expr"], code)
         emit(code, "POP", null, node)
+        return
+    }
+    if kind == "StructDecl" {
+        // A struct is a type, and a type is not a value: the program
+        // that declares it runs the same with it and without it.
+        return
+    }
+    if kind == "EnumDecl" {
+        // An enum is a type, and a type is not a value: the program
+        // that declares it writes nothing, the way a protocol does.
+        return
+    }
+    if kind == "ProtocolDecl" {
+        // A protocol is a type, and a type is not a value: the program
+        // that declares it runs the same with it and without it.
+        return
+    }
+    if kind == "ImplDecl" {
+        let methods = node["methods"]
+        var i = 0
+        while i < methods.len() {
+            emit(code, "REGISTER_IMPL", [node["type_name"], methods[i]["name"], compile_function(st, methods[i])], node)
+            i = i + 1
+        }
         return
     }
     if kind == "Block" {
@@ -751,6 +862,113 @@ fn compile_match(st, node, code) {
     st["scope_depth"] = st["scope_depth"] - 1
 }
 
+fn compile_op_assign(st, target, op, value, node, code) {
+    if target["kind"] == "Identifier" {
+        emit(code, "LOAD_NAME", target["name"], node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "STORE_NAME", target["name"], node)
+        return
+    }
+    if target["kind"] == "Attribute" {
+        compile_expr(st, target["object"], code)
+        emit(code, "DUP", null, node)
+        emit(code, "GET_FIELD", target["name"], node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "SET_FIELD", target["name"], node)
+        return
+    }
+    if target["kind"] == "Index" and target["index"]["kind"] != "Slice" {
+        compile_expr(st, target["target"], code)
+        emit(code, "DEFINE_NAME", [COMPOUND_TARGET, false], node)
+        compile_expr(st, target["index"], code)
+        emit(code, "DEFINE_NAME", [COMPOUND_INDEX, false], node)
+        emit(code, "LOAD_NAME", COMPOUND_TARGET, node)
+        emit(code, "LOAD_NAME", COMPOUND_INDEX, node)
+        emit(code, "INDEX", null, node)
+        compile_op_value(st, value, node, code)
+        emit(code, "BINARY", op, node)
+        emit(code, "LOAD_NAME", COMPOUND_TARGET, node)
+        emit(code, "LOAD_NAME", COMPOUND_INDEX, node)
+        emit(code, "STORE_INDEX", null, node)
+        return
+    }
+    throw "invalid assignment target"
+}
+
+fn compile_op_value(st, value, node, code) {
+    if value == null {
+        emit(code, "LOAD_CONST", 1, node)
+        return
+    }
+    compile_expr(st, value, code)
+}
+
+fn compile_coalesce(st, node, code) {
+    compile_expr(st, node["left"], code)
+    emit(code, "DUP", null, node)
+    let null_jump = emit(code, "JUMP_IF_NULL", null, node)
+    let end_jump = emit(code, "JUMP", null, node)
+    let null_case = code.len()
+    patch_to(code, null_jump, null_case)
+    emit(code, "POP", null, node)
+    compile_expr(st, node["right"], code)
+    patch(code, end_jump)
+}
+
+fn compile_match_expr(st, node, code) {
+    emit(code, "ENTER_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] + 1
+    compile_expr(st, node["subject"], code)
+    emit(code, "DEFINE_NAME", [MATCH_SUBJECT, false], node)
+    let end_jumps = []
+    let cases = node["cases"]
+    var i = 0
+    while i < cases.len() {
+        emit(code, "ENTER_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] + 1
+        emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+        emit(code, "MATCH_TEST", pattern_plan(cases[i][0]), node)
+        let body_jump = emit(code, "JUMP_IF_TRUE", null, node)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        let next_jump = emit(code, "JUMP", null, node)
+        patch(code, body_jump)
+        let guard = cases[i][0]["guard"]
+        var guard_next_jump = 0
+        if guard != null {
+            compile_expr(st, guard, code)
+            let guard_jump = emit(code, "JUMP_IF_TRUE", null, node)
+            emit(code, "EXIT_SCOPE", null, node)
+            st["scope_depth"] = st["scope_depth"] - 1
+            guard_next_jump = emit(code, "JUMP", null, node)
+            patch(code, guard_jump)
+        }
+        compile_expr(st, cases[i][1], code)
+        emit(code, "EXIT_SCOPE", null, node)
+        st["scope_depth"] = st["scope_depth"] - 1
+        emit(code, "DEFINE_NAME", [MATCH_VALUE, false], node)
+        end_jumps.push(emit(code, "JUMP", null, node))
+        patch(code, next_jump)
+        if guard != null {
+            patch(code, guard_next_jump)
+        }
+        i = i + 1
+    }
+    emit(code, "LOAD_NAME", MATCH_SUBJECT, node)
+    emit(code, "MATCH_FAIL", null, node)
+    let end = code.len()
+    var j = 0
+    while j < end_jumps.len() {
+        patch_to(code, end_jumps[j], end)
+        j = j + 1
+    }
+    emit(code, "LOAD_NAME", MATCH_VALUE, node)
+    emit(code, "EXIT_SCOPE", null, node)
+    st["scope_depth"] = st["scope_depth"] - 1
+}
+
 fn pattern_plan(pattern) {
     let kind = pattern["pattern_kind"]
     if kind == "literal" {
@@ -801,6 +1019,37 @@ fn pattern_plan(pattern) {
             i = i + 1
         }
         return ["or", plans]
+    }
+    if kind == "struct" {
+        // A pattern of a struct is the name of its type and the pattern
+        // of every field it names: `Point(x: 0, y)` tests the type and
+        // the field `x`, and binds the field `y`.
+        let entries = pattern["entries"]
+        let plans = []
+        var i = 0
+        while i < entries.len() {
+            plans.push([entries[i][0], pattern_plan(entries[i][1])])
+            i = i + 1
+        }
+        return ["struct", pattern["value"], plans]
+    }
+    if kind == "enum" {
+        // A variant of an enum is a value shaped like a dict with the
+        // name of the enum, the name of the variant and the list of the
+        // fields, so the plan of a variant is the plan of that dict: it
+        // is the shape of the value the plan tests, and nothing else.
+        let plans = [["type", ["literal", pattern["value"]]], ["kind", ["literal", pattern["name"]]]]
+        let items = pattern["items"]
+        if items.len() > 0 {
+            let fields = []
+            var i = 0
+            while i < items.len() {
+                fields.push(pattern_plan(items[i]))
+                i = i + 1
+            }
+            plans.push(["fields", ["list", fields, null]])
+        }
+        return ["dict", plans]
     }
     throw "unknown pattern: " + kind
 }
@@ -911,9 +1160,17 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "Binary" {
+        if node["op"] == "??" {
+            compile_coalesce(st, node, code)
+            return
+        }
         compile_expr(st, node["left"], code)
         compile_expr(st, node["right"], code)
         emit(code, "BINARY", node["op"], node)
+        return
+    }
+    if kind == "MatchExpr" {
+        compile_match_expr(st, node, code)
         return
     }
     if kind == "Logical" {
@@ -952,6 +1209,13 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "MethodCall" {
+        if node["receiver"]["kind"] == "Identifier" and st["enums"].has(node["receiver"]["name"]) {
+            // The fields of a variant are written like the arguments of a
+            // method: `Shape.Circle(2.0)` is the variant `Circle` of the
+            // enum `Shape` with one field.
+            compile_enum_value(st, node["receiver"]["name"], node["method"], node["args"], code, node)
+            return
+        }
         compile_expr(st, node["receiver"], code)
         let args = node["args"]
         var i = 0
@@ -990,7 +1254,12 @@ fn compile_expr(st, node, code) {
         return
     }
     if kind == "Call" {
-        compile_expr(st, node["callee"], code)
+        let callee = node["callee"]
+        if callee["kind"] == "Identifier" and st["structs"].has(callee["name"]) {
+            compile_constructor(st, st["structs"][callee["name"]], node, code)
+            return
+        }
+        compile_expr(st, callee, code)
         let args = node["args"]
         var i = 0
         while i < args.len() {
@@ -1016,7 +1285,51 @@ fn compile_expr(st, node, code) {
         emit(code, "MAKE_FUNCTION", compile_function(st, node), node)
         return
     }
+    if kind == "Attribute" {
+        if node["object"]["kind"] == "Identifier" and st["enums"].has(node["object"]["name"]) {
+            compile_enum_value(st, node["object"]["name"], node["name"], [], code, node)
+            return
+        }
+        compile_expr(st, node["object"], code)
+        emit(code, "GET_FIELD", node["name"], node)
+        return
+    }
+    if kind == "Unwrap" {
+        compile_expr(st, node["expr"], code)
+        emit(code, "UNWRAP_OR_RETURN", null, node)
+        return
+    }
     throw "unknown expression: " + kind
+}
+
+// Compile the call of a constructor of a struct.
+fn compile_constructor(st, declaration, node, code) {
+    let fields = declaration["fields"]
+    let args = node["args"]
+    if args.len() > fields.len() {
+        throw "struct '" + declaration["name"] + "' expects " + str(fields.len()) + " argument(s), got " + str(args.len())
+    }
+    var i = 0
+    while i < args.len() {
+        compile_expr(st, args[i], code)
+        i = i + 1
+    }
+    var k = args.len()
+    while k < fields.len() {
+        let field = fields[k]
+        if field["default"] == null {
+            throw "struct '" + declaration["name"] + "' is missing a value for field '" + field["name"] + "'"
+        }
+        compile_expr(st, field["default"], code)
+        k = k + 1
+    }
+    let names = []
+    var n = 0
+    while n < fields.len() {
+        names.push(fields[n]["name"])
+        n = n + 1
+    }
+    emit(code, "MAKE_STRUCT", [declaration["name"], names], node)
 }
 
 fn build_unpack_plan(targets) {

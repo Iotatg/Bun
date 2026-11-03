@@ -31,6 +31,7 @@ from .compiler import (
     OP_JUMP,
     OP_JUMP_IF_FALSE,
     OP_JUMP_IF_TRUE,
+    OP_JUMP_IF_NULL,
     OP_LOAD_CONST,
     OP_LIST_APPEND,
     OP_LOAD_NAME,
@@ -59,6 +60,11 @@ from .compiler import (
     OP_SCOPE_EXIT,
     OP_MATCH_TEST,
     OP_MATCH_FAIL,
+    OP_MAKE_STRUCT,
+    OP_GET_FIELD,
+    OP_SET_FIELD,
+    OP_REGISTER_IMPL,
+    OP_UNWRAP_OR_RETURN,
     Compiler,
 )
 from .dict import BunDict
@@ -75,8 +81,8 @@ from .modules import (
     resolve_module_path,
 )
 from .values import (
-    BunFunction, Builtin, format_fstring_part, is_truthy, repr_value,
-    stringify,
+    BunFunction, BunStruct, Builtin, copy_value, format_fstring_part,
+    is_truthy, repr_value, stringify,
 )
 
 
@@ -140,7 +146,28 @@ class VM:
         return self._execute(code, env, base_dir if base_dir is not None
                              else os.getcwd())
 
-    def call_function(self, function, args):
+    def _next_answer(self, frame, value):
+        """Run the `next` method of a value and give its answer.
+
+        The method is called with its receiver borrowed, the way a
+        method call borrows it, so a value that walks a loop keeps its
+        state between the steps of the loop: a copy would walk the same
+        step over and over.
+        """
+        code = {
+            "name": "<next>",
+            "params": [],
+            "code": [
+                ("LOAD_CONST", value, 0, 0),
+                ("METHOD_CALL", ("next", 0), 0, 0),
+                ("HALT", None, 0, 0),
+            ],
+            "filename": "<next>",
+            "source": "",
+        }
+        return self._execute(code, Environment(self.globals), frame.base_dir)
+
+    def call_function(self, function, args, base_dir=None):
         if not isinstance(function, BunFunction):
             raise BunRuntimeError("%s is not callable" % stringify(function))
         instructions = [("LOAD_CONST", function, 0, 0)]
@@ -156,7 +183,20 @@ class VM:
             "source": "",
         }
         frame_env = Environment(self.globals)
-        return self._execute(code, frame_env, os.getcwd())
+        return self._execute(code, frame_env, base_dir or os.getcwd())
+
+    def call_value(self, callee, args, base_dir=None):
+        """Run a function value and answer its result.
+
+        This is the way a method of a container calls the function it
+        was given, the way `map` and `filter` need it.
+        """
+        if isinstance(callee, Builtin):
+            return callee.func(args)
+        if not isinstance(callee, BunFunction):
+            raise BunRuntimeError("%s is not callable" % stringify(callee))
+        return self.call_function(callee, [copy_value(arg) for arg in args],
+                                  base_dir)
 
     def _execute(self, code, env, base_dir, generator=None):
         frame = Frame(code, env, base_dir)
@@ -287,7 +327,7 @@ class VM:
                             if not values[arg][1]:
                                 raise BunRuntimeError(
                                     "cannot assign to immutable variable '%s'" % arg)
-                            values[arg][0] = stack.pop()
+                            values[arg][0] = copy_value(stack.pop())
                             break
                         scope = scope.parent
                     else:
@@ -331,7 +371,7 @@ class VM:
                     continue
                 if op == OP_DEFINE_NAME:
                     name, mutable = arg
-                    frame.env.define(name, stack.pop(), mutable)
+                    frame.env.define(name, copy_value(stack.pop()), mutable)
                     continue
                 if op == OP_ENTER_SCOPE:
                     frame.env = Environment(frame.env)
@@ -434,10 +474,10 @@ class VM:
 
     def _op_define_name(self, frame, arg, line, col):
         name, mutable = arg
-        frame.env.define(name, frame.stack.pop(), mutable)
+        frame.env.define(name, copy_value(frame.stack.pop()), mutable)
 
     def _op_store_name(self, frame, arg, line, col):
-        frame.env.assign(arg, frame.stack.pop())
+        frame.env.assign(arg, copy_value(frame.stack.pop()))
 
     def _op_del(self, frame, arg, line, col):
         frame.env.delete(arg)
@@ -479,6 +519,19 @@ class VM:
         else:
             args = []
         callee = frame.stack.pop()
+        return self._call_function(frame, callee, args, kwargs)
+
+    def _call_function(self, frame, callee, args, kwargs, borrowed=0):
+        """Run a call. The answer stays on the stack of the frame.
+
+        The arguments of a call are copied, because a struct is a value
+        type. The first `borrowed` arguments are left alone: a method
+        call borrows the receiver, so a mutation through `self` is seen
+        by the caller.
+        """
+        args = list(args)
+        for index in range(borrowed, len(args)):
+            args[index] = copy_value(args[index])
         if isinstance(callee, BunFunction):
             call_env = Environment(callee.closure)
             for spec, source, payload in ops.bind_arguments(
@@ -517,7 +570,7 @@ class VM:
             "%s is not callable" % stringify(callee))
 
     def _op_return(self, frame, arg, line, col):
-        value = frame.stack.pop()
+        value = copy_value(frame.stack.pop())
         generator = frame.root().generator
         if generator is not None:
             # The body of a generator is over, and it gives its last
@@ -581,7 +634,41 @@ class VM:
         else:
             args = []
         receiver = frame.stack.pop()
-        frame.stack.append(ops.method_call(method, receiver, args))
+        if isinstance(receiver, BunStruct):
+            function = ops.struct_method(receiver.type_name, method)
+            if isinstance(function, BunFunction):
+                return self._call_function(
+                    frame, function, [receiver] + args, {}, borrowed=1)
+        frame.stack.append(ops.method_call(
+            method, receiver, args,
+            lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
+
+    def _op_make_struct(self, frame, arg, line, col):
+        type_name, field_names = arg
+        count = len(field_names)
+        if count:
+            values = frame.stack[-count:]
+            del frame.stack[-count:]
+        else:
+            values = []
+        frame.stack.append(ops.make_struct(type_name, field_names, values))
+
+    def _op_get_field(self, frame, arg, line, col):
+        obj = frame.stack.pop()
+        frame.stack.append(ops.get_field(obj, arg))
+
+    def _op_set_field(self, frame, arg, line, col):
+        value = frame.stack.pop()
+        obj = frame.stack.pop()
+        ops.set_field(obj, arg, copy_value(value))
+
+    def _op_register_impl(self, frame, arg, line, col):
+        type_name, method, body = arg
+        function = BunFunction(body["name"], body["params"], body,
+                               frame.env, body.get("filename"),
+                               body.get("source"),
+                               param_specs=body.get("param_defs"))
+        ops.register_impl(type_name, method, function)
 
     def _op_try(self, frame, arg, line, col):
         frame.handlers.append(
@@ -739,6 +826,14 @@ class VM:
     def _op_unary(self, frame, arg, line, col):
         frame.stack.append(ops.unary_op(arg, frame.stack.pop()))
 
+    def _op_unwrap_or_return(self, frame, arg, line, col):
+        ok, payload = ops.unwrap_result(frame.stack.pop())
+        if ok:
+            frame.stack.append(payload)
+            return None
+        frame.stack.append(payload)
+        return self._op_return(frame, arg, line, col)
+
     def _op_jump(self, frame, arg, line, col):
         frame.ip = arg
 
@@ -750,18 +845,22 @@ class VM:
         if is_truthy(frame.stack.pop()):
             frame.ip = arg
 
+    def _op_jump_if_null(self, frame, arg, line, col):
+        # The null coalescing asks this question of the left side: is
+        # the value null?
+        if frame.stack.pop() is None:
+            frame.ip = arg
+
     def _op_for_setup(self, frame, arg, line, col):
         iterable = frame.stack.pop()
-        if isinstance(iterable, BunDict):
-            iterable = iterable.keys()
-        if isinstance(iterable, BunSet):
-            iterable = iterable.values()
-        if is_generator(iterable):
-            frame.iterators.append(iter(iterable))
+        # A value that answers a `next` method is walked with the answers
+        # of that method, and the method is called the way this engine
+        # calls it, with the receiver borrowed from the loop.
+        if ops.has_next(iterable):
+            frame.iterators.append(ops.protocol_iterator(
+                iterable, lambda: self._next_answer(frame, iterable)))
             return
-        if not isinstance(iterable, (list, str)):
-            raise BunRuntimeError("value is not iterable")
-        frame.iterators.append(iter(iterable))
+        frame.iterators.append(ops.iterate(iterable))
 
     def _op_for_next(self, frame, arg, line, col):
         try:
@@ -798,6 +897,7 @@ class VM:
         OP_JUMP: _op_jump,
         OP_JUMP_IF_FALSE: _op_jump_if_false,
         OP_JUMP_IF_TRUE: _op_jump_if_true,
+        OP_JUMP_IF_NULL: _op_jump_if_null,
         OP_FOR_SETUP: _op_for_setup,
         OP_FOR_NEXT: _op_for_next,
         OP_FOR_POP: _op_for_pop,
@@ -829,4 +929,9 @@ class VM:
         OP_MATCH_FAIL: _op_match_fail,
         OP_SCOPE_ENTER: _op_scope_enter,
         OP_SCOPE_EXIT: _op_scope_exit,
+        OP_MAKE_STRUCT: _op_make_struct,
+        OP_GET_FIELD: _op_get_field,
+        OP_SET_FIELD: _op_set_field,
+        OP_REGISTER_IMPL: _op_register_impl,
+        OP_UNWRAP_OR_RETURN: _op_unwrap_or_return,
     }

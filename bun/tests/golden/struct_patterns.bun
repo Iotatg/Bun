@@ -1,0 +1,49 @@
+// A struct value is matched on its type and its fields: the value has
+// to be a value of the named struct, and the pattern of a field binds
+// or tests the value of that field.
+struct Point {
+    var x: int
+    var y: int
+}
+
+struct Line {
+    var start: Point
+    var to: Point
+}
+
+fn where(p: Point) -> string {
+    match p {
+        Point(x: 0, y: 0) => return "origin"
+        Point(x: 0, y) => return "axis"
+        Point(x, y: 0) => return "floor"
+        Point(x, y) => return "field"
+    }
+    return "none"
+}
+
+print(where(Point(0, 0)))
+print(where(Point(0, 5)))
+print(where(Point(3, 0)))
+print(where(Point(2, 7)))
+
+match Line(Point(0, 0), Point(0, 4)) {
+    Line(start: Point(x: 0, y: 0), to) => print("up " + str(to.y))
+    Line(start, to) => print("elsewhere")
+}
+
+match Line(Point(1, 1), Point(9, 9)) {
+    Line(start: Point(x: 0, y: 0), to) => print("up")
+    Line(start, to) => print("elsewhere")
+}
+
+// A struct of another type does not answer the pattern.
+let points = [Point(0, 1), Point(2, 2)]
+for p in points {
+    match p {
+        Point(x: 0, y) => print("zero " + str(y))
+        Point(x, y) => print("rest")
+    }
+}
+
+// A name that is not a struct is refused before the program runs, and
+// so is a field the struct does not have.

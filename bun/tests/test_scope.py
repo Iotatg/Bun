@@ -1,9 +1,14 @@
 """Tests for structured concurrency: the `scope` statement."""
 
+import shutil
+
 import pytest
 
 from bun.cli import run_source
 from bun.errors import BunRuntimeError, BunTypeError
+
+needs_compiler = pytest.mark.skipif(shutil.which("cc") is None,
+                                    reason="no C compiler")
 
 
 def run_both(source, capsys):
@@ -184,3 +189,64 @@ def test_return_inside_a_scope_returns_from_the_function(capsys):
         "}\n"
         "print(f())\n", capsys)
     assert out == "5\n"
+
+
+@needs_compiler
+def test_the_scope_runs_under_the_c_backend(capfd):
+    """The scope statement runs under every engine of the language."""
+    source = ("scope {\n"
+              "    let a = spawn { return 21 * 2 }\n"
+              "    print(task_join(a))\n"
+              "}\n"
+              "print(\"after\")\n")
+    run_source(source, filename="<test>.bun", check=True, engine="tree")
+    tree_out = capfd.readouterr().out
+    run_source(source, filename="<test>.bun", check=True, engine="vm")
+    vm_out = capfd.readouterr().out
+    run_source(source, filename="<test>.bun", check=True, engine="c")
+    c_out = capfd.readouterr().out
+    assert tree_out == vm_out == c_out
+    assert c_out == "42\nafter\n"
+
+
+@needs_compiler
+def test_a_failing_child_fails_the_scope_under_the_c_backend(capfd):
+    """The failure of a child is the failure of the scope."""
+    source = ("try {\n"
+              "    scope {\n"
+              "        let bad = spawn { throw \"child failed\" }\n"
+              "    }\n"
+              "    print(\"no error\")\n"
+              "} catch e {\n"
+              "    print(\"caught \" + e)\n"
+              "}\n")
+    run_source(source, filename="<test>.bun", check=True, engine="vm")
+    vm_out = capfd.readouterr().out
+    run_source(source, filename="<test>.bun", check=True, engine="c")
+    c_out = capfd.readouterr().out
+    assert c_out == vm_out
+    assert c_out == "caught child failed\n"
+
+
+@needs_compiler
+def test_a_cancel_is_seen_by_the_task_under_the_c_backend(capfd):
+    """A cancel is a flag that the task sees."""
+    source = ("scope {\n"
+              "    let t = spawn {\n"
+              "        var spins = 0\n"
+              "        while !task_cancelled() {\n"
+              "            sleep(0.01)\n"
+              "            spins = spins + 1\n"
+              "        }\n"
+              "        return spins\n"
+              "    }\n"
+              "    sleep(0.05)\n"
+              "    cancel(t)\n"
+              "    print(task_join(t) > 0)\n"
+              "}\n")
+    run_source(source, filename="<test>.bun", check=True, engine="vm")
+    vm_out = capfd.readouterr().out
+    run_source(source, filename="<test>.bun", check=True, engine="c")
+    c_out = capfd.readouterr().out
+    assert c_out == vm_out
+    assert c_out == "true\n"

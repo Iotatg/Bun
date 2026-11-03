@@ -24,6 +24,7 @@ OP_UNARY = "UNARY"
 OP_JUMP = "JUMP"
 OP_JUMP_IF_FALSE = "JUMP_IF_FALSE"
 OP_JUMP_IF_TRUE = "JUMP_IF_TRUE"
+OP_JUMP_IF_NULL = "JUMP_IF_NULL"
 OP_FOR_SETUP = "FOR_SETUP"
 OP_FOR_NEXT = "FOR_NEXT"
 OP_FOR_POP = "FOR_POP"
@@ -59,8 +60,16 @@ OP_SCOPE_ENTER = "SCOPE_ENTER"
 OP_SCOPE_EXIT = "SCOPE_EXIT"
 OP_MATCH_TEST = "MATCH_TEST"
 OP_MATCH_FAIL = "MATCH_FAIL"
+OP_MAKE_STRUCT = "MAKE_STRUCT"
+OP_GET_FIELD = "GET_FIELD"
+OP_SET_FIELD = "SET_FIELD"
+OP_REGISTER_IMPL = "REGISTER_IMPL"
+OP_UNWRAP_OR_RETURN = "UNWRAP_OR_RETURN"
 
 MATCH_SUBJECT = "__match_subject"
+MATCH_VALUE = "__match_value"
+COMPOUND_TARGET = "__compound_target"
+COMPOUND_INDEX = "__compound_index"
 
 
 class CompileError(BunTypeError):
@@ -75,6 +84,7 @@ def make_code(name, params, code, filename, source):
         "filename": filename,
         "source": source,
         "param_defs": [],
+        "type_params": [],
     }
 
 
@@ -121,13 +131,28 @@ class Compiler:
         self._try_contexts = []
         self._for_depth = 0
         self._loops = []
+        self.structs = {}
+        self.enums = {}
 
     def compile_program(self, program):
         code = []
+        self._collect_structs(program.statements)
         for statement in program.statements:
             self.compile_statement(statement, code)
         code.append((OP_HALT, None, 0, 0))
         return make_code("<module>", [], code, self.filename, self.source)
+
+    def _collect_structs(self, statements):
+        """Collect the struct declarations of the program.
+
+        The declarations are collected before the code is written, so a
+        constructor may be called before the declaration that names it.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.StructDecl):
+                self.structs[statement.name] = statement
+            elif isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = statement
 
     def compile_function(self, node):
         code = []
@@ -153,6 +178,8 @@ class Compiler:
                            [param.name for param in node.params], code,
                            self.filename, self.source)
         result["param_defs"] = [self._param_def(param) for param in node.params]
+        result["type_params"] = [{"name": param.name, "bound": param.bound}
+                                 for param in node.type_params]
         if has_yield(node.body):
             # A function that gives values is a generator, and the
             # runtime knows it before the program runs.
@@ -199,6 +226,10 @@ class Compiler:
                 else:
                     self.compile_expr(node.target.index, code)
                     emit(code, OP_STORE_INDEX, None, node)
+            elif isinstance(node.target, ast.Attribute):
+                self.compile_expr(node.target.object, code)
+                self.compile_expr(node.value, code)
+                emit(code, OP_SET_FIELD, node.target.name, node)
             else:
                 raise CompileError("invalid assignment target")
         elif isinstance(node, ast.ExprStmt):
@@ -305,6 +336,11 @@ class Compiler:
             self._compile_loop_jump(node, code, "continue")
         elif isinstance(node, ast.MatchStmt):
             self._compile_match(node, code)
+        elif isinstance(node, ast.OpAssignStmt):
+            self._compile_op_assign(node.target, node.op, node.value, node,
+                                    code)
+        elif isinstance(node, ast.IncDecStmt):
+            self._compile_op_assign(node.target, node.op, None, node, code)
         elif isinstance(node, ast.FnDecl):
             emit(code, OP_MAKE_FUNCTION, self.compile_function(node), node)
             if node.decorators:
@@ -313,6 +349,21 @@ class Compiler:
                 emit(code, OP_DEFINE_NAME, (node.name, False), node)
             if node.exported:
                 emit(code, OP_RECORD_EXPORT, node.name, node)
+        elif isinstance(node, ast.StructDecl):
+            self.structs[node.name] = node
+        elif isinstance(node, ast.EnumDecl):
+            # An enum is a type, and a type is not a value: the program
+            # that declares it writes nothing, the way a protocol does.
+            self.enums[node.name] = node
+        elif isinstance(node, ast.ProtocolDecl):
+            # A protocol is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            pass
+        elif isinstance(node, ast.ImplDecl):
+            for method in node.methods:
+                emit(code, OP_REGISTER_IMPL,
+                     (node.type_name, method.name,
+                      self.compile_function(method)), node)
         elif isinstance(node, ast.ImportStmt):
             emit(code, OP_IMPORT, (node.path, list(node.names)), node)
         elif isinstance(node, ast.ReturnStmt):
@@ -407,6 +458,122 @@ class Compiler:
         end = len(code)
         for index in end_jumps:
             patch_to(code, index, end)
+        emit(code, OP_EXIT_SCOPE, None, node)
+        self._scope_depth -= 1
+
+    def _compile_op_assign(self, target, op, value, node, code):
+        """Compile the compound assignment: `x += 1`.
+
+        The target is read once, the operation of the language is applied
+        to the value of the target and the value of the program, and the
+        result is stored in the target.  A value of ``None`` is the one
+        of the increment and of the decrement.
+        """
+        if isinstance(target, ast.Identifier):
+            emit(code, OP_LOAD_NAME, target.name, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_STORE_NAME, target.name, node)
+            return
+        if isinstance(target, ast.Attribute):
+            self.compile_expr(target.object, code)
+            emit(code, OP_DUP, None, node)
+            emit(code, OP_GET_FIELD, target.name, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_SET_FIELD, target.name, node)
+            return
+        if isinstance(target, ast.Index) and not isinstance(target.index,
+                                                             ast.Slice):
+            # The container and the index are kept in hidden names, so
+            # that the element is read once and stored once.
+            self.compile_expr(target.target, code)
+            emit(code, OP_DEFINE_NAME, (COMPOUND_TARGET, False), node)
+            self.compile_expr(target.index, code)
+            emit(code, OP_DEFINE_NAME, (COMPOUND_INDEX, False), node)
+            emit(code, OP_LOAD_NAME, COMPOUND_TARGET, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_INDEX, node)
+            emit(code, OP_INDEX, None, node)
+            self._compile_op_value(value, node, code)
+            emit(code, OP_BINARY, op, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_TARGET, node)
+            emit(code, OP_LOAD_NAME, COMPOUND_INDEX, node)
+            emit(code, OP_STORE_INDEX, None, node)
+            return
+        raise CompileError("invalid assignment target")
+
+    def _compile_op_value(self, value, node, code):
+        """Compile the value of a compound assignment."""
+        if value is None:
+            emit(code, OP_LOAD_CONST, 1, node)
+            return
+        self.compile_expr(value, code)
+
+    def _compile_coalesce(self, node, code):
+        """Compile the null coalescing: `value ?? other`.
+
+        The right side is computed only when the left side is null, and
+        both sides answer the value of the expression.
+        """
+        self.compile_expr(node.left, code)
+        emit(code, OP_DUP, None, node)
+        null_jump = emit(code, OP_JUMP_IF_NULL, None, node)
+        end_jump = emit(code, OP_JUMP, None, node)
+        null_case = len(code)
+        patch_to(code, null_jump, null_case)
+        emit(code, OP_POP, None, node)
+        self.compile_expr(node.right, code)
+        patch(code, end_jump)
+
+    def _compile_match_expr(self, node, code):
+        """Compile a ``match`` expression.
+
+        The subject is evaluated once and kept in a hidden name, because
+        a case may be tried more than once.  Every case has its own
+        scope, so the names a pattern binds do not leak into the next
+        case, and the arm that matches answers the value of the match.
+        The value of the arm is kept in a hidden name too, so that every
+        path of the match leaves the same number of values on the stack.
+        """
+        emit(code, OP_ENTER_SCOPE, None, node)
+        self._scope_depth += 1
+        self.compile_expr(node.subject, code)
+        emit(code, OP_DEFINE_NAME, (MATCH_SUBJECT, False), node)
+        end_jumps = []
+        for pattern, body in node.cases:
+            emit(code, OP_ENTER_SCOPE, None, node)
+            self._scope_depth += 1
+            emit(code, OP_LOAD_NAME, MATCH_SUBJECT, node)
+            emit(code, OP_MATCH_TEST, patterns.plan_from_ast(pattern), node)
+            body_jump = emit(code, OP_JUMP_IF_TRUE, None, node)
+            emit(code, OP_EXIT_SCOPE, None, node)
+            self._scope_depth -= 1
+            next_jump = emit(code, OP_JUMP, None, node)
+            patch(code, body_jump)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None:
+                # A guard that does not hold sends the case on to the
+                # next one, the same way a pattern that does not match.
+                self.compile_expr(guard, code)
+                guard_jump = emit(code, OP_JUMP_IF_TRUE, None, node)
+                emit(code, OP_EXIT_SCOPE, None, node)
+                self._scope_depth -= 1
+                guard_next_jump = emit(code, OP_JUMP, None, node)
+                patch(code, guard_jump)
+            self.compile_expr(body, code)
+            emit(code, OP_EXIT_SCOPE, None, node)
+            self._scope_depth -= 1
+            emit(code, OP_DEFINE_NAME, (MATCH_VALUE, False), node)
+            end_jumps.append(emit(code, OP_JUMP, None, node))
+            patch(code, next_jump)
+            if guard is not None:
+                patch(code, guard_next_jump)
+        emit(code, OP_LOAD_NAME, MATCH_SUBJECT, node)
+        emit(code, OP_MATCH_FAIL, None, node)
+        end = len(code)
+        for index in end_jumps:
+            patch_to(code, index, end)
+        emit(code, OP_LOAD_NAME, MATCH_VALUE, node)
         emit(code, OP_EXIT_SCOPE, None, node)
         self._scope_depth -= 1
 
@@ -680,6 +847,11 @@ class Compiler:
             self.compile_expr(node.operand, code)
             emit(code, OP_UNARY, node.op, node)
         elif isinstance(node, ast.Binary):
+            if node.op == "??":
+                # The right side of the null coalescing is computed only
+                # when the left side is null.
+                self._compile_coalesce(node, code)
+                return
             self.compile_expr(node.left, code)
             self.compile_expr(node.right, code)
             emit(code, OP_BINARY, node.op, node)
@@ -715,6 +887,11 @@ class Compiler:
                 self.compile_expr(node.index, code)
                 emit(code, OP_INDEX, None, node)
         elif isinstance(node, ast.MethodCall):
+            variant = self._enum_method_variant(node)
+            if variant is not None:
+                self._compile_enum_value(variant[0], variant[1], node.args,
+                                        code, node)
+                return
             self.compile_expr(node.receiver, code)
             for arg_node in node.args:
                 self.compile_expr(arg_node, code)
@@ -734,6 +911,18 @@ class Compiler:
                          (part.spec, part.conv, part.source_text), node)
             emit(code, OP_BUILD_STRING, len(node.parts), node)
         elif isinstance(node, ast.Call):
+            if isinstance(node.callee, ast.Attribute):
+                variant = self._enum_variant(node.callee)
+                if variant is not None:
+                    self._compile_enum_value(variant[0], variant[1],
+                                           node.args, code, node)
+                    return
+            declaration = None
+            if isinstance(node.callee, ast.Identifier):
+                declaration = self.structs.get(node.callee.name)
+            if declaration is not None:
+                self._compile_constructor(declaration, node, code)
+                return
             self.compile_expr(node.callee, code)
             for arg_node in node.args:
                 self.compile_expr(arg_node, code)
@@ -744,11 +933,100 @@ class Compiler:
                     self.compile_expr(value_node, code)
                     emit(code, OP_DICT_SET, None, node)
             emit(code, OP_CALL, (len(node.args), bool(node.kwargs)), node)
+        elif isinstance(node, ast.Attribute):
+            variant = self._enum_variant(node)
+            if variant is not None:
+                self._compile_enum_value(variant[0], variant[1], [], code,
+                                        node)
+                return
+            self.compile_expr(node.object, code)
+            emit(code, OP_GET_FIELD, node.name, node)
+        elif isinstance(node, ast.Unwrap):
+            self.compile_expr(node.expr, code)
+            emit(code, OP_UNWRAP_OR_RETURN, None, node)
+        elif isinstance(node, ast.MatchExpr):
+            self._compile_match_expr(node, code)
         elif isinstance(node, ast.FnDecl):
             emit(code, OP_MAKE_FUNCTION, self.compile_function(node), node)
         else:
             raise CompileError(
                 "unknown expression: %s" % type(node).__name__)
+
+    def _compile_constructor(self, declaration, node, code):
+        """Compile a call of a struct name."""
+        fields = declaration.fields
+        if len(node.args) > len(fields):
+            raise CompileError(
+                "struct '%s' expects %d argument(s), got %d"
+                % (declaration.name, len(fields), len(node.args)))
+        for arg_node in node.args:
+            self.compile_expr(arg_node, code)
+        for field in fields[len(node.args):]:
+            if field.default is None:
+                raise CompileError(
+                    "struct '%s' is missing a value for field '%s'"
+                    % (declaration.name, field.name))
+            self.compile_expr(field.default, code)
+        emit(code, OP_MAKE_STRUCT,
+             (declaration.name, [field.name for field in fields]), node)
+
+    def _enum_variant(self, node):
+        """The variant an attribute expression names, if it names one."""
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        declaration = self.enums.get(node.object.name)
+        if declaration is None:
+            return None
+        return (node.object.name, node.name, declaration)
+
+    def _enum_method_variant(self, node):
+        """The variant a method call names, if it names one.
+
+        The fields of a variant are written like the arguments of a
+        method, so the call of a variant is a method call on the name
+        of its enum.
+        """
+        if not isinstance(node, ast.MethodCall):
+            return None
+        if not isinstance(node.receiver, ast.Identifier):
+            return None
+        if node.receiver.name not in self.enums:
+            return None
+        return (node.receiver.name, node.method, self.enums[node.receiver.name])
+
+    def _compile_enum_value(self, enum_name, variant_name, arg_nodes, code,
+                            node):
+        """Compile the construction of the value of a variant.
+
+        The value of a variant is a dict with three entries - the name
+        of the enum, the name of the variant, and the list of the fields
+        - so the construction is written with the two opcodes a dict
+        literal is written with, and no opcode of its own.
+        """
+        variant = None
+        for item in self.enums[enum_name].variants:
+            if item.name == variant_name:
+                variant = item
+                break
+        if variant is None:
+            raise CompileError(
+                "enum '%s' has no variant '%s'" % (enum_name, variant_name))
+        if len(arg_nodes) != len(variant.field_types):
+            raise CompileError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(variant.field_types),
+                   len(arg_nodes)))
+        emit(code, OP_LOAD_CONST, "type", node)
+        emit(code, OP_LOAD_CONST, enum_name, node)
+        emit(code, OP_LOAD_CONST, "kind", node)
+        emit(code, OP_LOAD_CONST, variant_name, node)
+        emit(code, OP_LOAD_CONST, "fields", node)
+        for arg_node in arg_nodes:
+            self.compile_expr(arg_node, code)
+        emit(code, OP_BUILD_LIST, len(arg_nodes), node)
+        emit(code, OP_BUILD_DICT, 3, node)
 
     def _compile_unpack_store(self, leaf, code, node, mutable=None):
         """Store one unpacked value into its target."""

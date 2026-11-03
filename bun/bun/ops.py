@@ -1,11 +1,121 @@
 from .dict import BunDict, DICT_METHODS
 from .errors import BunRuntimeError
+from .generators import is_generator
 from .ints import check as check_int
 from .methods import LIST_METHODS, SECRET_METHODS, STRING_METHODS
 from .set import BunSet, SET_METHODS
 from .values import (
-    BunSecret, is_number, is_truthy, stringify, values_equal,
+    BunSecret, BunStruct, copy_value, is_number, is_truthy, stringify,
+    values_equal,
 )
+
+STRUCT_METHODS = {}
+
+
+def make_struct(type_name, field_names, field_values):
+    """Build a struct value from the values of its fields.
+
+    A struct is a value type, so the values of its fields are copied.
+    The copy happens here and not at the call of the constructor, so
+    that every engine builds the same value.
+    """
+    fields = {}
+    for name, value in zip(field_names, field_values):
+        fields[name] = copy_value(value)
+    return BunStruct(type_name, fields, list(field_names))
+
+
+def get_field(obj, name):
+    """Read one field of a struct."""
+    if not isinstance(obj, BunStruct):
+        raise BunRuntimeError(
+            "type '%s' has no field '%s'" % (type_name(obj), name))
+    if name not in obj.fields:
+        raise BunRuntimeError(
+            "unknown field '%s' on %s" % (name, obj.type_name))
+    return obj.fields[name]
+
+
+def set_field(obj, name, value):
+    """Write one field of a struct."""
+    if not isinstance(obj, BunStruct):
+        raise BunRuntimeError(
+            "type '%s' has no field '%s'" % (type_name(obj), name))
+    if name not in obj.fields:
+        raise BunRuntimeError(
+            "unknown field '%s' on %s" % (name, obj.type_name))
+    obj.fields[name] = value
+
+
+def register_impl(type_name, method, function):
+    """Record the implementation of a method of a struct type."""
+    table = STRUCT_METHODS.setdefault(type_name, {})
+    table[method] = function
+    _METHOD_DISPATCH.pop((type_name, method), None)
+
+
+def struct_method(type_name, method):
+    """Find the implementation of a method of a struct type."""
+    table = STRUCT_METHODS.get(type_name, {})
+    if method not in table:
+        raise BunRuntimeError(
+            "unknown method '%s' on %s" % (method, type_name))
+    return table[method]
+
+
+def has_next(value):
+    """Whether a value answers a `next` method.
+
+    A value of a struct is an iterator when its type declares the
+    method, the way a type is a part of a protocol in the type system.
+    """
+    return (isinstance(value, BunStruct)
+            and "next" in STRUCT_METHODS.get(value.type_name, {}))
+
+
+def protocol_iterator(value, call):
+    """The items a value gives one at a time through `next`.
+
+    A value may answer with an option: `some(item)` is the next item and
+    `none()` is the end of the sequence, so the answers themselves say
+    when the loop is over. `call` runs the `next` method of the value
+    and is given by the engine that walks the loop, because a method of
+    a struct borrows its receiver and only the engine may borrow.
+    """
+    while True:
+        step = call()
+        if not isinstance(step, BunDict):
+            raise BunRuntimeError(
+                "the 'next' method of %s has to answer with an option"
+                % value.type_name)
+        if step.has("some"):
+            yield step.get("some")
+            continue
+        if step.has("none"):
+            return
+        raise BunRuntimeError(
+            "the 'next' method of %s has to answer with an option"
+            % value.type_name)
+
+
+def iterate(value):
+    """The iterator of the items of a value.
+
+    A dict gives its keys, a set gives its values, and a list and a
+    string give their items, the way they always did. A generator
+    gives its own values one at a time. A value of another kind is
+    not iterable here: an engine that wants the `next` of a struct
+    asks for `protocol_iterator` with its own way of calling a method.
+    """
+    if isinstance(value, (list, str)):
+        return iter(value)
+    if isinstance(value, BunDict):
+        return iter(value.keys())
+    if isinstance(value, BunSet):
+        return iter(value.values())
+    if is_generator(value):
+        return iter(value)
+    raise BunRuntimeError("value is not iterable")
 
 
 def binary_op(op, left, right):
@@ -269,6 +379,8 @@ def type_name(value):
         return "set"
     if isinstance(value, BunSecret):
         return "secret"
+    if isinstance(value, BunStruct):
+        return value.type_name
     return type(value).__name__
 
 
@@ -292,6 +404,9 @@ def _resolve_method(method, receiver):
     elif isinstance(receiver, BunSecret):
         table = SECRET_METHODS
         name = "secret"
+    elif isinstance(receiver, BunStruct):
+        table = STRUCT_METHODS.get(receiver.type_name, {})
+        name = receiver.type_name
     else:
         raise BunRuntimeError(
             "'%s' is not a method on %s" % (method, type_name(receiver)))
@@ -301,15 +416,27 @@ def _resolve_method(method, receiver):
     return table[method]
 
 
-def method_call(method, receiver, args):
+def method_call(method, receiver, args, call=None):
+    """Run a method of a container.
+
+    The `call` callback runs a function value that was given to a
+    method, the way `map` and `filter` need it.  It is given by the
+    engine that walks the program, because only an engine may run a
+    function of the program.
+    """
     # The method tables are static, so the lookup result only depends on the
     # concrete type of the receiver and the method name. Caching it removes
     # the isinstance chain and the table lookup from every method call.
-    key = (type(receiver), method)
+    if isinstance(receiver, BunStruct):
+        key = (receiver.type_name, method)
+    else:
+        key = (type(receiver), method)
     handler = _METHOD_DISPATCH.get(key)
     if handler is None:
         handler = _resolve_method(method, receiver)
         _METHOD_DISPATCH[key] = handler
+    if getattr(handler, "needs_call", False):
+        return handler(receiver, args, call)
     return handler(receiver, args)
 
 
@@ -566,4 +693,32 @@ def _unpack_seq(plans, items, values):
             values.append(items[count])
             count += 1
     return count
+
+
+def unwrap_result(value):
+    """Take the payload of a Result or of an option, or hand it back.
+
+    A Result is a dict with an `ok` key or an `err` key, and an option
+    is a dict with a `some` key or a `none` key. The payload key wins
+    when the dict has one, so `Ok` wins over `Err` and `some` wins over
+    `none`. A value that is neither is an error.
+
+    The return is `(ok, payload)`: `ok` is true when the payload is the
+    unwrapped value, and false when the payload is the value the
+    enclosing function has to return, so a `?` on a value that carries
+    nothing gives the value back to the caller.
+    """
+    if not isinstance(value, BunDict):
+        raise BunRuntimeError(
+            "'?' expects a Result or an option value, got %s"
+            % type_name(value))
+    if value.has("ok"):
+        return True, value.get("ok")
+    if value.has("some"):
+        return True, value.get("some")
+    if value.has("err"):
+        return False, value
+    if value.has("none"):
+        return False, value
+    raise BunRuntimeError("'?' expects a Result or an option value")
 

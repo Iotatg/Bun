@@ -62,8 +62,8 @@ HINTS = [
      "an index is a whole number"),
     ("unknown method",
      "the method is not on this type; the methods of a list are push, "
-     "pop, shift, len, join, contains, reverse, slice, sort, splice and "
-     "insert"),
+     "pop, shift, len, join, contains, reverse, slice, sort, sort_by, "
+     "splice, insert, map, filter, reduce, find, any, all and each"),
     ("value is not iterable",
      "a for loop walks a list or a dictionary"),
     ("not enough values to unpack",
@@ -88,6 +88,14 @@ HINTS = [
      "the two values have types that do not go together"),
     ("unary '~' expects an integer",
      "the bit operators work on whole numbers"),
+    ("the '?' operator is only allowed inside a function",
+     "move the '?' into a function that returns a result"),
+    ("the '?' operator needs a function that returns 'result'",
+     "change the return type of the function to 'result'"),
+    ("cannot use '?' on a value of type",
+     "the value has to be a Result: wrap it with Ok() or Err()"),
+    ("'?' expects a Result value",
+     "the value has to be a Result: wrap it with Ok() or Err()"),
     ("expects",
      "the arguments do not match the signature of the call"),
     ("cannot open file",

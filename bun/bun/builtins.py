@@ -23,7 +23,7 @@ from .ops import type_name
 _FFI_ALLOWED = frozenset({
     "math", "time", "random", "json", "hashlib", "base64",
     "urllib.parse", "re", "uuid", "secrets", "string",
-    "socket", "ssl", "cryptography", "binascii",
+    "socket", "ssl", "cryptography", "binascii", "sqlite3",
 })
 
 
@@ -49,7 +49,9 @@ def _len(args):
     value = args[0]
     if isinstance(value, (str, list)):
         return len(value)
-    raise BunRuntimeError("len() expects a string or list")
+    if isinstance(value, BunDict):
+        return len(value)
+    raise BunRuntimeError("len() expects a string, a list or a dict")
 
 
 def _range(args):
@@ -1075,6 +1077,12 @@ def _tcp_connect(args):
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(30)
+    # The small words of a program go out without waiting for the answer of
+    # the net, so the other side never waits for them.
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         sock.connect((host, port))
     except Exception as e:
@@ -1114,6 +1122,12 @@ def _tcp_tls_connect(args):
     import ssl
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(30)
+    # The small words of a program go out without waiting for the answer of
+    # the net, so the other side never waits for them.
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         sock.connect((host, port))
     except Exception as e:
@@ -2010,6 +2024,65 @@ def _installed_languages(args):
     sandbox.check_exec()
     from . import polyglot
     return polyglot.installed_languages()
+def _Ok(args):
+    if len(args) != 1:
+        raise BunRuntimeError("Ok() expects 1 argument")
+    result = BunDict()
+    result.set("ok", args[0])
+    return result
+
+
+def _Err(args):
+    if len(args) != 1:
+        raise BunRuntimeError("Err() expects 1 argument")
+    result = BunDict()
+    result.set("err", args[0])
+    return result
+
+
+def _is_ok(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_ok() expects 1 argument")
+    value = args[0]
+    return isinstance(value, BunDict) and value.has("ok")
+
+
+def _some(args):
+    if len(args) != 1:
+        raise BunRuntimeError("some() expects 1 argument")
+    option = BunDict()
+    option.set("some", args[0])
+    return option
+
+
+def _none(args):
+    if args:
+        raise BunRuntimeError("none() expects no argument")
+    option = BunDict()
+    option.set("none", None)
+    return option
+
+
+def _is_some(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_some() expects 1 argument")
+    value = args[0]
+    return isinstance(value, BunDict) and value.has("some")
+
+
+def _is_none(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_none() expects 1 argument")
+    value = args[0]
+    return (isinstance(value, BunDict)
+            and not value.has("some") and value.has("none"))
+
+
+def _is_err(args):
+    if len(args) != 1:
+        raise BunRuntimeError("is_err() expects 1 argument")
+    value = args[0]
+    return isinstance(value, BunDict) and value.has("err") and not value.has("ok")
 
 
 def register_builtins(env, program_args=None):
@@ -2137,3 +2210,11 @@ def register_builtins(env, program_args=None):
     env.define("trim", Builtin("trim", _trim), False)
     env.define("lower", Builtin("lower", _lower), False)
     env.define("upper", Builtin("upper", _upper), False)
+    env.define("Ok", Builtin("Ok", _Ok), False)
+    env.define("Err", Builtin("Err", _Err), False)
+    env.define("is_ok", Builtin("is_ok", _is_ok), False)
+    env.define("is_err", Builtin("is_err", _is_err), False)
+    env.define("some", Builtin("some", _some), False)
+    env.define("none", Builtin("none", _none), False)
+    env.define("is_some", Builtin("is_some", _is_some), False)
+    env.define("is_none", Builtin("is_none", _is_none), False)

@@ -39,8 +39,8 @@ from .modules import (
     resolve_module_path,
 )
 from .values import (
-    BunFunction, Builtin, format_fstring_part, is_truthy, repr_value,
-    stringify,
+    BunFunction, BunStruct, Builtin, copy_value, format_fstring_part,
+    is_truthy, repr_value, stringify,
 )
 
 
@@ -180,12 +180,48 @@ class RegisterVM:
         self.globals.module_dir = base_dir
         return self._execute(code, env, base_dir)
 
-    def call_function(self, function, args):
+    def _next_answer(self, frame, value):
+        """Run the `next` method of a value and give its answer.
+
+        The method is called with its receiver borrowed, the way a
+        method call borrows it, so a value that walks a loop keeps its
+        state between the steps of the loop: a copy would walk the same
+        step over and over.
+        """
+        code = {
+            "name": "<next>",
+            "params": [],
+            "consts": [value, "next"],
+            "code": [
+                (regcode.CONST, 0, 0, 0),
+                (regcode.METHOD_CALL, 0, 0, 1),
+                (regcode.HALT, 0, 0, 0),
+            ],
+            "lines": [0, 0, 0],
+            "filename": "<next>",
+            "source": "",
+        }
+        return self._execute(code, Environment(self.globals), frame.base_dir)
+
+    def call_function(self, function, args, base_dir=None):
         if not isinstance(function, BunFunction):
             raise BunRuntimeError("%s is not callable" % stringify(function))
         frame_env = Environment(self.globals)
         return self._execute(
-            self._call_code(function, args), frame_env, os.getcwd())
+            self._call_code(function, args), frame_env, base_dir or os.getcwd())
+
+    def call_value(self, callee, args, base_dir=None):
+        """Run a function value and answer its result.
+
+        This is the way a method of a container calls the function it
+        was given, the way `map` and `filter` need it.
+        """
+        if isinstance(callee, Builtin):
+            return callee.func(args)
+        if not isinstance(callee, BunFunction):
+            raise BunRuntimeError("%s is not callable" % stringify(callee))
+        return self.call_function(callee, [copy_value(arg) for arg in args],
+                                  base_dir)
 
     def _call_code(self, function, args):
         """The code that calls a function and ends with its result."""
@@ -290,11 +326,12 @@ class RegisterVM:
             raise
 
     def _op_store_name(self, frame, a, b, c):
-        frame.env.assign(frame.consts[b], frame.slot(a))
+        frame.env.assign(frame.consts[b], copy_value(frame.slot(a)))
         frame.sp = a
 
     def _op_define_name(self, frame, a, b, c):
-        frame.env.define(frame.consts[b], frame.slot(a), bool(c))
+        frame.env.define(frame.consts[b], copy_value(frame.slot(a)),
+                         bool(c))
         frame.sp = a
 
     def _op_record_export(self, frame, a, b, c):
@@ -559,6 +596,19 @@ class RegisterVM:
         for index in range(count):
             args.append(frame.slot(base + 1 + index))
         callee = frame.slot(base)
+        return self._call_function(frame, callee, args, kwargs, base)
+
+    def _call_function(self, frame, callee, args, kwargs, slot, borrowed=0):
+        """Run a call. The answer goes into the slot of the call.
+
+        The arguments of a call are copied, because a struct is a value
+        type. The first `borrowed` arguments are left alone: a method
+        call borrows the receiver, so a mutation through `self` is seen
+        by the caller.
+        """
+        args = list(args)
+        for index in range(borrowed, len(args)):
+            args[index] = copy_value(args[index])
         if isinstance(callee, BunFunction):
             call_env = Environment(callee.closure)
             for spec, source, payload in ops.bind_arguments(
@@ -581,21 +631,21 @@ class RegisterVM:
                     lambda gen: self._execute(callee.body, call_env,
                                               frame.base_dir, gen),
                     callee.name or "anonymous")
-                frame.push(a, generator)
+                frame.push(slot, generator)
                 return None
             if frame.depth >= self.MAX_FRAMES:
                 raise BunRuntimeError("stack overflow")
             body = callee.body
             callee_frame = RegFrame(body, call_env, frame.base_dir,
                                     caller=frame)
-            callee_frame.return_slot = a
+            callee_frame.return_slot = slot
             return callee_frame
         if isinstance(callee, Builtin):
             if kwargs:
                 raise BunRuntimeError(
                     "builtin '%s' does not accept keyword arguments"
                     % callee.name)
-            frame.push(a, callee.func(args))
+            frame.push(slot, callee.func(args))
             return None
         raise BunRuntimeError(
             "%s is not callable" % stringify(callee))
@@ -607,10 +657,54 @@ class RegisterVM:
         for index in range(count):
             args.append(frame.slot(a + 1 + index))
         receiver = frame.slot(a)
-        frame.push(a, ops.method_call(method, receiver, args))
+        if isinstance(receiver, BunStruct):
+            function = ops.struct_method(receiver.type_name, method)
+            if isinstance(function, BunFunction):
+                return self._call_function(
+                    frame, function, [receiver] + args, {}, a, borrowed=1)
+        frame.push(a, ops.method_call(
+            method, receiver, args,
+            lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
+
+    def _op_make_struct(self, frame, a, b, c):
+        type_name, field_names = frame.consts[b]
+        count = c
+        values = []
+        for index in range(count):
+            values.append(frame.slot(a + index))
+        frame.set_slot(a, ops.make_struct(type_name, field_names, values))
+        frame.sp = a + 1
+
+    def _op_get_field(self, frame, a, b, c):
+        obj = frame.slot(b)
+        frame.set_slot(a, ops.get_field(obj, frame.consts[c]))
+        frame.sp = a + 1
+
+    def _op_set_field(self, frame, a, b, c):
+        obj = frame.slot(a)
+        value = frame.slot(b)
+        ops.set_field(obj, frame.consts[c], copy_value(value))
+        frame.sp = a
+
+    def _op_register_impl(self, frame, a, b, c):
+        type_name = frame.consts[a]
+        method = frame.consts[b]
+        body = frame.consts[c]
+        function = BunFunction(body["name"], body["params"], body,
+                               frame.env, body.get("filename"),
+                               body.get("source"),
+                               param_specs=body.get("param_defs"))
+        ops.register_impl(type_name, method, function)
+
+    def _op_unwrap_or_return(self, frame, a, b, c):
+        ok, payload = ops.unwrap_result(frame.slot(a))
+        if ok:
+            frame.set_slot(a, payload)
+            return None
+        return self._op_return(frame, a, b, c)
 
     def _op_return(self, frame, a, b, c):
-        value = frame.slot(a)
+        value = copy_value(frame.slot(a))
         generator = frame.root().generator
         if generator is not None:
             # The body of a generator is over, and it gives its last
@@ -642,6 +736,13 @@ class RegisterVM:
             frame.ip = b
         frame.sp = a
 
+    def _op_jump_if_null(self, frame, a, b, c):
+        # The null coalescing asks this question of the left side: is
+        # the value null?
+        if frame.slot(a) is None:
+            frame.ip = b
+        frame.sp = a
+
     def _op_enter_scope(self, frame, a, b, c):
         frame.env = Environment(frame.env)
 
@@ -657,14 +758,14 @@ class RegisterVM:
 
     def _op_for_setup(self, frame, a, b, c):
         iterable = frame.slot(a)
-        if isinstance(iterable, BunDict):
-            iterable = iterable.keys()
-        if isinstance(iterable, BunSet):
-            iterable = iterable.values()
-        if not isinstance(iterable, (list, str)) \
-                and not is_generator(iterable):
-            raise BunRuntimeError("value is not iterable")
-        frame.iterators.append(iter(iterable))
+        # A value that answers a `next` method is walked with the answers
+        # of that method, and the method is called the way this engine
+        # calls it, with the receiver borrowed from the loop.
+        if ops.has_next(iterable):
+            frame.iterators.append(ops.protocol_iterator(
+                iterable, lambda: self._next_answer(frame, iterable)))
+        else:
+            frame.iterators.append(ops.iterate(iterable))
         frame.sp = a
 
     def _op_for_next(self, frame, a, b, c):
@@ -886,6 +987,7 @@ _DISPATCH = {
     regcode.JUMP: RegisterVM._op_jump,
     regcode.JUMP_IF_FALSE: RegisterVM._op_jump_if_false,
     regcode.JUMP_IF_TRUE: RegisterVM._op_jump_if_true,
+    regcode.JUMP_IF_NULL: RegisterVM._op_jump_if_null,
     regcode.ENTER_SCOPE: RegisterVM._op_enter_scope,
     regcode.EXIT_SCOPE: RegisterVM._op_exit_scope,
     regcode.FOR_SETUP: RegisterVM._op_for_setup,
@@ -912,6 +1014,11 @@ _DISPATCH = {
     regcode.SCOPE_EXIT: RegisterVM._op_scope_exit,
     regcode.MATCH_TEST: RegisterVM._op_match_test,
     regcode.MATCH_FAIL: RegisterVM._op_match_fail,
+    regcode.MAKE_STRUCT: RegisterVM._op_make_struct,
+    regcode.GET_FIELD: RegisterVM._op_get_field,
+    regcode.SET_FIELD: RegisterVM._op_set_field,
+    regcode.REGISTER_IMPL: RegisterVM._op_register_impl,
+    regcode.UNWRAP_OR_RETURN: RegisterVM._op_unwrap_or_return,
     regcode.LOAD_NAME2: RegisterVM._op_fused,
     regcode.LOAD_NAME_CONST: RegisterVM._op_fused,
     regcode.CONST_LOAD_NAME: RegisterVM._op_fused,

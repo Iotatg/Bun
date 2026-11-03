@@ -7,8 +7,8 @@ from . import ops
 from . import patterns
 from . import tasks
 from .values import (
-    BreakSignal, BunFunction, Builtin, ContinueSignal, ReturnSignal,
-    format_fstring_part, is_truthy, repr_value, stringify,
+    BreakSignal, BunFunction, BunStruct, Builtin, ContinueSignal, ReturnSignal,
+    copy_value, format_fstring_part, is_truthy, repr_value, stringify,
 )
 from .environment import Environment
 from .builtins import register_builtins
@@ -27,6 +27,8 @@ class Interpreter:
         self.loading = set()
         self.export_stack = []
         self.last_value = None
+        self.structs = {}
+        self.enums = {}
         # The generator that runs in this thread, if there is one.
         self._current = threading.local()
 
@@ -35,6 +37,7 @@ class Interpreter:
         if base_dir is None:
             base_dir = os.getcwd()
         self.globals.module_dir = base_dir
+        self._collect_structs(program.statements)
         try:
             self.execute(program, env)
         except ReturnSignal as signal:
@@ -43,12 +46,29 @@ class Interpreter:
                 signal.line, signal.col)
         except BreakSignal as signal:
             raise BunRuntimeError(
-                "'break' outside of a loop", signal.line, signal.col)
+                "'break' outside of a loop",
+                signal.line, signal.col)
         except ContinueSignal as signal:
             raise BunRuntimeError(
-                "'continue' outside of a loop", signal.line, signal.col)
+                "'continue' outside of a loop",
+                signal.line, signal.col)
 
-    def call_function(self, function, args):
+    def _collect_structs(self, statements):
+        """Collect the struct declarations of the program.
+
+        The declarations are collected before the program runs, so a
+        constructor may be called before the declaration that names it.
+        """
+        for statement in statements:
+            if isinstance(statement, ast.StructDecl):
+                self.structs[statement.name] = statement
+            elif isinstance(statement, ast.EnumDecl):
+                self.enums[statement.name] = statement
+
+    def call_function(self, function, args, borrowed=0):
+        args = list(args)
+        for index in range(borrowed, len(args)):
+            args[index] = copy_value(args[index])
         call_env = Environment(function.closure)
         for spec, source, payload in ops.bind_arguments(
                 function.name, function.param_specs, args, {}):
@@ -103,6 +123,52 @@ class Interpreter:
             env = env.parent
         return None
 
+    def _register_impl(self, node, env):
+        """Record the methods of an impl block."""
+        for method in node.methods:
+            function = self._make_function(method, env)
+            ops.register_impl(node.type_name, method.name, function)
+
+    def _iterate(self, value):
+        """The iterator of the items of a value.
+
+        A value of a struct that answers a `next` method is walked with
+        the answers of that method, and the method is called the way
+        this engine calls it: a method borrows its receiver, so the
+        value the loop walks is the value the program holds.
+        """
+        if ops.has_next(value):
+            return ops.protocol_iterator(
+                value, lambda: self._call_next(value))
+        return ops.iterate(value)
+
+    def _call_next(self, value):
+        function = ops.struct_method(value.type_name, "next")
+        if not isinstance(function, BunFunction):
+            raise BunRuntimeError(
+                "the 'next' method of %s is not a function" % value.type_name)
+        return self.call_function(function, [value], borrowed=1)
+
+    def _construct(self, declaration, args, env):
+        """Build the value of a struct from the arguments of a call."""
+        fields = declaration.fields
+        if len(args) > len(fields):
+            raise BunRuntimeError(
+                "struct '%s' expects %d argument(s), got %d"
+                % (declaration.name, len(fields), len(args)))
+        values = []
+        for index, field in enumerate(fields):
+            if index < len(args):
+                values.append(args[index])
+            elif field.default is not None:
+                values.append(self.evaluate(field.default, env))
+            else:
+                raise BunRuntimeError(
+                    "struct '%s' is missing a value for field '%s'"
+                    % (declaration.name, field.name))
+        return ops.make_struct(
+            declaration.name, [field.name for field in fields], values)
+
     def _make_function(self, node, env):
         return BunFunction(
             node.name or "anonymous",
@@ -152,11 +218,21 @@ class Interpreter:
                 self.execute(statement, env)
         elif isinstance(node, ast.LetStmt):
             value = self.evaluate(node.value, env)
-            env.define(node.name, value, node.mutable)
+            env.define(node.name, copy_value(value), node.mutable)
             if node.exported:
                 self._record_export(node.name, value)
         elif isinstance(node, ast.AssignStmt):
             self._assign(node.target, self.evaluate(node.value, env), env)
+        elif isinstance(node, ast.OpAssignStmt):
+            # The compound assignment reads the target, computes the
+            # operation and stores the result in the target.
+            self._op_assign(node.target, node.op,
+                            lambda: self.evaluate(node.value, env), env)
+        elif isinstance(node, ast.IncDecStmt):
+            # The increment and the decrement add one to a number.
+            op = node.op if node.op in ("+", "-") else (
+                "+" if node.op == "++" else "-")
+            self._op_assign(node.target, op, lambda: 1, env)
         elif isinstance(node, ast.UnpackStmt):
             self._unpack_declare(node, env)
         elif isinstance(node, ast.ExprStmt):
@@ -183,14 +259,7 @@ class Interpreter:
                 # break.
                 self.execute(node.orelse, env)
         elif isinstance(node, ast.ForStmt):
-            iterable = self.evaluate(node.iterable, env)
-            if isinstance(iterable, BunDict):
-                iterable = iterable.keys()
-            if isinstance(iterable, BunSet):
-                iterable = iterable.values()
-            if not isinstance(iterable, (list, str)) \
-                    and not is_generator(iterable):
-                raise BunRuntimeError("value is not iterable")
+            iterable = self._iterate(self.evaluate(node.iterable, env))
             broke = False
             for item in iterable:
                 loop_env = Environment(env)
@@ -212,6 +281,18 @@ class Interpreter:
             env.define(node.name, value, False)
             if node.exported:
                 self._record_export(node.name, value)
+        elif isinstance(node, ast.StructDecl):
+            self.structs[node.name] = node
+        elif isinstance(node, ast.EnumDecl):
+            # An enum is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            self.enums[node.name] = node
+        elif isinstance(node, ast.ProtocolDecl):
+            # A protocol is a type, and a type is not a value: the program
+            # that declares it runs the same with it and without it.
+            pass
+        elif isinstance(node, ast.ImplDecl):
+            self._register_impl(node, env)
         elif isinstance(node, ast.ImportStmt):
             exports = self._load_module(node.path, node.line, node.col, env)
             for name in node.names:
@@ -221,7 +302,7 @@ class Interpreter:
                 env.define(name, exports[name], False)
         elif isinstance(node, ast.ReturnStmt):
             value = self.evaluate(node.value, env) if node.value is not None else None
-            raise ReturnSignal(value, node.line, node.col)
+            raise ReturnSignal(copy_value(value), node.line, node.col)
         elif isinstance(node, ast.TryStmt):
             self._execute_try(node, env)
         elif isinstance(node, ast.WithStmt):
@@ -324,6 +405,31 @@ class Interpreter:
         raise BunRuntimeError("no matching case for %s" % repr_value(value),
                               node.line, node.col)
 
+    def _match_value(self, node, env):
+        """Answer the value of a ``match`` expression.
+
+        The first case whose pattern matches wins, and its arm answers
+        the value of the match.  The names a pattern binds live in the
+        scope of that case alone.
+        """
+        value = self.evaluate(node.subject, env)
+        for pattern, body in node.cases:
+            bindings = []
+            if not patterns.match_pattern(value,
+                                         patterns.plan_from_ast(pattern),
+                                         bindings):
+                continue
+            case_env = Environment(env)
+            for name, bound in bindings:
+                case_env.define(name, bound, True)
+            guard = getattr(pattern, "guard", None)
+            if guard is not None and not is_truthy(self.evaluate(guard,
+                                                                 case_env)):
+                continue
+            return self.evaluate(body, case_env)
+        raise BunRuntimeError("no matching case for %s" % repr_value(value),
+                              node.line, node.col)
+
     def _execute_block(self, block, env):
         block_env = Environment(env)
         for statement in block.statements:
@@ -412,7 +518,7 @@ class Interpreter:
                 elif source == "kwarg":
                     call_env.define(spec["name"], self._to_dict(payload), True)
                 else:
-                    call_env.define(spec["name"], payload, True)
+                    call_env.define(spec["name"], copy_value(payload), True)
             if callee.is_generator:
                 # A generator gives its values one at a time, and it runs
                 # in a thread of its own.
@@ -431,9 +537,12 @@ class Interpreter:
 
     def _assign(self, target, value, env):
         if isinstance(target, ast.Identifier):
-            env.assign(target.name, value)
+            env.assign(target.name, copy_value(value))
         elif isinstance(target, ast.UnpackTarget):
             self._unpack_assign(target, value, env)
+        elif isinstance(target, ast.Attribute):
+            obj = self.evaluate(target.object, env)
+            ops.set_field(obj, target.name, copy_value(value))
         elif isinstance(target, ast.Index):
             if isinstance(target.index, ast.Slice):
                 obj = self.evaluate(target.target, env)
@@ -448,6 +557,34 @@ class Interpreter:
                     self.evaluate(target.target, env),
                     self.evaluate(target.index, env),
                     value)
+        else:
+            raise BunRuntimeError("invalid assignment target")
+
+    def _op_assign(self, target, op, value, env):
+        """Compute an operation on the target of an assignment and store it.
+
+        The target is read once, the operation of the language is applied
+        to the value of the target and the value of the program, and the
+        result is stored in the target.  The value of the program is a
+        function, because it is computed after the target is read.
+        """
+        if isinstance(target, ast.Identifier):
+            current = env.get(target.name)
+            env.assign(target.name,
+                       copy_value(ops.binary_op(op, current, value())))
+        elif isinstance(target, ast.Attribute):
+            obj = self.evaluate(target.object, env)
+            current = ops.get_field(obj, target.name)
+            ops.set_field(obj, target.name,
+                          copy_value(ops.binary_op(op, current, value())))
+        elif isinstance(target, ast.Index):
+            if isinstance(target.index, ast.Slice):
+                raise BunRuntimeError("invalid assignment target")
+            obj = self.evaluate(target.target, env)
+            index = self.evaluate(target.index, env)
+            current = ops.index_value(obj, index)
+            ops.assign_index(obj, index,
+                             copy_value(ops.binary_op(op, current, value())))
         else:
             raise BunRuntimeError("invalid assignment target")
 
@@ -490,6 +627,8 @@ class Interpreter:
             return ops.unary_op(node.op, self.evaluate(node.operand, env))
         if isinstance(node, ast.Binary):
             return self._binary(node, env)
+        if isinstance(node, ast.MatchExpr):
+            return self._match_value(node, env)
         if isinstance(node, ast.Logical):
             left = self.evaluate(node.left, env)
             if node.op == "and":
@@ -503,7 +642,62 @@ class Interpreter:
             return self._index(self.evaluate(node.target, env), self.evaluate(node.index, env))
         if isinstance(node, ast.MethodCall):
             return self._method_call(node, env)
+        if isinstance(node, ast.Attribute):
+            if (isinstance(node.object, ast.Identifier)
+                    and node.object.name in self.enums):
+                return self._construct_enum(node.object.name, node.name,
+                                            [], env, node)
+            return ops.get_field(self.evaluate(node.object, env), node.name)
+        if isinstance(node, ast.Unwrap):
+            ok, payload = ops.unwrap_result(self.evaluate(node.expr, env))
+            if ok:
+                return payload
+            raise ReturnSignal(payload, node.line, node.col)
         raise BunRuntimeError("unknown expression: %s" % type(node).__name__)
+
+    def _enum_variant(self, node):
+        """The variant an attribute expression names, if it names one."""
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.object, ast.Identifier):
+            return None
+        if node.object.name not in self.enums:
+            return None
+        return (node.object.name, node.name)
+
+    def _construct_enum(self, enum_name, variant_name, args, env, node):
+        """Build the value of a variant of an enum.
+
+        A variant is a dict with three entries: the name of the enum it
+        belongs to, the name of the variant and the list of its fields.
+        The name of the enum is part of the value so two enums that use
+        the same name for a variant stay apart, the way two structs
+        with the same field names stay apart.
+        """
+        declaration = self.enums.get(enum_name)
+        if declaration is None:
+            raise BunRuntimeError(
+                "unknown enum '%s'" % enum_name, node.line, node.col)
+        variant = None
+        for item in declaration.variants:
+            if item.name == variant_name:
+                variant = item
+                break
+        if variant is None:
+            raise BunRuntimeError(
+                "enum '%s' has no variant '%s'" % (enum_name, variant_name),
+                node.line, node.col)
+        if len(args) != len(variant.field_types):
+            raise BunRuntimeError(
+                "variant '%s.%s' expects %d argument(s), got %d"
+                % (enum_name, variant_name, len(variant.field_types),
+                   len(args)), node.line, node.col)
+        values = [copy_value(arg) for arg in args]
+        value = BunDict()
+        value.set("type", enum_name)
+        value.set("kind", variant_name)
+        value.set("fields", values)
+        return value
 
     def _dict_literal(self, node, env):
         result = BunDict()
@@ -550,12 +744,29 @@ class Interpreter:
         return format_fstring_part(part.spec, part.conv, part.source_text, value)
 
     def _binary(self, node, env):
+        if node.op == "??":
+            # The right side of the null coalescing is computed only when
+            # the left side is null.
+            left = self.evaluate(node.left, env)
+            if left is not None:
+                return left
+            return self.evaluate(node.right, env)
         return ops.binary_op(
             node.op,
             self.evaluate(node.left, env),
             self.evaluate(node.right, env))
 
     def _call(self, node, env):
+        if isinstance(node.callee, ast.Identifier):
+            declaration = self.structs.get(node.callee.name)
+            if declaration is not None:
+                args = [self.evaluate(arg, env) for arg in node.args]
+                return self._construct(declaration, args, env)
+        if isinstance(node.callee, ast.Attribute):
+            enum = self._enum_variant(node.callee)
+            if enum is not None:
+                args = [self.evaluate(arg, env) for arg in node.args]
+                return self._construct_enum(enum[0], enum[1], args, env, node)
         callee = self.evaluate(node.callee, env)
         args = [self.evaluate(arg, env) for arg in node.args]
         kwargs = {}
@@ -570,7 +781,7 @@ class Interpreter:
                 elif source == "kwarg":
                     call_env.define(spec["name"], self._to_dict(payload), True)
                 else:
-                    call_env.define(spec["name"], payload, True)
+                    call_env.define(spec["name"], copy_value(payload), True)
             if callee.is_generator:
                 # A generator gives its values one at a time, and it runs
                 # in a thread of its own.
@@ -591,9 +802,23 @@ class Interpreter:
         raise BunRuntimeError("%s is not callable" % stringify(callee))
 
     def _method_call(self, inner, env):
+        if (isinstance(inner.receiver, ast.Identifier)
+                and inner.receiver.name in self.enums):
+            # The fields of a variant are written like the arguments of
+            # a method: `Shape.Circle(2.0)` is the variant `Circle` of
+            # the enum `Shape` with one field.
+            args = [self.evaluate(arg, env) for arg in inner.args]
+            return self._construct_enum(inner.receiver.name, inner.method,
+                                        args, env, inner)
         receiver = self.evaluate(inner.receiver, env)
         args = [self.evaluate(arg, env) for arg in inner.args]
-        return ops.method_call(inner.method, receiver, args)
+        if isinstance(receiver, BunStruct):
+            function = ops.struct_method(receiver.type_name, inner.method)
+            if isinstance(function, BunFunction):
+                return self.call_function(function, [receiver] + args, borrowed=1)
+            return ops.method_call(inner.method, receiver, args,
+                                   self.call_value)
+        return ops.method_call(inner.method, receiver, args, self.call_value)
 
     def _index(self, obj, index):
         return ops.index_value(obj, index)

@@ -9,6 +9,10 @@ KEYWORDS = {
     "let": TokenType.LET,
     "var": TokenType.VAR,
     "fn": TokenType.FN,
+    "struct": TokenType.STRUCT,
+    "enum": TokenType.ENUM,
+    "impl": TokenType.IMPL,
+    "protocol": TokenType.PROTOCOL,
     "if": TokenType.IF,
     "else": TokenType.ELSE,
     "while": TokenType.WHILE,
@@ -37,6 +41,11 @@ KEYWORDS = {
     "yield": TokenType.YIELD,
 }
 
+_THREE_CHAR = {
+    "<<=": TokenType.LSHIFT_ASSIGN,
+    ">>=": TokenType.RSHIFT_ASSIGN,
+}
+
 _TWO_CHAR = {
     "==": TokenType.EQ,
     "!=": TokenType.NEQ,
@@ -47,6 +56,17 @@ _TWO_CHAR = {
     "**": TokenType.DOUBLE_STAR,
     "<<": TokenType.LSHIFT,
     ">>": TokenType.RSHIFT,
+    "++": TokenType.INCREMENT,
+    "--": TokenType.DECREMENT,
+    "??": TokenType.NULL_COALESCE,
+    "+=": TokenType.PLUS_ASSIGN,
+    "-=": TokenType.MINUS_ASSIGN,
+    "*=": TokenType.STAR_ASSIGN,
+    "/=": TokenType.SLASH_ASSIGN,
+    "%=": TokenType.PERCENT_ASSIGN,
+    "&=": TokenType.AMP_ASSIGN,
+    "|=": TokenType.PIPE_ASSIGN,
+    "^=": TokenType.CARET_ASSIGN,
 }
 
 _ONE_CHAR = {
@@ -64,6 +84,7 @@ _ONE_CHAR = {
     "<": TokenType.LT,
     ">": TokenType.GT,
     "!": TokenType.BANG,
+    "?": TokenType.QUESTION,
     "(": TokenType.LPAREN,
     ")": TokenType.RPAREN,
     "{": TokenType.LBRACE,
@@ -369,6 +390,12 @@ class Lexer:
     def _operator(self):
         line, col = self.line, self.col
         ch = self._advance()
+        three = ch + self._peek() + self._peek(1)
+        if three in _THREE_CHAR:
+            self._advance()
+            self._advance()
+            self._add(_THREE_CHAR[three], three, line, col)
+            return
         two = ch + self._peek()
         if two in _TWO_CHAR:
             self._advance()

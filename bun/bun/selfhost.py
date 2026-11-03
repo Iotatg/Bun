@@ -78,6 +78,7 @@ def code_to_data(code):
         "filename": code["filename"],
         "source": code["source"],
         "param_defs": _param_defs_to_data(code.get("param_defs")),
+        "type_params": list(code.get("type_params") or []),
     }
     if code.get("is_generator"):
         # A function that gives its values one at a time.
