@@ -1,0 +1,757 @@
+// bun:physics — the quantities of the physical world, and the arithmetic
+// that connects them.
+//
+// Two things live here. The first is a table of the constants, in the
+// 2019 SI definition, where c, h, e and k are exact by definition and the
+// rest carry the uncertainty of the CODATA adjustment. The second is a
+// unit table with a dimension vector for each unit, so `convert()` can
+// refuse a conversion that does not make sense: a metre is not a second,
+// and a program that says so is wrong before it runs.
+//
+// The dimensions are [length, mass, time, current, temperature, amount,
+// luminous intensity]. A joule is [2, 1, -2, 0, 0, 0, 0] — kg m^2 / s^2 —
+// and that vector is what makes the check possible.
+//
+//   convert(1.0, "eV", "J")        // 1.602176634e-19
+//   photon_energy(500e-9)          // 3.97e-19 J, a green photon
+//   time_dilation(1.0, 0.99 * c)   // 7.09 s for every second on the ship
+
+let math = ffi_load("math")
+let sqrt = math["sqrt"]
+let pow = math["pow"]
+let exp = math["exp"]
+let log = math["log"]
+let fabs = math["fabs"]
+
+export let pi = 3.141592653589793
+
+// ---------------------------------------------------------------------------
+// The constants of nature (CODATA 2018, SI 2019)
+// ---------------------------------------------------------------------------
+
+// The speed of light in vacuum, exact. m / s.
+export let c = 299792458.0
+
+// The Planck constant, exact. J s.
+export let h = 6.62607015e-34
+
+// The reduced Planck constant, h / 2 pi. J s.
+export let hbar = 1.054571817e-34
+
+// The elementary charge, exact. C.
+export let e_charge = 1.602176634e-19
+
+// The Boltzmann constant, exact. J / K.
+export let kB = 1.380649e-23
+
+// The Avogadro constant, exact. 1 / mol.
+export let NA = 6.02214076e23
+
+// The molar gas constant, NA kB, exact. J / (mol K).
+export let R_gas = 8.31446261815324
+
+// The gravitational constant. m^3 / (kg s^2). The least certain constant
+// in this table, at about 2.2e-5 relative.
+export let G = 6.67430e-11
+
+// The vacuum permittivity. F / m.
+export let eps0 = 8.8541878128e-12
+
+// The vacuum permeability. N / A^2.
+export let mu0 = 1.25663706212e-6
+
+// The Coulomb constant, 1 / (4 pi eps0). N m^2 / C^2.
+export let k_e = 8.9875517923e9
+
+// The mass of the electron, the proton and the neutron. kg.
+export let m_electron = 9.1093837015e-31
+export let m_proton = 1.67262192369e-27
+export let m_neutron = 1.67492749804e-27
+
+// The atomic mass constant. kg.
+export let u_atomic = 1.66053906660e-27
+
+// The Stefan-Boltzmann constant. W / (m^2 K^4).
+export let sigma_sb = 5.670374419e-8
+
+// The fine-structure constant, dimensionless.
+export let alpha = 7.2973525693e-3
+
+// The Bohr radius. m.
+export let a0 = 5.29177210903e-11
+
+// The Rydberg energy. J.
+export let Ry = 2.1798723611035e-18
+
+// The standard acceleration of gravity. m / s^2.
+export let g_earth = 9.80665
+
+// The standard atmosphere. Pa.
+export let atm = 101325.0
+
+// The magnetic flux quantum. Wb.
+export let phi0 = 2.067833848e-15
+
+// The conductance quantum. S.
+export let G0 = 7.748091729e-5
+
+// The solar mass, the astronomical unit, the parsec. kg, m, m.
+export let M_sun = 1.98847e30
+export let AU = 1.495978707e11
+export let parsec = 3.0856775814913673e16
+
+// The Hubble constant in 1 / s, from 70 km/s/Mpc.
+export let H0 = 70000.0 / (1e6 * parsec)
+
+// The mass of the Earth. kg.
+export let M_earth = 5.9722e24
+
+// ---------------------------------------------------------------------------
+// Units
+// ---------------------------------------------------------------------------
+
+// The dimension vector of each unit, and the factor that turns it into
+// the SI unit of that dimension.
+fn unit_table() -> any {
+    return {
+        // length
+        "m": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "km": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "cm": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01],
+        "mm": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.001],
+        "um": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-6],
+        "nm": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-9],
+        "pm": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-12],
+        "ft": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.3048],
+        "inch": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0254],
+        "yd": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.9144],
+        "mi": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1609.344],
+        "nmi": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1852.0],
+        "au": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.495978707e11],
+        "ly": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 9.4607304725808e15],
+        "pc": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3.0856775814913673e16],
+        "angstrom": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-10],
+
+        // mass
+        "kg": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "g": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.001],
+        "mg": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-6],
+        "ug": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-9],
+        "t": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "lb": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.45359237],
+        "oz": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.028349523125],
+        "u": [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.66053906660e-27],
+
+        // time
+        "s": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "ms": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 0.001],
+        "us": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1e-6],
+        "ns": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1e-9],
+        "ps": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1e-12],
+        "min": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 60.0],
+        "h": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 3600.0],
+        "day": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 86400.0],
+        "yr": [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 31557600.0],
+
+        // current
+        "a": [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 1.0],
+        "ma": [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 0.001],
+        "ua": [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 1e-6],
+
+        // amount
+        "mol": [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 1.0],
+        "mmol": [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 0.001],
+        "umol": [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 1e-6],
+
+        // force
+        "n": [[1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "kn": [[1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "dyn": [[1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1e-5],
+        "lbf": [[1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 4.4482216152605],
+
+        // energy
+        "j": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "kj": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "mj": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 0.001],
+        "cal": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 4.184],
+        "kcal": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 4184.0],
+        "erg": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1e-7],
+        "ev": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.602176634e-19],
+        "kev": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.602176634e-16],
+        "mev": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.602176634e-13],
+        "gev": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.602176634e-10],
+        "kwh": [[2.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 3.6e6],
+
+        // power
+        "w": [[2.0, 1.0, -3.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "kw": [[2.0, 1.0, -3.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "mw": [[2.0, 1.0, -3.0, 0.0, 0.0, 0.0, 0.0], 1e6],
+        "hp": [[2.0, 1.0, -3.0, 0.0, 0.0, 0.0, 0.0], 745.6998715822702],
+
+        // pressure
+        "pa": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "kpa": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "mpa": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 1e6],
+        "bar": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 100000.0],
+        "atm": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 101325.0],
+        "psi": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 6894.757293168],
+        "mmhg": [[-1.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0], 133.322387415],
+
+        // frequency
+        "hz": [[0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "khz": [[0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1000.0],
+        "mhz": [[0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1e6],
+        "ghz": [[0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1e9],
+
+        // electricity
+        "v": [[2.0, 1.0, -3.0, -1.0, 0.0, 0.0, 0.0], 1.0],
+        "mv": [[2.0, 1.0, -3.0, -1.0, 0.0, 0.0, 0.0], 0.001],
+        "ohm": [[2.0, 1.0, -3.0, -2.0, 0.0, 0.0, 0.0], 1.0],
+        "coulomb": [[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0], 1.0],
+        "farad": [[-2.0, -1.0, 4.0, 2.0, 0.0, 0.0, 0.0], 1.0],
+        "tesla": [[0.0, 1.0, -2.0, -1.0, 0.0, 0.0, 0.0], 1.0],
+        "weber": [[2.0, 1.0, -2.0, -1.0, 0.0, 0.0, 0.0], 1.0],
+
+        // volume
+        "m3": [[3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "l": [[3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.001],
+        "ml": [[3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1e-6],
+
+        // angle
+        "rad": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0],
+        "deg": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.017453292519943295],
+    }
+}
+
+// Convert a quantity from one unit to another. The dimensions must agree:
+// a length cannot become a mass, and asking for it is an error.
+export fn convert(value: float, source: string, to: string) -> float {
+    let table = unit_table()
+    let a = lower(source)
+    let b = lower(to)
+    if a == b {
+        return value
+    }
+    // The three temperature scales are affine, not linear, so they are
+    // converted through kelvin rather than through a factor.
+    if a == "degc" or a == "degf" or a == "k" or b == "degc" or b == "degf" or b == "k" {
+        return convert_temperature(value, a, b)
+    }
+    if not table.has(a) {
+        throw "convert() does not know the unit '" + source + "'"
+    }
+    if not table.has(b) {
+        throw "convert() does not know the unit '" + to + "'"
+    }
+    let ua = table[a]
+    let ub = table[b]
+    if ua[0] != ub[0] {
+        throw "convert() cannot turn " + source + " into " + to + ": different dimensions"
+    }
+    return value * ua[1] / ub[1]
+}
+
+export fn convert_temperature(value: float, source: string, to: string) -> float {
+    var kelvin = value
+    if source == "degc" {
+        kelvin = value + 273.15
+    } else if source == "degf" {
+        kelvin = (value - 32.0) * 5.0 / 9.0 + 273.15
+    } else if source == "k" {
+        kelvin = value
+    } else {
+        throw "convert_temperature() does not know the scale '" + source + "'"
+    }
+    if to == "degc" {
+        return kelvin - 273.15
+    }
+    if to == "degf" {
+        return (kelvin - 273.15) * 9.0 / 5.0 + 32.0
+    }
+    if to == "k" {
+        return kelvin
+    }
+    throw "convert_temperature() does not know the scale '" + to + "'"
+}
+
+// The dimension vector of a unit, as a string like "L2 M1 T-2", which is
+// what a person reads in a units table.
+export fn dimension_of(unit: string) -> string {
+    let table = unit_table()
+    let key = lower(unit)
+    if not table.has(key) {
+        throw "dimension_of() does not know the unit '" + unit + "'"
+    }
+    let names = ["L", "M", "T", "I", "K", "N", "J"]
+    var text = ""
+    let vector = table[key][0]
+    var i = 0
+    while i < 7 {
+        if vector[i] != 0.0 {
+            if text != "" {
+                text = text + " "
+            }
+            text = text + names[i] + str(int(vector[i]))
+        }
+        i = i + 1
+    }
+    if text == "" {
+        return "dimensionless"
+    }
+    return text
+}
+
+// ---------------------------------------------------------------------------
+// Motion
+// ---------------------------------------------------------------------------
+
+export fn velocity(distance: float, time: float) -> float {
+    if time == 0.0 {
+        throw "velocity() needs a time that is not zero"
+    }
+    return distance / time
+}
+
+export fn acceleration(from_v: float, to_v: float, time: float) -> float {
+    if time == 0.0 {
+        throw "acceleration() needs a time that is not zero"
+    }
+    return (to_v - from_v) / time
+}
+
+// The distance fallen from rest in t seconds, with no air.
+export fn free_fall(t: float, g: float) -> float {
+    return 0.5 * g * t * t
+}
+
+// The speed of a fall from rest after t seconds.
+export fn free_fall_speed(t: float, g: float) -> float {
+    return g * t
+}
+
+// A projectile launched at `speed` and `angle` radians, on flat ground
+// with no air. The answer holds the range, the peak and the flight time.
+export fn projectile(speed: float, angle: float, g: float) -> any {
+    if g == 0.0 {
+        throw "projectile() needs a gravity that is not zero"
+    }
+    let vx = speed * math["cos"](angle)
+    let vy = speed * math["sin"](angle)
+    let flight = 2.0 * vy / g
+    return { "range": vx * flight,
+             "height": vy * vy / (2.0 * g),
+             "flight": flight,
+             "vx": vx,
+             "vy": vy }
+}
+
+// Circular motion: the force that keeps a mass on a circle.
+export fn centripetal_force(mass: float, speed: float, radius: float) -> float {
+    if radius == 0.0 {
+        throw "centripetal_force() needs a radius that is not zero"
+    }
+    return mass * speed * speed / radius
+}
+
+// ---------------------------------------------------------------------------
+// Force and energy
+// ---------------------------------------------------------------------------
+
+export fn force(mass: float, accel: float) -> float {
+    return mass * accel
+}
+
+export fn momentum(mass: float, speed: float) -> float {
+    return mass * speed
+}
+
+export fn kinetic_energy(mass: float, speed: float) -> float {
+    return 0.5 * mass * speed * speed
+}
+
+// The energy of a mass lifted by h, in a field of strength g.
+export fn potential_energy(mass: float, height: float, g: float) -> float {
+    return mass * g * height
+}
+
+export fn work(force_value: float, distance: float) -> float {
+    return force_value * distance
+}
+
+export fn power(energy: float, time: float) -> float {
+    if time == 0.0 {
+        throw "power() needs a time that is not zero"
+    }
+    return energy / time
+}
+
+// A spring: the force for a stretch, and the energy stored in it.
+export fn spring_force(k: float, stretch: float) -> float {
+    return -k * stretch
+}
+
+export fn spring_energy(k: float, stretch: float) -> float {
+    return 0.5 * k * stretch * stretch
+}
+
+// ---------------------------------------------------------------------------
+// Gravity
+// ---------------------------------------------------------------------------
+
+export fn weight(mass: float, g: float) -> float {
+    return mass * g
+}
+
+export fn gravitational_force(m1: float, m2: float, r: float) -> float {
+    if r == 0.0 {
+        throw "gravitational_force() needs a distance that is not zero"
+    }
+    return G * m1 * m2 / (r * r)
+}
+
+// The speed of a circular orbit at radius r around a mass M.
+export fn orbital_velocity(mass: float, r: float) -> float {
+    if r == 0.0 {
+        throw "orbital_velocity() needs a radius that is not zero"
+    }
+    return sqrt(G * mass / r)
+}
+
+// The speed that leaves the body for good: sqrt(2GM/r), which is the
+// orbital speed times the square root of two.
+export fn escape_velocity(mass: float, r: float) -> float {
+    return sqrt(2.0 * G * mass / r)
+}
+
+// The time of one circular orbit, Kepler's third law.
+export fn orbital_period(mass: float, r: float) -> float {
+    return 2.0 * pi * sqrt(r * r * r / (G * mass))
+}
+
+// The radius of a geostationary orbit for a body of mass M and a day of
+// `period` seconds.
+export fn synchronous_radius(mass: float, period: float) -> float {
+    return pow(G * mass * period * period / (4.0 * pi * pi), 1.0 / 3.0)
+}
+
+// ---------------------------------------------------------------------------
+// Relativity
+// ---------------------------------------------------------------------------
+
+// The Lorentz factor for a speed in m/s. At rest it is one; at c it is
+// infinite, so a speed at or above c is refused rather than returned as
+// a division by zero.
+export fn lorentz(speed: float) -> float {
+    let beta = speed / c
+    if fabs(beta) >= 1.0 {
+        throw "lorentz() needs a speed below the speed of light"
+    }
+    return 1.0 / sqrt(1.0 - beta * beta)
+}
+
+// The time that passes on a moving clock for `proper` seconds of its own.
+export fn time_dilation(proper: float, speed: float) -> float {
+    return proper * lorentz(speed)
+}
+
+// The length of a moving object, as the still frame measures it.
+export fn length_contraction(proper: float, speed: float) -> float {
+    return proper / lorentz(speed)
+}
+
+// The energy of a mass at rest, E = mc^2.
+export fn rest_energy(mass: float) -> float {
+    return mass * c * c
+}
+
+// The total energy of a moving mass, gamma mc^2.
+export fn total_energy(mass: float, speed: float) -> float {
+    return lorentz(speed) * mass * c * c
+}
+
+// The kinetic energy of a moving mass, (gamma - 1) mc^2.
+export fn relativistic_energy(mass: float, speed: float) -> float {
+    return (lorentz(speed) - 1.0) * mass * c * c
+}
+
+export fn relativistic_momentum(mass: float, speed: float) -> float {
+    return lorentz(speed) * mass * speed
+}
+
+// The speed that a kinetic energy of `energy` gives a mass.
+export fn speed_from_energy(mass: float, energy: float) -> float {
+    let total = energy + mass * c * c
+    let ratio = mass * c * c / total
+    return c * sqrt(1.0 - ratio * ratio)
+}
+
+// The Doppler factor for a source moving away at `speed`: the wavelength
+// is multiplied by this.
+export fn redshift(speed: float) -> float {
+    let beta = speed / c
+    if beta <= -1.0 or beta >= 1.0 {
+        throw "redshift() needs a speed below the speed of light"
+    }
+    return sqrt((1.0 + beta) / (1.0 - beta))
+}
+
+// ---------------------------------------------------------------------------
+// The quantum
+// ---------------------------------------------------------------------------
+
+// The energy of a photon of a wavelength in metres, hc / lambda.
+export fn photon_energy(wavelength: float) -> float {
+    if wavelength <= 0.0 {
+        throw "photon_energy() needs a wavelength above zero"
+    }
+    return h * c / wavelength
+}
+
+// The wavelength of a photon of an energy in joules, hc / E.
+export fn photon_wavelength(energy: float) -> float {
+    if energy <= 0.0 {
+        throw "photon_wavelength() needs an energy above zero"
+    }
+    return h * c / energy
+}
+
+// The frequency of a photon of a wavelength, c / lambda.
+export fn photon_frequency(wavelength: float) -> float {
+    if wavelength <= 0.0 {
+        throw "photon_frequency() needs a wavelength above zero"
+    }
+    return c / wavelength
+}
+
+// The momentum of a photon, h / lambda.
+export fn photon_momentum(wavelength: float) -> float {
+    return h / wavelength
+}
+
+// The de Broglie wavelength of a mass moving at a speed.
+export fn de_broglie(mass: float, speed: float) -> float {
+    if mass <= 0.0 or speed == 0.0 {
+        throw "de_broglie() needs a mass and a speed above zero"
+    }
+    return h / (mass * speed)
+}
+
+// The energy of the n-th level of the hydrogen atom, -13.6 eV / n^2.
+export fn hydrogen_level(n: int) -> float {
+    if n < 1 {
+        throw "hydrogen_level() counts from one"
+    }
+    return -Ry / (float(n) * float(n))
+}
+
+// The wavelength of the line between two hydrogen levels, in metres.
+export fn hydrogen_wavelength(from_n: int, to_n: int) -> float {
+    if from_n <= to_n {
+        throw "hydrogen_wavelength() needs the upper level first"
+    }
+    let inverse = 1.0 / (float(to_n) * float(to_n)) - 1.0 / (float(from_n) * float(from_n))
+    return 1.0 / (1.0973731568160e7 * inverse)
+}
+
+// The Heisenberg limit: the smallest uncertainty in position for a given
+// uncertainty in momentum, hbar / (2 dp).
+export fn uncertainty_position(dp: float) -> float {
+    if dp <= 0.0 {
+        throw "uncertainty_position() needs a momentum spread above zero"
+    }
+    return hbar / (2.0 * dp)
+}
+
+export fn uncertainty_momentum(dx: float) -> float {
+    if dx <= 0.0 {
+        throw "uncertainty_momentum() needs a position spread above zero"
+    }
+    return hbar / (2.0 * dx)
+}
+
+// The probability that a state of energy E is occupied at temperature T:
+// the Fermi-Dirac factor for electrons and holes.
+export fn fermi_dirac(energy: float, temperature: float) -> float {
+    if temperature <= 0.0 {
+        if energy < 0.0 {
+            return 1.0
+        }
+        return 0.0
+    }
+    return 1.0 / (exp(energy / (kB * temperature)) + 1.0)
+}
+
+// The Planck spectrum at a wavelength, per unit wavelength: the radiance
+// of a black body, W / (m^3 sr).
+export fn planck_radiance(wavelength: float, temperature: float) -> float {
+    if wavelength <= 0.0 or temperature <= 0.0 {
+        throw "planck_radiance() needs a wavelength and a temperature above zero"
+    }
+    let x = h * c / (wavelength * kB * temperature)
+    return (2.0 * h * c * c / pow(wavelength, 5.0)) / (exp(x) - 1.0)
+}
+
+// The wavelength at which a black body of temperature T is brightest,
+// Wien's law, in metres.
+export fn wien_peak(temperature: float) -> float {
+    if temperature <= 0.0 {
+        throw "wien_peak() needs a temperature above zero"
+    }
+    return 2.897771955e-3 / temperature
+}
+
+// ---------------------------------------------------------------------------
+// Heat
+// ---------------------------------------------------------------------------
+
+// The pressure of an ideal gas: n moles in a volume V at temperature T.
+export fn ideal_gas_pressure(moles: float, temperature: float, volume: float) -> float {
+    if volume == 0.0 {
+        throw "ideal_gas_pressure() needs a volume that is not zero"
+    }
+    return moles * R_gas * temperature / volume
+}
+
+export fn ideal_gas_volume(moles: float, temperature: float, pressure: float) -> float {
+    if pressure == 0.0 {
+        throw "ideal_gas_volume() needs a pressure that is not zero"
+    }
+    return moles * R_gas * temperature / pressure
+}
+
+// The heat that raises a mass by a temperature difference.
+export fn heat(mass: float, specific_heat: float, delta_t: float) -> float {
+    return mass * specific_heat * delta_t
+}
+
+// The radiated power of a body of area A at temperature T.
+export fn radiated_power(area: float, temperature: float, emissivity: float) -> float {
+    return emissivity * sigma_sb * area * pow(temperature, 4.0)
+}
+
+// The best efficiency a heat engine can reach between two temperatures,
+// in kelvin.
+export fn carnot_efficiency(hot: float, cold: float) -> float {
+    if hot <= 0.0 {
+        throw "carnot_efficiency() needs a hot side above zero kelvin"
+    }
+    return 1.0 - cold / hot
+}
+
+export fn entropy_change(heat_value: float, temperature: float) -> float {
+    if temperature <= 0.0 {
+        throw "entropy_change() needs a temperature above zero"
+    }
+    return heat_value / temperature
+}
+
+// The average speed of a molecule of an ideal gas, sqrt(8RT/piM), with
+// the molar mass in kg/mol.
+export fn rms_speed(temperature: float, molar_mass: float) -> float {
+    if molar_mass <= 0.0 {
+        throw "rms_speed() needs a molar mass above zero"
+    }
+    return sqrt(3.0 * R_gas * temperature / molar_mass)
+}
+
+export fn mean_speed(temperature: float, molar_mass: float) -> float {
+    if molar_mass <= 0.0 {
+        throw "mean_speed() needs a molar mass above zero"
+    }
+    return sqrt(8.0 * R_gas * temperature / (pi * molar_mass))
+}
+
+// ---------------------------------------------------------------------------
+// Electricity and magnetism
+// ---------------------------------------------------------------------------
+
+// The force between two charges at a distance, Coulomb's law.
+export fn coulomb_force(q1: float, q2: float, r: float) -> float {
+    if r == 0.0 {
+        throw "coulomb_force() needs a distance that is not zero"
+    }
+    return k_e * q1 * q2 / (r * r)
+}
+
+export fn electric_field(charge: float, r: float) -> float {
+    if r == 0.0 {
+        throw "electric_field() needs a distance that is not zero"
+    }
+    return k_e * charge / (r * r)
+}
+
+export fn electric_potential(charge: float, r: float) -> float {
+    if r == 0.0 {
+        throw "electric_potential() needs a distance that is not zero"
+    }
+    return k_e * charge / r
+}
+
+export fn ohm_law(voltage: float, resistance: float) -> float {
+    if resistance == 0.0 {
+        throw "ohm_law() needs a resistance that is not zero"
+    }
+    return voltage / resistance
+}
+
+export fn electric_power(voltage: float, current: float) -> float {
+    return voltage * current
+}
+
+// The force on a charge moving in a magnetic field, q v B sin(theta).
+export fn lorentz_force(charge: float, speed: float, field: float, angle: float) -> float {
+    return charge * speed * field * math["sin"](angle)
+}
+
+// ---------------------------------------------------------------------------
+// Waves and sound
+// ---------------------------------------------------------------------------
+
+export fn wave_speed(frequency: float, wavelength: float) -> float {
+    return frequency * wavelength
+}
+
+export fn wave_frequency(speed: float, wavelength: float) -> float {
+    if wavelength == 0.0 {
+        throw "wave_frequency() needs a wavelength that is not zero"
+    }
+    return speed / wavelength
+}
+
+// The observed frequency of a source moving away at `speed`, in a medium
+// where sound travels at `medium`.
+export fn doppler_frequency(source: float, speed: float, medium: float) -> float {
+    if medium - speed == 0.0 {
+        throw "doppler_frequency() needs a speed below the speed of the medium"
+    }
+    return source * medium / (medium - speed)
+}
+
+// ---------------------------------------------------------------------------
+// The sky
+// ---------------------------------------------------------------------------
+
+// The radius of the event horizon of a mass, 2GM/c^2.
+export fn schwarzschild_radius(mass: float) -> float {
+    return 2.0 * G * mass / (c * c)
+}
+
+// The temperature of the radiation of a black hole, in kelvin.
+export fn hawking_temperature(mass: float) -> float {
+    return hbar * pow(c, 3.0) / (8.0 * pi * G * mass * kB)
+}
+
+// The speed of a galaxy at a distance, in the Hubble flow.
+export fn hubble_speed(distance: float) -> float {
+    return H0 * distance
+}
+
+// The age of a flat universe with no cosmological constant, 2 / (3 H0).
+export fn hubble_time() -> float {
+    return 1.0 / H0
+}
+
+// The luminosity distance of a redshift, in a flat matter-only universe.
+export fn luminosity_distance(z: float) -> float {
+    return 2.0 * c / H0 * (1.0 + z - sqrt(1.0 + z))
+}

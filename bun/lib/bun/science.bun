@@ -1,0 +1,545 @@
+// bun:science — chemistry and molecular biology, in the language itself.
+//
+// The centre of the file is a formula parser. `molar_mass("Ca(OH)2")`
+// reads the string the way a chemist writes it — element symbols,
+// counts, groups in brackets with a multiplier — and answers grams per
+// mole. Everything else (moles, molarity, dilution, pH, decay) is built
+// on that one number.
+//
+// The masses are the standard atomic weights, rounded to the precision
+// that a laboratory balance can use. The genetic code is the standard
+// one, and the twenty residue masses are the average masses of the
+// residues in a protein, not of the free amino acids.
+//
+//   molar_mass("C6H12O6")     // 180.16, glucose
+//   ph(1e-3)                  // 3.0
+//   translate("AUGUUU")       // "MF"
+
+let math = ffi_load("math")
+let log10 = math["log10"]
+let log = math["log"]
+let pow = math["pow"]
+let sqrt = math["sqrt"]
+
+// ---------------------------------------------------------------------------
+// The elements
+// ---------------------------------------------------------------------------
+
+// symbol -> [atomic number, name, standard atomic weight]
+fn elements() -> any {
+    return {
+        "H": [1, "hydrogen", 1.008],
+        "He": [2, "helium", 4.002602],
+        "Li": [3, "lithium", 6.94],
+        "Be": [4, "beryllium", 9.0121831],
+        "B": [5, "boron", 10.81],
+        "C": [6, "carbon", 12.011],
+        "N": [7, "nitrogen", 14.007],
+        "O": [8, "oxygen", 15.999],
+        "F": [9, "fluorine", 18.998403163],
+        "Ne": [10, "neon", 20.1797],
+        "Na": [11, "sodium", 22.98976928],
+        "Mg": [12, "magnesium", 24.305],
+        "Al": [13, "aluminium", 26.9815385],
+        "Si": [14, "silicon", 28.085],
+        "P": [15, "phosphorus", 30.973761998],
+        "S": [16, "sulfur", 32.06],
+        "Cl": [17, "chlorine", 35.45],
+        "Ar": [18, "argon", 39.948],
+        "K": [19, "potassium", 39.0983],
+        "Ca": [20, "calcium", 40.078],
+        "Sc": [21, "scandium", 44.955908],
+        "Ti": [22, "titanium", 47.867],
+        "V": [23, "vanadium", 50.9415],
+        "Cr": [24, "chromium", 51.9961],
+        "Mn": [25, "manganese", 54.938044],
+        "Fe": [26, "iron", 55.845],
+        "Co": [27, "cobalt", 58.933194],
+        "Ni": [28, "nickel", 58.6934],
+        "Cu": [29, "copper", 63.546],
+        "Zn": [30, "zinc", 65.38],
+        "Ga": [31, "gallium", 69.723],
+        "Ge": [32, "germanium", 72.630],
+        "As": [33, "arsenic", 74.921595],
+        "Se": [34, "selenium", 78.971],
+        "Br": [35, "bromine", 79.904],
+        "Kr": [36, "krypton", 83.798],
+        "Rb": [37, "rubidium", 85.4678],
+        "Sr": [38, "strontium", 87.62],
+        "Y": [39, "yttrium", 88.90584],
+        "Zr": [40, "zirconium", 91.224],
+        "Nb": [41, "niobium", 92.90637],
+        "Mo": [42, "molybdenum", 95.95],
+        "Ag": [47, "silver", 107.8682],
+        "Sn": [50, "tin", 118.710],
+        "I": [53, "iodine", 126.90447],
+        "Ba": [56, "barium", 137.327],
+        "Pt": [78, "platinum", 195.084],
+        "Au": [79, "gold", 196.966569],
+        "Hg": [80, "mercury", 200.592],
+        "Pb": [82, "lead", 207.2],
+        "U": [92, "uranium", 238.02891],
+    }
+}
+
+// The atomic number of an element, or an error naming the symbol.
+export fn atomic_number(symbol: string) -> int {
+    let table = elements()
+    if not table.has(symbol) {
+        throw "atomic_number() does not know the element '" + symbol + "'"
+    }
+    return table[symbol][0]
+}
+
+export fn atomic_mass(symbol: string) -> float {
+    let table = elements()
+    if not table.has(symbol) {
+        throw "atomic_mass() does not know the element '" + symbol + "'"
+    }
+    return table[symbol][2]
+}
+
+export fn element_name(symbol: string) -> string {
+    let table = elements()
+    if not table.has(symbol) {
+        throw "element_name() does not know the element '" + symbol + "'"
+    }
+    return table[symbol][1]
+}
+
+// The number of elements in the table, which is not 118 yet — this is
+// the part of the table that a general program touches.
+export fn element_count() -> int {
+    return elements().len()
+}
+
+// ---------------------------------------------------------------------------
+// The formula parser
+// ---------------------------------------------------------------------------
+
+fn is_digit(ch: string) -> bool {
+    return ch == "0" or ch == "1" or ch == "2" or ch == "3" or ch == "4"
+        or ch == "5" or ch == "6" or ch == "7" or ch == "8" or ch == "9"
+}
+
+fn is_upper(ch: string) -> bool {
+    let up = upper(ch)
+    return up == ch and lower(ch) != ch
+}
+
+fn is_lower(ch: string) -> bool {
+    let down = lower(ch)
+    return down == ch and upper(ch) != ch
+}
+
+// Read the digits at the cursor; one when there is no digit.
+fn read_count(text: string, cursor: any) -> int {
+    var digits = ""
+    while cursor["i"] < text.len() and is_digit(text[cursor["i"]]) {
+        digits = digits + text[cursor["i"]]
+        cursor["i"] = cursor["i"] + 1
+    }
+    if digits == "" {
+        return 1
+    }
+    return int(digits)
+}
+
+fn merge_into(target: any, source: any) -> any {
+    for symbol in source {
+        if target.has(symbol) {
+            target[symbol] = target[symbol] + source[symbol]
+        } else {
+            target[symbol] = source[symbol]
+        }
+    }
+    return target
+}
+
+// Parse one group of a formula. The cursor is shared, so the caller sees
+// where the group ended.
+fn parse_group(text: string, cursor: any) -> any {
+    var counts = {}
+    let table = elements()
+    while cursor["i"] < text.len() {
+        let ch = text[cursor["i"]]
+        if ch == ")" {
+            return counts
+        }
+        if ch == "(" {
+            cursor["i"] = cursor["i"] + 1
+            let inner = parse_group(text, cursor)
+            if cursor["i"] >= text.len() or text[cursor["i"]] != ")" {
+                throw "molar_mass() found an unclosed bracket in '" + text + "'"
+            }
+            cursor["i"] = cursor["i"] + 1
+            let multiplier = read_count(text, cursor)
+            for symbol in inner {
+                inner[symbol] = inner[symbol] * multiplier
+            }
+            merge_into(counts, inner)
+        } else if is_upper(ch) {
+            var symbol = ch
+            cursor["i"] = cursor["i"] + 1
+            if cursor["i"] < text.len() and is_lower(text[cursor["i"]]) {
+                symbol = symbol + text[cursor["i"]]
+                cursor["i"] = cursor["i"] + 1
+            }
+            if not table.has(symbol) {
+                throw "molar_mass() does not know the element '" + symbol + "'"
+            }
+            let count = read_count(text, cursor)
+            if counts.has(symbol) {
+                counts[symbol] = counts[symbol] + count
+            } else {
+                counts[symbol] = count
+            }
+        } else {
+            throw "molar_mass() cannot read '" + ch + "' in '" + text + "'"
+        }
+    }
+    return counts
+}
+
+// The composition of a formula: {"H": 2, "O": 1} for water.
+export fn composition(formula: string) -> any {
+    let cursor = { "i": 0 }
+    let counts = parse_group(formula, cursor)
+    if cursor["i"] != formula.len() {
+        throw "molar_mass() found an extra ')' in '" + formula + "'"
+    }
+    if counts.len() == 0 {
+        throw "molar_mass() found no element in '" + formula + "'"
+    }
+    return counts
+}
+
+// The mass of one mole of the formula, in grams.
+export fn molar_mass(formula: string) -> float {
+    let counts = composition(formula)
+    var total = 0.0
+    for symbol in counts {
+        total = total + atomic_mass(symbol) * float(counts[symbol])
+    }
+    return total
+}
+
+// The mass of one molecule of the formula, in kilograms.
+export fn molecular_mass(formula: string) -> float {
+    return molar_mass(formula) / 1000.0 / 6.02214076e23
+}
+
+// The number of atoms in one molecule of the formula.
+export fn atom_count(formula: string) -> int {
+    let counts = composition(formula)
+    var total = 0
+    for symbol in counts {
+        total = total + counts[symbol]
+    }
+    return total
+}
+
+// The mass percentage of one element in the formula.
+export fn mass_percent(formula: string, symbol: string) -> float {
+    let counts = composition(formula)
+    if not counts.has(symbol) {
+        return 0.0
+    }
+    return 100.0 * atomic_mass(symbol) * float(counts[symbol]) / molar_mass(formula)
+}
+
+// ---------------------------------------------------------------------------
+// Solutions
+// ---------------------------------------------------------------------------
+
+// The number of moles in a mass of the substance.
+export fn moles(mass: float, formula: string) -> float {
+    return mass / molar_mass(formula)
+}
+
+// The mass that holds a number of moles.
+export fn mass_of(count: float, formula: string) -> float {
+    return count * molar_mass(formula)
+}
+
+// The number of molecules in a number of moles.
+export fn molecules(count: float) -> float {
+    return count * 6.02214076e23
+}
+
+// Moles per litre.
+export fn molarity(count: float, litres: float) -> float {
+    if litres == 0.0 {
+        throw "molarity() needs a volume that is not zero"
+    }
+    return count / litres
+}
+
+// The concentration after diluting: c1 v1 = c2 v2.
+export fn dilution(c1: float, v1: float, v2: float) -> float {
+    if v2 == 0.0 {
+        throw "dilution() needs a final volume that is not zero"
+    }
+    return c1 * v1 / v2
+}
+
+// The volume of stock that must be diluted to reach a concentration.
+export fn dilution_volume(c1: float, c2: float, v2: float) -> float {
+    if c1 == 0.0 {
+        throw "dilution_volume() needs a stock concentration that is not zero"
+    }
+    return c2 * v2 / c1
+}
+
+// The pH of a strong acid: -log10 of the hydrogen ion concentration.
+export fn ph(concentration: float) -> float {
+    if concentration <= 0.0 {
+        throw "ph() needs a concentration above zero"
+    }
+    return -log10(concentration)
+}
+
+export fn poh(concentration: float) -> float {
+    if concentration <= 0.0 {
+        throw "poh() needs a concentration above zero"
+    }
+    return -log10(concentration)
+}
+
+// The hydrogen ion concentration of a pH.
+export fn hydrogen_concentration(ph_value: float) -> float {
+    return pow(10.0, -ph_value)
+}
+
+// The pH of a buffer, Henderson-Hasselbalch: pKa + log10(base / acid).
+export fn buffer_ph(pka: float, base: float, acid: float) -> float {
+    if base <= 0.0 or acid <= 0.0 {
+        throw "buffer_ph() needs a base and an acid above zero"
+    }
+    return pka + log10(base / acid)
+}
+
+// The density of a body, in kg per cubic metre.
+export fn density(mass: float, volume: float) -> float {
+    if volume == 0.0 {
+        throw "density() needs a volume that is not zero"
+    }
+    return mass / volume
+}
+
+// Parts per million of a solute in a solution.
+export fn ppm(solute: float, solution: float) -> float {
+    if solution == 0.0 {
+        throw "ppm() needs a solution mass that is not zero"
+    }
+    return solute / solution * 1e6
+}
+
+// ---------------------------------------------------------------------------
+// Radioactivity
+// ---------------------------------------------------------------------------
+
+// The decay constant of a half-life, ln 2 / t.
+export fn decay_constant(half_life: float) -> float {
+    if half_life <= 0.0 {
+        throw "decay_constant() needs a half-life above zero"
+    }
+    return log(2.0) / half_life
+}
+
+// The amount left after a time: N0 (1/2)^(t / half_life).
+export fn decay(initial: float, half_life: float, time: float) -> float {
+    return initial * pow(0.5, time / half_life)
+}
+
+// The time for an amount to fall to a fraction of itself.
+export fn decay_time(fraction: float, half_life: float) -> float {
+    if fraction <= 0.0 or fraction >= 1.0 {
+        throw "decay_time() needs a fraction between zero and one"
+    }
+    return half_life * log(fraction) / log(0.5)
+}
+
+// The activity of a number of atoms, in becquerel.
+export fn activity(atoms: float, half_life: float) -> float {
+    return atoms * decay_constant(half_life)
+}
+
+// The mass of a radionuclide that has a given activity.
+export fn activity_mass(becquerel: float, half_life: float, molar: float) -> float {
+    let atoms = becquerel / decay_constant(half_life)
+    return atoms / 6.02214076e23 * molar
+}
+
+// ---------------------------------------------------------------------------
+// The molecules of life
+// ---------------------------------------------------------------------------
+
+fn complement_base(base: string) -> string {
+    if base == "A" {
+        return "T"
+    }
+    if base == "T" {
+        return "A"
+    }
+    if base == "G" {
+        return "C"
+    }
+    if base == "C" {
+        return "G"
+    }
+    if base == "U" {
+        return "A"
+    }
+    return base
+}
+
+// The other strand of a DNA sequence.
+export fn dna_complement(sequence: string) -> string {
+    let text = upper(sequence)
+    var out = ""
+    var i = 0
+    while i < text.len() {
+        out = out + complement_base(text[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The complement read backwards, which is how the second strand runs.
+export fn reverse_complement(sequence: string) -> string {
+    let text = dna_complement(sequence)
+    var out = ""
+    var i = text.len() - 1
+    while i >= 0 {
+        out = out + text[i]
+        i = i - 1
+    }
+    return out
+}
+
+// DNA to messenger RNA: every T becomes a U.
+export fn transcribe(sequence: string) -> string {
+    return replace(upper(sequence), "T", "U")
+}
+
+// The share of the bases that are G or C, between zero and one.
+export fn gc_content(sequence: string) -> float {
+    let text = upper(sequence)
+    if text.len() == 0 {
+        throw "gc_content() needs a sequence"
+    }
+    var gc = 0
+    var i = 0
+    while i < text.len() {
+        if text[i] == "G" or text[i] == "C" {
+            gc = gc + 1
+        }
+        i = i + 1
+    }
+    return float(gc) / float(text.len())
+}
+
+// The standard genetic code: codon -> amino acid, one letter.
+fn codons() -> any {
+    return {
+        "UUU": "F", "UUC": "F", "UUA": "L", "UUG": "L",
+        "CUU": "L", "CUC": "L", "CUA": "L", "CUG": "L",
+        "AUU": "I", "AUC": "I", "AUA": "I", "AUG": "M",
+        "GUU": "V", "GUC": "V", "GUA": "V", "GUG": "V",
+        "UCU": "S", "UCC": "S", "UCA": "S", "UCG": "S",
+        "CCU": "P", "CCC": "P", "CCA": "P", "CCG": "P",
+        "ACU": "T", "ACC": "T", "ACA": "T", "ACG": "T",
+        "GCU": "A", "GCC": "A", "GCA": "A", "GCG": "A",
+        "UAU": "Y", "UAC": "Y", "UAA": "*", "UAG": "*",
+        "CAU": "H", "CAC": "H", "CAA": "Q", "CAG": "Q",
+        "AAU": "N", "AAC": "N", "AAA": "K", "AAG": "K",
+        "GAU": "D", "GAC": "D", "GAA": "E", "GAG": "E",
+        "UGU": "C", "UGC": "C", "UGA": "*", "UGG": "W",
+        "CGU": "R", "CGC": "R", "CGA": "R", "CGG": "R",
+        "AGU": "S", "AGC": "S", "AGA": "R", "AGG": "R",
+        "GGU": "G", "GGC": "G", "GGA": "G", "GGG": "G",
+    }
+}
+
+// Translate an RNA sequence to a protein. A stop codon ends the chain and
+// is not written; a codon that is not in the table is an error.
+export fn translate(sequence: string) -> string {
+    let text = replace(upper(sequence), "T", "U")
+    let table = codons()
+    var protein = ""
+    var i = 0
+    while i + 3 <= text.len() {
+        let codon = text.slice(i, i + 3)
+        if not table.has(codon) {
+            throw "translate() cannot read the codon '" + codon + "'"
+        }
+        let acid = table[codon]
+        if acid == "*" {
+            return protein
+        }
+        protein = protein + acid
+        i = i + 3
+    }
+    return protein
+}
+
+// The average residue masses, in daltons, of the twenty amino acids.
+fn residue_masses() -> any {
+    return {
+        "A": 71.0788, "R": 156.1875, "N": 114.1038, "D": 115.0886,
+        "C": 103.1388, "E": 129.1155, "Q": 128.1307, "G": 57.0519,
+        "H": 137.1411, "I": 113.1594, "L": 113.1594, "K": 128.1741,
+        "M": 131.1926, "F": 147.1766, "P": 97.1167, "S": 87.0782,
+        "T": 101.1051, "W": 186.2132, "Y": 163.1760, "V": 99.1326,
+    }
+}
+
+// The mass of a protein in daltons, from its one-letter sequence. One
+// water is added back for the ends of the chain.
+export fn protein_mass(sequence: string) -> float {
+    let table = residue_masses()
+    var total = 18.01524
+    var i = 0
+    while i < sequence.len() {
+        let acid = upper(sequence[i])
+        if not table.has(acid) {
+            throw "protein_mass() does not know the residue '" + acid + "'"
+        }
+        total = total + table[acid]
+        i = i + 1
+    }
+    return total
+}
+
+// The isoelectric point of a protein, from the count of the charged
+// residues: a rough value, good to about half a pH unit.
+export fn isoelectric_point(sequence: string) -> float {
+    let text = upper(sequence)
+    var acidic = 0.0
+    var basic = 0.0
+    var i = 0
+    while i < text.len() {
+        let acid = text[i]
+        if acid == "D" or acid == "E" {
+            acidic = acidic + 1.0
+        }
+        if acid == "K" or acid == "R" or acid == "H" {
+            basic = basic + 1.0
+        }
+        i = i + 1
+    }
+    if acidic == 0.0 and basic == 0.0 {
+        return 7.0
+    }
+    if acidic == 0.0 {
+        return 10.5
+    }
+    if basic == 0.0 {
+        return 4.0
+    }
+    // A weighted mean of the two pKa families, pulled towards neutral by
+    // the balance of the charges.
+    let balance = basic / (acidic + basic)
+    return 4.0 + 6.5 * balance
+}

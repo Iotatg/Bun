@@ -1,0 +1,38 @@
+// How fast the statevector simulator is, measured by the simulator itself.
+//
+//   bun tools/bench_quantum.bun
+//
+// A gate costs O(2^n) and a shot costs O(2^n), so the numbers below are
+// the price of the amplitudes, not of the language. A 12-qubit state is
+// 4096 amplitudes, a 16-qubit state is 65536; the memory is the wall.
+
+import { state, ghz, grover, grover_rounds, run, qft } from "bun:quantum"
+
+fn timed(label, body, n) {
+    let start = now_ms()
+    let value = body(n)
+    print("  " + label + " " + str(n) + ": " + str(now_ms() - start) + " ms")
+    return value
+}
+
+fn make_ghz(n) {
+    return ghz(n)
+}
+
+fn make_qft(n) {
+    return qft(state(n))
+}
+
+fn make_grover(n) {
+    return grover(n, 5, grover_rounds(n))
+}
+
+print("qubits  ghz  qft  grover  1000 shots")
+for n in [8, 10, 12, 14] {
+    let g = timed("ghz", make_ghz, n)
+    timed("qft", make_qft, n)
+    timed("grover", make_grover, n)
+    let start = now_ms()
+    run(g, 1000)
+    print("  shots " + str(n) + ": " + str(now_ms() - start) + " ms")
+}

@@ -2418,3 +2418,37 @@ Bun ships both, so a line changes in milliseconds while the program is
 being written and the finished program runs on the C backend.
 `tools/bench_engines.py` measures the gap on one workload; the numbers
 are in `docs/reference/engines.md`.
+
+## The science stacks — quantum, physics, chemistry
+
+Three stacks make Bun a workbench for the physical world, all of them
+written in Bun and loaded by name:
+
+```bun
+import { bell, probabilities } from "bun:quantum"
+import { photon_energy } from "bun:physics"
+import { molar_mass } from "bun:science"
+
+print(probabilities(bell()))        // [0.5, 0.0, 0.0, 0.5]
+print(photon_energy(500e-9))        // 3.97e-19 J, a green photon
+print(molar_mass("Ca(OH)2"))        // 74.092 g/mol
+```
+
+`bun:quantum` is a statevector simulator: the named gates, controlled
+gates, measurement that collapses and renormalizes, the Bell and GHZ and
+W states, the quantum Fourier transform and Grover's search. Three
+qubits with index 5 marked reach `p = 0.9453125` in two rounds, which is
+the number the closed form gives.
+
+`bun:physics` carries the CODATA constants and a unit table with a
+dimension vector per unit, so `convert(1.0, "m", "kg")` is refused
+instead of silently wrong. Mechanics, gravity, relativity, the quantum,
+heat, electricity, waves and a little astronomy are built on top.
+
+`bun:science` parses a chemical formula — `Ca(OH)2`, `Al2(SO4)3`, nested
+brackets and all — and builds moles, molarity, pH, buffers, radioactive
+decay, DNA complement and transcription, and translation of RNA into a
+protein from the standard genetic code.
+
+The reference is in `docs/reference/science.md`; the example is
+`examples/science.bun`.

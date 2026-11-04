@@ -1,0 +1,828 @@
+// bun:quantum — a statevector simulator written in Bun.
+//
+// A state of n qubits is a list of 2^n complex amplitudes, and a complex
+// number is a list of two floats, [real, imaginary]. The gates are 2x2
+// matrices over the same pair, so every operation in this file is
+// addition and multiplication of ordinary doubles — no dependency, no
+// native code, the same answer on every machine.
+//
+// The simulator is exact up to the rounding of a double, which is what
+// a statevector method means: 2^n amplitudes held at once. Twelve
+// qubits is 4096 amplitudes and comfortable; twenty is a million and
+// takes a moment; the limit is the memory, not the language.
+//
+//   let q = bell()
+//   print(probabilities(q))      // [0.5, 0.0, 0.0, 0.5]
+//   print(run(q, 1000))          // {"00": 503, "11": 497}
+
+let math = ffi_load("math")
+let cos = math["cos"]
+let sin = math["sin"]
+let sqrt = math["sqrt"]
+let fabs = math["fabs"]
+
+// The number of the circle.
+export let pi = 3.141592653589793
+
+// ---------------------------------------------------------------------------
+// Complex numbers
+// ---------------------------------------------------------------------------
+
+// A complex number from its two parts.
+export fn complex(re: float, im: float) -> any {
+    return [re, im]
+}
+
+export fn cadd(a: any, b: any) -> any {
+    return [a[0] + b[0], a[1] + b[1]]
+}
+
+export fn csub(a: any, b: any) -> any {
+    return [a[0] - b[0], a[1] - b[1]]
+}
+
+export fn cmul(a: any, b: any) -> any {
+    return [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
+}
+
+export fn cscale(a: any, k: float) -> any {
+    return [a[0] * k, a[1] * k]
+}
+
+export fn cconj(a: any) -> any {
+    return [a[0], -a[1]]
+}
+
+// The squared length; the probability of one amplitude.
+export fn cabs2(a: any) -> float {
+    return a[0] * a[0] + a[1] * a[1]
+}
+
+export fn cabs(a: any) -> float {
+    return sqrt(cabs2(a))
+}
+
+// The polar form, which is how a phase gate is written.
+export fn cexp(theta: float) -> any {
+    return [cos(theta), sin(theta)]
+}
+
+export fn cphase(a: any) -> float {
+    return math["atan2"](a[1], a[0])
+}
+
+// ---------------------------------------------------------------------------
+// States
+// ---------------------------------------------------------------------------
+
+fn make_state(n: int, amp: any) -> any {
+    return { "kind": "quantum_state", "n": n, "amp": amp }
+}
+
+fn check_state(st: any) -> any {
+    if type_of(st) != "dict" {
+        throw "expected a quantum state, got " + type_of(st)
+    }
+    if st["kind"] != "quantum_state" {
+        throw "expected a quantum state, got a " + str(st["kind"])
+    }
+    return st
+}
+
+// Two to the power of a small integer, the dimension of one qubit's space.
+fn pow2(k: int) -> int {
+    var value = 1
+    var i = 0
+    while i < k {
+        value = value * 2
+        i = i + 1
+    }
+    return value
+}
+
+// The state |0...0> of n qubits.
+export fn state(n: int) -> any {
+    if n < 1 {
+        throw "state() expects at least one qubit"
+    }
+    if n > 24 {
+        throw "state() refuses more than 24 qubits: that is 16 million amplitudes"
+    }
+    var amp = []
+    var i = 0
+    while i < pow2(n) {
+        amp.push([0.0, 0.0])
+        i = i + 1
+    }
+    amp[0] = [1.0, 0.0]
+    return make_state(n, amp)
+}
+
+// The state |0...0> of n qubits, from a list of the amplitudes that are
+// not zero: `from_sparse(3, {0: [1.0, 0.0]})`.
+export fn from_sparse(n: int, terms: any) -> any {
+    let st = state(n)
+    for index in terms {
+        st["amp"][int(index)] = terms[index]
+    }
+    return normalize(st)
+}
+
+export fn qubits(st: any) -> int {
+    return check_state(st)["n"]
+}
+
+export fn dimension(st: any) -> int {
+    return check_state(st)["amp"].len()
+}
+
+export fn amplitudes(st: any) -> any {
+    return check_state(st)["amp"]
+}
+
+// The probability of each basis state, in order.
+export fn probabilities(st: any) -> any {
+    check_state(st)
+    var out = []
+    for a in st["amp"] {
+        out.push(cabs2(a))
+    }
+    return out
+}
+
+export fn probability(st: any, index: int) -> float {
+    check_state(st)
+    if index < 0 or index >= st["amp"].len() {
+        throw "probability() index out of range: " + str(index)
+    }
+    return cabs2(st["amp"][index])
+}
+
+// The total probability, which must stay at one.
+export fn norm(st: any) -> float {
+    check_state(st)
+    var total = 0.0
+    for a in st["amp"] {
+        total = total + cabs2(a)
+    }
+    return sqrt(total)
+}
+
+// Divide the amplitudes by their length, so the state is physical again
+// after a gate that was written by hand.
+export fn normalize(st: any) -> any {
+    let length = norm(st)
+    if length == 0.0 {
+        throw "cannot normalize the zero state"
+    }
+    var amp = []
+    for a in st["amp"] {
+        amp.push(cscale(a, 1.0 / length))
+    }
+    return make_state(st["n"], amp)
+}
+
+// ---------------------------------------------------------------------------
+// The one-qubit gates
+// ---------------------------------------------------------------------------
+
+// The matrix of a named gate. A name that is not here is an error, not a
+// silent identity: a circuit with a typo must stop.
+export fn gate(name: string) -> any {
+    if name == "i" {
+        return [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [1.0, 0.0]]]
+    }
+    if name == "x" {
+        return [[[0.0, 0.0], [1.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]]]
+    }
+    if name == "y" {
+        return [[[0.0, 0.0], [0.0, -1.0]], [[0.0, 1.0], [0.0, 0.0]]]
+    }
+    if name == "z" {
+        return [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [-1.0, 0.0]]]
+    }
+    if name == "h" {
+        let k = 1.0 / sqrt(2.0)
+        return [[[k, 0.0], [k, 0.0]], [[k, 0.0], [-k, 0.0]]]
+    }
+    if name == "s" {
+        return [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, 1.0]]]
+    }
+    if name == "sdg" {
+        return [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [0.0, -1.0]]]
+    }
+    if name == "t" {
+        let phi = pi / 4.0
+        return [[[1.0, 0.0], [0.0, 0.0]],
+                [[0.0, 0.0], [cos(phi), sin(phi)]]]
+    }
+    if name == "tdg" {
+        let phi = -pi / 4.0
+        return [[[1.0, 0.0], [0.0, 0.0]],
+                [[0.0, 0.0], [cos(phi), sin(phi)]]]
+    }
+    throw "unknown gate '" + name + "'"
+}
+
+// Apply a one-qubit matrix to qubit `q`. Qubit 0 is the least
+// significant bit of the basis index.
+export fn apply_matrix(st: any, m: any, q: int) -> any {
+    check_state(st)
+    if q < 0 or q >= st["n"] {
+        throw "apply_matrix() qubit out of range: " + str(q)
+    }
+    let step = pow2(q)
+    let amp = st["amp"]
+    var out = []
+    var i = 0
+    while i < amp.len() {
+        out.push([0.0, 0.0])
+        i = i + 1
+    }
+    var base = 0
+    while base < amp.len() {
+        var offset = 0
+        while offset < step {
+            let i0 = base + offset
+            let i1 = i0 + step
+            let a0 = amp[i0]
+            let a1 = amp[i1]
+            out[i0] = cadd(cmul(m[0][0], a0), cmul(m[0][1], a1))
+            out[i1] = cadd(cmul(m[1][0], a0), cmul(m[1][1], a1))
+            offset = offset + 1
+        }
+        base = base + step * 2
+    }
+    return make_state(st["n"], out)
+}
+
+// Apply a named gate to one qubit.
+export fn apply(st: any, name: string, q: int) -> any {
+    return apply_matrix(st, gate(name), q)
+}
+
+export fn h(st: any, q: int) -> any {
+    return apply_matrix(st, gate("h"), q)
+}
+
+export fn x(st: any, q: int) -> any {
+    return apply_matrix(st, gate("x"), q)
+}
+
+export fn y(st: any, q: int) -> any {
+    return apply_matrix(st, gate("y"), q)
+}
+
+export fn z(st: any, q: int) -> any {
+    return apply_matrix(st, gate("z"), q)
+}
+
+export fn s_gate(st: any, q: int) -> any {
+    return apply_matrix(st, gate("s"), q)
+}
+
+export fn t_gate(st: any, q: int) -> any {
+    return apply_matrix(st, gate("t"), q)
+}
+
+// A phase gate: |1> picks up e^(i theta).
+export fn phase(st: any, q: int, theta: float) -> any {
+    let m = [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], cexp(theta)]]
+    return apply_matrix(st, m, q)
+}
+
+// A rotation about the x axis of the Bloch sphere, by an angle in radians.
+export fn rotate_x(st: any, q: int, theta: float) -> any {
+    let c = cos(theta / 2.0)
+    let s = sin(theta / 2.0)
+    let m = [[[c, 0.0], [0.0, -s]], [[0.0, -s], [c, 0.0]]]
+    return apply_matrix(st, m, q)
+}
+
+export fn rotate_y(st: any, q: int, theta: float) -> any {
+    let c = cos(theta / 2.0)
+    let s = sin(theta / 2.0)
+    let m = [[[c, 0.0], [-s, 0.0]], [[s, 0.0], [c, 0.0]]]
+    return apply_matrix(st, m, q)
+}
+
+export fn rotate_z(st: any, q: int, theta: float) -> any {
+    let m = [[cexp(-theta / 2.0), [0.0, 0.0]],
+             [[0.0, 0.0], cexp(theta / 2.0)]]
+    return apply_matrix(st, m, q)
+}
+
+// ---------------------------------------------------------------------------
+// Two and three qubits
+// ---------------------------------------------------------------------------
+
+// Apply a matrix to `target` only on the branches where `control` is one.
+export fn controlled(st: any, m: any, control: int, target: int) -> any {
+    check_state(st)
+    if control == target {
+        throw "controlled() needs two different qubits"
+    }
+    if control < 0 or control >= st["n"] or target < 0 or target >= st["n"] {
+        throw "controlled() qubit out of range"
+    }
+    let cbit = pow2(control)
+    let tbit = pow2(target)
+    let amp = st["amp"]
+    var out = []
+    for a in amp {
+        out.push([a[0], a[1]])
+    }
+    var i = 0
+    while i < amp.len() {
+        // The pair of indices that differ only in the target bit.
+        var partner = i
+        if int(i / tbit) % 2 == 0 {
+            partner = i + tbit
+        } else {
+            partner = i - tbit
+        }
+        if int(i / cbit) % 2 == 1 and i < partner {
+            let a0 = amp[i]
+            let a1 = amp[partner]
+            out[i] = cadd(cmul(m[0][0], a0), cmul(m[0][1], a1))
+            out[partner] = cadd(cmul(m[1][0], a0), cmul(m[1][1], a1))
+        }
+        i = i + 1
+    }
+    return make_state(st["n"], out)
+}
+
+export fn cnot(st: any, control: int, target: int) -> any {
+    return controlled(st, gate("x"), control, target)
+}
+
+export fn cz(st: any, control: int, target: int) -> any {
+    return controlled(st, gate("z"), control, target)
+}
+
+export fn cy(st: any, control: int, target: int) -> any {
+    return controlled(st, gate("y"), control, target)
+}
+
+// Exchange two qubits.
+export fn swap(st: any, a: int, b: int) -> any {
+    check_state(st)
+    if a == b {
+        return st
+    }
+    if a < 0 or a >= st["n"] or b < 0 or b >= st["n"] {
+        throw "swap() qubit out of range"
+    }
+    let abit = pow2(a)
+    let bbit = pow2(b)
+    var out = []
+    for value in st["amp"] {
+        out.push([value[0], value[1]])
+    }
+    var i = 0
+    while i < st["amp"].len() {
+        let ba = int(i / abit) % 2
+        let bb = int(i / bbit) % 2
+        if ba != bb {
+            let j = i - ba * abit - bb * bbit + bb * abit + ba * bbit
+            if i < j {
+                out[i] = st["amp"][j]
+                out[j] = st["amp"][i]
+            }
+        }
+        i = i + 1
+    }
+    return make_state(st["n"], out)
+}
+
+// The Toffoli gate: flip `target` when both controls are one.
+export fn toffoli(st: any, first: int, second: int, target: int) -> any {
+    check_state(st)
+    let m = gate("x")
+    let tbit = pow2(target)
+    let abit = pow2(first)
+    let bbit = pow2(second)
+    var out = []
+    for value in st["amp"] {
+        out.push([value[0], value[1]])
+    }
+    var i = 0
+    while i < st["amp"].len() {
+        if int(i / abit) % 2 == 1 and int(i / bbit) % 2 == 1 {
+            if int(i / tbit) % 2 == 0 {
+                let partner = i + tbit
+                out[i] = st["amp"][partner]
+                out[partner] = st["amp"][i]
+            }
+        }
+        i = i + 1
+    }
+    return make_state(st["n"], out)
+}
+
+// ---------------------------------------------------------------------------
+// Measurement
+// ---------------------------------------------------------------------------
+
+// The probability that qubit `q` reads one.
+export fn probability_one(st: any, q: int) -> float {
+    check_state(st)
+    let bit = pow2(q)
+    var total = 0.0
+    var i = 0
+    while i < st["amp"].len() {
+        if int(i / bit) % 2 == 1 {
+            total = total + cabs2(st["amp"][i])
+        }
+        i = i + 1
+    }
+    return total
+}
+
+// Measure one qubit: the state collapses and the outcome comes back with
+// it. The answer is a dictionary, {"state": ..., "outcome": 0 or 1,
+// "probability": p}, so a caller cannot mistake the collapse for a gate.
+export fn measure(st: any, q: int) -> any {
+    check_state(st)
+    let p1 = probability_one(st, q)
+    var outcome = 0
+    if random() < p1 {
+        outcome = 1
+    }
+    var keep = 1.0
+    if outcome == 1 {
+        keep = p1
+    } else {
+        keep = 1.0 - p1
+    }
+    let bit = pow2(q)
+    var amp = []
+    var i = 0
+    while i < st["amp"].len() {
+        let value = st["amp"][i]
+        let is_one = int(i / bit) % 2 == 1
+        if (outcome == 1 and is_one) or (outcome == 0 and not is_one) {
+            if keep > 0.0 {
+                amp.push(cscale(value, 1.0 / sqrt(keep)))
+            } else {
+                amp.push([0.0, 0.0])
+            }
+        } else {
+            amp.push([0.0, 0.0])
+        }
+        i = i + 1
+    }
+    return { "state": make_state(st["n"], amp),
+             "outcome": outcome,
+             "probability": keep }
+}
+
+// One shot of the whole register: the basis index that the state lands
+// on, drawn from the distribution of the amplitudes.
+export fn sample(st: any) -> int {
+    check_state(st)
+    let r = random()
+    var running = 0.0
+    var i = 0
+    while i < st["amp"].len() {
+        running = running + cabs2(st["amp"][i])
+        if r <= running {
+            return i
+        }
+        i = i + 1
+    }
+    return st["amp"].len() - 1
+}
+
+// The bit string of a basis index, qubit n-1 first — the order a circuit
+// diagram is read in.
+export fn bit_string(index: int, n: int) -> string {
+    var text = ""
+    var q = n - 1
+    while q >= 0 {
+        if int(index / pow2(q)) % 2 == 1 {
+            text = text + "1"
+        } else {
+            text = text + "0"
+        }
+        q = q - 1
+    }
+    return text
+}
+
+// `shots` measurements of the register, as a dictionary of counts.
+export fn run(st: any, shots: int) -> any {
+    check_state(st)
+    if shots < 1 {
+        throw "run() expects at least one shot"
+    }
+    var counts = {}
+    var k = 0
+    while k < shots {
+        let key = bit_string(sample(st), st["n"])
+        if counts.has(key) {
+            counts[key] = counts[key] + 1
+        } else {
+            counts[key] = 1
+        }
+        k = k + 1
+    }
+    return counts
+}
+
+// ---------------------------------------------------------------------------
+// The states worth knowing
+// ---------------------------------------------------------------------------
+
+// (|00> + |11>) / sqrt(2) — the pair that cannot be described one qubit
+// at a time.
+export fn bell() -> any {
+    var st = state(2)
+    st = h(st, 0)
+    st = cnot(st, 0, 1)
+    return st
+}
+
+// The Greenberger-Horne-Zeilinger state of n qubits: all zeros in
+// superposition with all ones.
+export fn ghz(n: int) -> any {
+    var st = state(n)
+    st = h(st, 0)
+    var q = 1
+    while q < n {
+        st = cnot(st, q - 1, q)
+        q = q + 1
+    }
+    return st
+}
+
+// The W state: exactly one qubit is one, and no one knows which.
+export fn w_state(n: int) -> any {
+    var st = state(n)
+    var q = 0
+    while q < n {
+        st = apply_matrix(st, gate("x"), q)
+        q = q + 1
+    }
+    // The uniform superposition of the n one-hot states.
+    let k = 1.0 / sqrt(float(n))
+    var amp = []
+    var i = 0
+    while i < pow2(n) {
+        var weight = 0.0
+        var j = 0
+        var bits = 0
+        while j < n {
+            if int(i / pow2(j)) % 2 == 1 {
+                bits = bits + 1
+            }
+            j = j + 1
+        }
+        if bits == 1 {
+            weight = k
+        }
+        amp.push([weight, 0.0])
+        i = i + 1
+    }
+    return make_state(n, amp)
+}
+
+// ---------------------------------------------------------------------------
+// Circuits
+// ---------------------------------------------------------------------------
+
+// A circuit is a list of operations, each a dictionary:
+//
+//   {"gate": "h",  "targets": [0]}
+//   {"gate": "cx", "targets": [0, 1]}   control first
+//   {"gate": "rx", "targets": [0], "angle": 1.5707963}
+//
+// `circuit(n, ops)` runs them in order and answers the state.
+export fn circuit(n: int, ops: any) -> any {
+    var st = state(n)
+    for op in ops {
+        let name = op["gate"]
+        let targets = op["targets"]
+        if name == "cx" or name == "cnot" {
+            st = cnot(st, int(targets[0]), int(targets[1]))
+        } else if name == "cz" {
+            st = cz(st, int(targets[0]), int(targets[1]))
+        } else if name == "swap" {
+            st = swap(st, int(targets[0]), int(targets[1]))
+        } else if name == "ccx" or name == "toffoli" {
+            st = toffoli(st, int(targets[0]), int(targets[1]), int(targets[2]))
+        } else if name == "rx" {
+            st = rotate_x(st, int(targets[0]), op["angle"])
+        } else if name == "ry" {
+            st = rotate_y(st, int(targets[0]), op["angle"])
+        } else if name == "rz" {
+            st = rotate_z(st, int(targets[0]), op["angle"])
+        } else if name == "phase" {
+            st = phase(st, int(targets[0]), op["angle"])
+        } else {
+            st = apply(st, name, int(targets[0]))
+        }
+    }
+    return st
+}
+
+// ---------------------------------------------------------------------------
+// The two algorithms that show what a quantum computer is for
+// ---------------------------------------------------------------------------
+
+// The quantum Fourier transform, by the textbook circuit: a Hadamard and
+// a ladder of controlled phases on every qubit, then the bit reversal.
+export fn qft(st: any) -> any {
+    check_state(st)
+    let n = st["n"]
+    var out = st
+    var q = 0
+    while q < n {
+        out = h(out, q)
+        var k = q + 1
+        while k < n {
+            let angle = pi / float(pow2(k - q))
+            let m = [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], cexp(angle)]]
+            out = controlled(out, m, k, q)
+            k = k + 1
+        }
+        q = q + 1
+    }
+    var a = 0
+    var b = n - 1
+    while a < b {
+        out = swap(out, a, b)
+        a = a + 1
+        b = b - 1
+    }
+    return out
+}
+
+// Grover's search: `iterations` rounds of the oracle and the diffusion
+// operator, which lifts the marked index towards one.
+export fn grover(n: int, marked: int, iterations: int) -> any {
+    if marked < 0 or marked >= pow2(n) {
+        throw "grover() marked index out of range"
+    }
+    var st = state(n)
+    var q = 0
+    while q < n {
+        st = h(st, q)
+        q = q + 1
+    }
+    var round = 0
+    while round < iterations {
+        // The oracle: a phase of minus one on the marked index only.
+        var amp = []
+        var i = 0
+        while i < st["amp"].len() {
+            if i == marked {
+                amp.push(cscale(st["amp"][i], -1.0))
+            } else {
+                amp.push(st["amp"][i])
+            }
+            i = i + 1
+        }
+        st = make_state(n, amp)
+        // The diffusion: 2|s><s| - I, which is H X (phase on zero) X H.
+        var k = 0
+        while k < n {
+            st = h(st, k)
+            k = k + 1
+        }
+        k = 0
+        while k < n {
+            st = apply_matrix(st, gate("x"), k)
+            k = k + 1
+        }
+        st = phase_flip_all_ones(st)
+        k = 0
+        while k < n {
+            st = apply_matrix(st, gate("x"), k)
+            k = k + 1
+        }
+        k = 0
+        while k < n {
+            st = h(st, k)
+            k = k + 1
+        }
+        round = round + 1
+    }
+    return st
+}
+
+// A phase of minus one on |1...1> and nothing anywhere else. This is the
+// multi-controlled Z that the diffusion operator is built from; writing
+// it directly is one loop and one sign, where a ladder of Toffolis would
+// be the same operation with more gates.
+export fn phase_flip_all_ones(st: any) -> any {
+    check_state(st)
+    var amp = []
+    var last = st["amp"].len() - 1
+    var i = 0
+    while i < st["amp"].len() {
+        if i == last {
+            amp.push(cscale(st["amp"][i], -1.0))
+        } else {
+            amp.push(st["amp"][i])
+        }
+        i = i + 1
+    }
+    return make_state(st["n"], amp)
+}
+
+// The number of Grover rounds that is best for a search space of size N:
+// floor(pi/4 * sqrt(N)).
+export fn grover_rounds(n: int) -> int {
+    return int(pi / 4.0 * sqrt(float(pow2(n))))
+}
+
+// ---------------------------------------------------------------------------
+// What the state means
+// ---------------------------------------------------------------------------
+
+// The expectation of a one-qubit observable on qubit q, for a matrix
+// that is Hermitian: <psi| M |psi>.
+export fn expectation(st: any, m: any, q: int) -> float {
+    check_state(st)
+    let bit = pow2(q)
+    var total = 0.0
+    var i = 0
+    while i < st["amp"].len() {
+        let i0 = i - int(i / bit) % 2 * bit
+        let i1 = i0 + bit
+        let a0 = st["amp"][i0]
+        let a1 = st["amp"][i1]
+        // The row of M that belongs to the bit of index i.
+        var row = m[0]
+        if int(i / bit) % 2 == 1 {
+            row = m[1]
+        }
+        let term = cadd(cmul(row[0], a0), cmul(row[1], a1))
+        total = total + (cconj(st["amp"][i])[0] * term[0]
+                         + cconj(st["amp"][i])[1] * term[1])
+        i = i + 1
+    }
+    return total
+}
+
+// The Bloch vector of one qubit: [x, y, z]. A pure state has length one,
+// a maximally mixed one has length zero.
+export fn bloch(st: any, q: int) -> any {
+    let mx = [[[0.0, 0.0], [1.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]]]
+    let my = [[[0.0, 0.0], [0.0, -1.0]], [[0.0, 1.0], [0.0, 0.0]]]
+    let mz = [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [-1.0, 0.0]]]
+    return [expectation(st, mx, q), expectation(st, my, q),
+            expectation(st, mz, q)]
+}
+
+// The Shannon entropy of the measurement distribution, in bits. Zero for
+// a basis state, n for the uniform superposition.
+export fn entropy(st: any) -> float {
+    check_state(st)
+    var total = 0.0
+    for p in probabilities(st) {
+        if p > 1e-15 {
+            total = total - p * math["log2"](p)
+        }
+    }
+    return total
+}
+
+// How close two states are: |<a|b>|^2, one for the same state.
+export fn fidelity(a: any, b: any) -> float {
+    check_state(a)
+    check_state(b)
+    if a["n"] != b["n"] {
+        throw "fidelity() needs two states of the same width"
+    }
+    var total = [0.0, 0.0]
+    var i = 0
+    while i < a["amp"].len() {
+        total = cadd(total, cmul(cconj(a["amp"][i]), b["amp"][i]))
+        i = i + 1
+    }
+    return cabs2(total)
+}
+
+// A readable dump of the amplitudes that are not zero.
+export fn to_string(st: any) -> string {
+    check_state(st)
+    var text = "|" + bit_string(0, st["n"]) + "> state, " + str(st["n"]) + " qubits"
+    var i = 0
+    while i < st["amp"].len() {
+        let a = st["amp"][i]
+        if cabs2(a) > 1e-12 {
+            text = text + "\n  |" + bit_string(i, st["n"]) + ">  "
+            text = text + str(a[0])
+            if a[1] >= 0.0 {
+                text = text + " + " + str(a[1]) + "i"
+            } else {
+                text = text + " - " + str(-a[1]) + "i"
+            }
+            text = text + "   p = " + str(cabs2(a))
+        }
+        i = i + 1
+    }
+    return text
+}

@@ -104,7 +104,17 @@ fn is_upper(ch) {
 }
 
 fn is_alpha(ch) {
-    return is_lower(ch) or is_upper(ch)
+    if ch.len() == 0 {
+        return false
+    }
+    if is_lower(ch) or is_upper(ch) {
+        return true
+    }
+    // Anything outside ASCII is a letter as far as the language is
+    // concerned: Devanagari, Han, Arabic, Cyrillic, and the combining
+    // marks that a script such as Devanagari writes between letters.
+    // Bun accepts a name in any script, so the front-end must too.
+    return ord(ch) >= 128
 }
 
 fn is_alnum(ch) {

@@ -92,14 +92,28 @@ class RegFrame:
         """The value of a slot of the expression."""
         if index < regcode.REGISTER_COUNT:
             return self.regs[index]
-        return self.over[index - regcode.REGISTER_COUNT]
+        offset = index - regcode.REGISTER_COUNT
+        if offset < len(self.over):
+            return self.over[offset]
+        return None
 
     def set_slot(self, index, value):
-        """Write a value into a slot of the expression."""
+        """Write a value into a slot of the expression.
+
+        The fast registers are a fixed list; everything past them lives in
+        `over`, which grows on demand. A function with a large literal — a
+        table of a hundred units, say — needs more slots than the fast
+        window holds, and an expression that ran out of them used to raise
+        an IndexError from inside the machine.
+        """
         if index < regcode.REGISTER_COUNT:
             self.regs[index] = value
-        else:
-            self.over[index - regcode.REGISTER_COUNT] = value
+            return
+        offset = index - regcode.REGISTER_COUNT
+        over = self.over
+        while len(over) <= offset:
+            over.append(None)
+        over[offset] = value
 
     def push(self, index, value):
         """Write a value into a slot and open it."""

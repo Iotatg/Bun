@@ -1,0 +1,45 @@
+// The science stacks, in one program.
+//
+//   bun examples/science.bun
+//
+// Three questions, one from each stack: what a Bell pair looks like when
+// it is measured, what a photon of green light carries, and how much one
+// mole of glucose weighs.
+
+import { bell, probabilities, run, bloch, entropy } from "bun:quantum"
+import { photon_energy, convert, hydrogen_wavelength, c, h } from "bun:physics"
+import { molar_mass, ph, translate } from "bun:science"
+
+// --- the quantum -----------------------------------------------------------
+
+let pair = bell()
+print("Bell pair")
+print("  probabilities:", probabilities(pair))
+print("  entropy:      ", entropy(pair), "bit")
+print("  one thousand shots:", run(pair, 1000))
+print("  Bloch vector of qubit 0:", bloch(pair, 0))
+
+// --- the physical ----------------------------------------------------------
+
+let lambda = 500e-9
+print("")
+print("A green photon, 500 nm")
+print("  energy:  ", photon_energy(lambda), "J")
+print("  in eV:   ", convert(photon_energy(lambda), "J", "eV"), "eV")
+print("  momentum:", h / lambda, "kg m/s")
+
+print("")
+print("The H-alpha line")
+print("  wavelength:", hydrogen_wavelength(3, 2) * 1e9, "nm")
+
+print("")
+print("One kilogram at rest")
+print("  energy:", convert(1.0, "kg", "kg") * c * c, "J")
+
+// --- the chemical ----------------------------------------------------------
+
+print("")
+print("Chemistry")
+print("  molar mass of glucose:", molar_mass("C6H12O6"), "g/mol")
+print("  pH of a millimolar acid:", ph(1e-3))
+print("  a peptide:", translate("AUGUUUUAA"))
