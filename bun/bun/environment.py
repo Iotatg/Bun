@@ -28,6 +28,15 @@ class Environment:
             env = env.parent
         raise BunRuntimeError("undefined variable '%s'" % name)
 
+    def has(self, name):
+        """Whether the name is bound here or in a parent."""
+        env = self
+        while env is not None:
+            if name in env.values:
+                return True
+            env = env.parent
+        return False
+
     def delete(self, name):
         """Remove a name from the scope that holds it."""
         env = self

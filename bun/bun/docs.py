@@ -1015,6 +1015,65 @@ DOCS = {
         "signature": "write_file(path: string, data: string)",
         "summary": "Write text to a file, replacing its contents.",
     },
+    "has_builtin": {
+        "signature": "has_builtin(name: string) -> bool",
+        "summary": "Whether the runtime carries a builtin of this name.",
+        "details": "A stack asks this before taking a native path, so the same source\nruns on a runtime that has the path and on one that does not.",
+        "example": "print(has_builtin(\"quantum_apply\"))\nprint(has_builtin(\"no_such_builtin\"))",
+    },
+    "quantum_apply": {
+        "signature": "quantum_apply(amplitudes: list, matrix: list, qubit: int) -> list",
+        "summary": "One gate on one qubit, with the loop in native code.",
+        "details": "The native fast path of bun:quantum. An amplitude is [re, im]; the\nmatrix is 2x2 of the same. The result is a new list of amplitudes.",
+        "example": "let m = [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [1.0, 0.0]]]\nlet amp = [[1.0, 0.0], [0.0, 0.0]]\nprint(quantum_apply(amp, m, 0))",
+    },
+    "quantum_controlled": {
+        "signature": "quantum_controlled(amplitudes: list, matrix: list, control: int, target: int) -> list",
+        "summary": "A controlled gate, with the loop in native code.",
+        "example": "let x = [[[0.0, 0.0], [1.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]]]\nlet amp = [[0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]\nprint(quantum_controlled(amp, x, 0, 1))",
+    },
+    "quantum_probabilities": {
+        "signature": "quantum_probabilities(amplitudes: list) -> list",
+        "summary": "The squared length of every amplitude.",
+        "example": "print(quantum_probabilities([[0.7071067811865476, 0.0], [0.0, 0.0], [0.0, 0.0], [0.7071067811865476, 0.0]]))",
+    },
+    "quantum_norm": {
+        "signature": "quantum_norm(amplitudes: list) -> float",
+        "summary": "The length of the state vector.",
+        "example": "print(quantum_norm([[1.0, 0.0], [0.0, 0.0]]))",
+    },
+    "quantum_sample": {
+        "signature": "quantum_sample(amplitudes: list, draw: float) -> int",
+        "summary": "One shot: the basis index for a draw between zero and one.",
+        "details": "The draw is passed in rather than made here, so a caller can repeat a\nrun exactly.",
+        "example": "let amp = [[0.5, 0.0], [0.0, 0.0], [0.0, 0.0], [0.5, 0.0]]\nprint(quantum_sample(amp, 0.1))\nprint(quantum_sample(amp, 0.9))",
+    },
+    "quantum_measure": {
+        "signature": "quantum_measure(amplitudes: list, qubit: int, draw: float) -> dict",
+        "summary": "Measure one qubit: the collapsed amplitudes, the outcome and the probability.",
+        "example": "let amp = [[0.7071067811865476, 0.0], [0.0, 0.0], [0.0, 0.0], [0.7071067811865476, 0.0]]\nlet m = quantum_measure(amp, 0, 0.1)\nprint(m[\"outcome\"])",
+    },
+    "quantum_expectation": {
+        "signature": "quantum_expectation(amplitudes: list, matrix: list, qubit: int) -> float",
+        "summary": "The expectation of a one-qubit observable.",
+        "example": "let z = [[[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [-1.0, 0.0]]]\nprint(quantum_expectation([[1.0, 0.0], [0.0, 0.0]], z, 0))",
+    },
+    "quantum_fidelity": {
+        "signature": "quantum_fidelity(left: list, right: list) -> float",
+        "summary": "How close two states are: the squared overlap.",
+        "example": "print(quantum_fidelity([[1.0, 0.0], [0.0, 0.0]], [[1.0, 0.0], [0.0, 0.0]]))",
+    },
+    "quantum_flip_sign": {
+        "signature": "quantum_flip_sign(amplitudes: list, index: int) -> list",
+        "summary": "Multiply one amplitude by minus one.",
+        "details": "The oracle of a search and the diffusion operator are both this one\noperation, so it is worth having without a walk through the interpreter.",
+        "example": "print(quantum_flip_sign([[1.0, 0.0], [1.0, 0.0]], 1))",
+    },
+    "quantum_swap": {
+        "signature": "quantum_swap(amplitudes: list, first: int, second: int) -> list",
+        "summary": "Exchange two qubits.",
+        "example": "print(quantum_swap([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]], 0, 1))",
+    },
 }
 
 

@@ -2085,6 +2085,24 @@ def _is_err(args):
     return isinstance(value, BunDict) and value.has("err") and not value.has("ok")
 
 
+def _has_builtin(args):
+    """Whether the runtime carries a builtin of this name.
+
+    A stack uses it to take a native path when the path is there and to
+    keep its own Bun version when it is not, so the same source runs on
+    both runtimes.
+    """
+    if len(args) != 1:
+        raise BunRuntimeError("has_builtin() expects one name")
+    name = args[0]
+    if not isinstance(name, str):
+        raise BunRuntimeError("has_builtin() expects a string")
+    return _ENVIRONMENT is not None and _ENVIRONMENT.has(name)
+
+
+_ENVIRONMENT = None
+
+
 def register_builtins(env, program_args=None):
     env.define("args", Builtin("args", _make_args(program_args)), False)
     env.define("print", Builtin("print", _print), False)
@@ -2178,6 +2196,11 @@ def register_builtins(env, program_args=None):
     env.define("tcp_set_timeout", Builtin("tcp_set_timeout", _tcp_set_timeout), False)
     from .extras import register_extras
     register_extras(env)
+    from .quantumnative import register_quantum
+    register_quantum(env)
+    global _ENVIRONMENT
+    _ENVIRONMENT = env
+    env.define("has_builtin", Builtin("has_builtin", _has_builtin), False)
     env.define("h2_connect", Builtin("h2_connect", _h2_connect), False)
     env.define("h2_request", Builtin("h2_request", _h2_request), False)
     env.define("h2_close", Builtin("h2_close", _h2_close), False)

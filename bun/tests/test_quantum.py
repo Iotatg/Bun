@@ -10,7 +10,8 @@ Q = "import { state, h, x, y, z, apply, apply_matrix, controlled, cnot, cz, " \
     "probability, probability_one, norm, normalize, amplitudes, measure, " \
     "sample, run, bit_string, bell, ghz, w_state, circuit, qft, grover, " \
     "grover_rounds, expectation, bloch, entropy, fidelity, to_string, " \
-    "gate, complex, cadd, cmul, cabs2, cphase, qubits, dimension } " \
+    "gate, complex, cadd, cmul, cabs2, cphase, qubits, dimension, " \
+    "slow_apply_matrix, slow_controlled, phase_flip_all_ones } " \
     "from \"bun:quantum\"\n"
 
 
@@ -370,3 +371,53 @@ def test_a_gate_on_a_non_state_is_an_error():
 def test_grover_refuses_a_marked_index_outside_the_space():
     message = run_error(Q + "print(grover(2, 9, 1))\n")
     assert "out of range" in message
+
+
+# ---------------------------------------------------------------------------
+# The native fast path
+# ---------------------------------------------------------------------------
+
+def test_the_runtime_carries_the_native_path(capsys):
+    out = run_both(Q + "print(has_builtin(\"quantum_apply\"))\n"
+                        "print(has_builtin(\"no_such_builtin\"))\n", capsys)
+    assert out.strip().splitlines() == ["true", "false"]
+
+
+def test_the_native_gate_matches_the_bun_gate(capsys):
+    """The two paths must agree on every amplitude, not just on the shape."""
+    out = run_both(Q +
+                   "let s = h(h(state(3), 0), 2)\n"
+                   "for name in [\"h\", \"t\", \"s\", \"x\", \"y\", \"z\"] {\n"
+                   "  let m = gate(name)\n"
+                   "  let slow = slow_apply_matrix(s, m, 1)\n"
+                   "  let fast = apply_matrix(s, m, 1)\n"
+                   "  print(name, str(amplitudes(slow)) == str(amplitudes(fast)))\n"
+                   "}\n", capsys)
+    for line in out.strip().splitlines():
+        assert line.endswith("true"), line
+
+
+def test_the_native_controlled_gate_matches_the_bun_gate(capsys):
+    out = run_both(Q +
+                   "let s = h(h(state(3), 0), 1)\n"
+                   "let m = gate(\"x\")\n"
+                   "let slow = slow_controlled(s, m, 0, 2)\n"
+                   "let fast = controlled(s, m, 0, 2)\n"
+                   "print(str(amplitudes(slow)) == str(amplitudes(fast)))\n"
+                   "print(probability(fast, 5))\n", capsys)
+    lines = out.strip().splitlines()
+    assert lines[0] == "true"
+    assert abs(number(lines[1]) - 0.25) < 1e-12
+
+
+def test_a_twelve_qubit_state_still_normalizes(capsys):
+    """The native path is what makes twelve qubits quick; it must still be right."""
+    run_source(Q + "let s = ghz(12)\n"
+                   "print(probability(s, 0))\n"
+                   "print(probability(s, 4095))\n"
+                   "print(entropy(s))\n",
+               filename="<quantum>.bun", check=True, engine="vm")
+    lines = [number(v) for v in capsys.readouterr().out.strip().splitlines()]
+    assert abs(lines[0] - 0.5) < 1e-12
+    assert abs(lines[1] - 0.5) < 1e-12
+    assert abs(lines[2] - 1.0) < 1e-12

@@ -16,6 +16,12 @@
 //   print(run(q, 1000))          // {"00": 503, "11": 497}
 
 let math = ffi_load("math")
+
+// The runtime may carry the same arithmetic as native builtins. When it
+// does, the inner loop leaves the interpreter and a twelve-qubit circuit
+// stops taking seconds. When it does not, the Bun versions below run
+// instead, and the answer is the same to the last bit.
+let NATIVE = has_builtin("quantum_apply")
 let cos = math["cos"]
 let sin = math["sin"]
 let sqrt = math["sqrt"]
@@ -143,6 +149,9 @@ export fn amplitudes(st: any) -> any {
 // The probability of each basis state, in order.
 export fn probabilities(st: any) -> any {
     check_state(st)
+    if NATIVE {
+        return quantum_probabilities(st["amp"])
+    }
     var out = []
     for a in st["amp"] {
         out.push(cabs2(a))
@@ -161,6 +170,9 @@ export fn probability(st: any, index: int) -> float {
 // The total probability, which must stay at one.
 export fn norm(st: any) -> float {
     check_state(st)
+    if NATIVE {
+        return quantum_norm(st["amp"])
+    }
     var total = 0.0
     for a in st["amp"] {
         total = total + cabs2(a)
@@ -231,6 +243,15 @@ export fn apply_matrix(st: any, m: any, q: int) -> any {
     if q < 0 or q >= st["n"] {
         throw "apply_matrix() qubit out of range: " + str(q)
     }
+    if NATIVE {
+        return make_state(st["n"], quantum_apply(st["amp"], m, q))
+    }
+    return slow_apply_matrix(st, m, q)
+}
+
+// The gate in Bun alone: the version that runs when the runtime has no
+// native path, and the reference the native path is tested against.
+export fn slow_apply_matrix(st: any, m: any, q: int) -> any {
     let step = pow2(q)
     let amp = st["amp"]
     var out = []
@@ -325,6 +346,14 @@ export fn controlled(st: any, m: any, control: int, target: int) -> any {
     if control < 0 or control >= st["n"] or target < 0 or target >= st["n"] {
         throw "controlled() qubit out of range"
     }
+    if NATIVE {
+        return make_state(st["n"],
+                          quantum_controlled(st["amp"], m, control, target))
+    }
+    return slow_controlled(st, m, control, target)
+}
+
+export fn slow_controlled(st: any, m: any, control: int, target: int) -> any {
     let cbit = pow2(control)
     let tbit = pow2(target)
     let amp = st["amp"]
@@ -372,6 +401,9 @@ export fn swap(st: any, a: int, b: int) -> any {
     }
     if a < 0 or a >= st["n"] or b < 0 or b >= st["n"] {
         throw "swap() qubit out of range"
+    }
+    if NATIVE {
+        return make_state(st["n"], quantum_swap(st["amp"], a, b))
     }
     let abit = pow2(a)
     let bbit = pow2(b)
@@ -444,6 +476,15 @@ export fn probability_one(st: any, q: int) -> float {
 // "probability": p}, so a caller cannot mistake the collapse for a gate.
 export fn measure(st: any, q: int) -> any {
     check_state(st)
+    if q < 0 or q >= st["n"] {
+        throw "measure() qubit out of range: " + str(q)
+    }
+    if NATIVE {
+        let fast = quantum_measure(st["amp"], q, random())
+        return { "state": make_state(st["n"], fast["amp"]),
+                 "outcome": fast["outcome"],
+                 "probability": fast["probability"] }
+    }
     let p1 = probability_one(st, q)
     var outcome = 0
     if random() < p1 {
@@ -482,6 +523,9 @@ export fn measure(st: any, q: int) -> any {
 export fn sample(st: any) -> int {
     check_state(st)
     let r = random()
+    if NATIVE {
+        return quantum_sample(st["amp"], r)
+    }
     var running = 0.0
     var i = 0
     while i < st["amp"].len() {
@@ -717,6 +761,10 @@ export fn grover(n: int, marked: int, iterations: int) -> any {
 // be the same operation with more gates.
 export fn phase_flip_all_ones(st: any) -> any {
     check_state(st)
+    if NATIVE {
+        return make_state(st["n"],
+                          quantum_flip_sign(st["amp"], st["amp"].len() - 1))
+    }
     var amp = []
     var last = st["amp"].len() - 1
     var i = 0
@@ -745,6 +793,9 @@ export fn grover_rounds(n: int) -> int {
 // that is Hermitian: <psi| M |psi>.
 export fn expectation(st: any, m: any, q: int) -> float {
     check_state(st)
+    if NATIVE {
+        return quantum_expectation(st["amp"], m, q)
+    }
     let bit = pow2(q)
     var total = 0.0
     var i = 0
@@ -795,6 +846,9 @@ export fn fidelity(a: any, b: any) -> float {
     check_state(b)
     if a["n"] != b["n"] {
         throw "fidelity() needs two states of the same width"
+    }
+    if NATIVE {
+        return quantum_fidelity(a["amp"], b["amp"])
     }
     var total = [0.0, 0.0]
     var i = 0

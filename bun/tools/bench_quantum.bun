@@ -28,10 +28,12 @@ fn make_grover(n) {
 }
 
 print("qubits  ghz  qft  grover  1000 shots")
-for n in [8, 10, 12, 14] {
+for n in [8, 10, 12] {
     let g = timed("ghz", make_ghz, n)
     timed("qft", make_qft, n)
-    timed("grover", make_grover, n)
+    if n <= 10 {
+        timed("grover", make_grover, n)
+    }
     let start = now_ms()
     run(g, 1000)
     print("  shots " + str(n) + ": " + str(now_ms() - start) + " ms")
