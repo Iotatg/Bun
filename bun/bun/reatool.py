@@ -54,10 +54,14 @@ def _environment():
                 java = os.path.join(base, name)
     if java:
         environment["JAVA_HOME"] = java
-        environment["JAVA_HOME"] = java
         environment["PATH"] = os.path.join(java, "bin") + os.pathsep + \
             environment.get("PATH", "")
     return environment
+
+
+def available():
+    """True when the rea command line can be found on this machine."""
+    return _find_cli() is not None
 
 
 def _run_cli(arguments, timeout=570):
@@ -91,9 +95,18 @@ def _markdown_values(markdown, headers):
             for name, body in sections.items()}
 
 
+def _check(path):
+    """Every entry point starts here: the file must exist and be a file."""
+    if not os.path.exists(path):
+        raise RuntimeError("no such file: %s" % path)
+    if not os.path.isfile(path):
+        raise RuntimeError("not a file: %s" % path)
+    return path
+
+
 def analyze(path):
     """The overview of a binary: format, architecture, procedure count."""
-    text = _run_cli(["analyze", path, "--format", "md"])
+    text = _run_cli(["analyze", _check(path), "--format", "md"])
     values = _markdown_values(text, ())
     summary = {}
     for key in ("subject.name", "subject.local_path", "provider",
@@ -107,25 +120,25 @@ def analyze(path):
 
 def layout(path):
     """The memory layout of a binary: sections, segments, entry point."""
-    text = _run_cli(["inspect-binary-layout", path, "--format", "md"])
+    text = _run_cli(["inspect-binary-layout", _check(path), "--format", "md"])
     return _markdown_values(text, ()).get("normalized_result", text)
 
 
 def exports(path):
     """The exported functions of a binary (its public face)."""
-    text = _run_cli(["inspect-native-exports", path, "--format", "md"])
+    text = _run_cli(["inspect-native-exports", _check(path), "--format", "md"])
     return _markdown_values(text, ()).get("normalized_result", text)
 
 
 def functions(path):
     """The functions REA knows in a binary, with their sizes."""
-    text = _run_cli(["function", path, "--format", "md"])
+    text = _run_cli(["function", _check(path), "--format", "md"])
     return _markdown_values(text, ()).get("normalized_result", text)
 
 
 def decompile(path, procedure):
     """The pseudo-C of one procedure of a binary."""
-    text = _run_cli(["decompile", path, "--procedure", procedure,
+    text = _run_cli(["decompile", _check(path), "--procedure", procedure,
                      "--format", "md"])
     return _markdown_values(text, ()).get("normalized_result", text)
 

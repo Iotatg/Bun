@@ -87,7 +87,7 @@ def _csv_build(args):
     if not isinstance(args[0], list):
         raise BunRuntimeError("csv_build() expects a list of rows")
     buffer = io.StringIO()
-    writer = csv.writer(buffer)
+    writer = csv.writer(buffer, lineterminator="\n")
     for row in args[0]:
         if not isinstance(row, list):
             raise BunRuntimeError("csv_build() expects a list of rows")
@@ -201,14 +201,17 @@ def _uuid(args):
 def _crc32(args):
     _one("crc32", args)
     data = args[0]
-    if isinstance(data, str):
-        data = data.encode("utf-8")
-    if not isinstance(data, list):
+    if isinstance(data, bytes):
+        payload = data
+    elif isinstance(data, str):
+        payload = data.encode("utf-8")
+    elif isinstance(data, list):
+        try:
+            payload = bytes(data)
+        except (TypeError, ValueError):
+            raise BunRuntimeError("crc32() expects bytes in the range 0-255")
+    else:
         raise BunRuntimeError("crc32() expects a string or a list of bytes")
-    try:
-        payload = bytes(data)
-    except (TypeError, ValueError):
-        raise BunRuntimeError("crc32() expects bytes in the range 0-255")
     return zlib.crc32(payload) & 0xFFFFFFFF
 
 
@@ -233,7 +236,10 @@ def _rea_analyze(args):
     _one("rea_analyze", args)
     sandbox.check_exec()
     from . import reatool
-    summary = reatool.analyze(_check_path("rea_analyze", args))
+    try:
+        summary = reatool.analyze(_check_path("rea_analyze", args))
+    except RuntimeError:
+        return None
     answer = BunDict()
     for key, value in summary.items():
         answer.set(key, value)
@@ -244,7 +250,10 @@ def _rea_exports(args):
     _one("rea_exports", args)
     sandbox.check_exec()
     from . import reatool
-    return reatool.exports(_check_path("rea_exports", args))
+    try:
+        return reatool.exports(_check_path("rea_exports", args))
+    except RuntimeError:
+        return None
 
 
 def _rea_decompile(args):
@@ -252,8 +261,11 @@ def _rea_decompile(args):
         raise BunRuntimeError("rea_decompile() expects a path and a procedure")
     sandbox.check_exec()
     from . import reatool
-    return reatool.decompile(_check_path("rea_decompile", args),
-                             _check_path("rea_decompile", args, 1))
+    try:
+        return reatool.decompile(_check_path("rea_decompile", args),
+                                 _check_path("rea_decompile", args, 1))
+    except RuntimeError:
+        return None
 
 
 EXTRA_SIGNATURES = {

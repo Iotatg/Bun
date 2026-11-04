@@ -1,0 +1,21 @@
+// Call other programming languages from Bun, and read their answers.
+// Run: bun examples/polyglot.bun
+
+print("this machine can run: " + str(installed_languages()))
+
+let samples = {
+    "python": "print(sum(i * i for i in range(10)))",
+    "javascript": "console.log([1,2,3,4].reduce((a, b) => a + b, 0))",
+    "bash": "echo $((6 * 7))",
+    "ruby": "puts (1..5).map { |n| n ** 2 }.sum",
+    "c": "#include <stdio.h>\nint main(void){printf(\"%d\\n\", 21 * 2);return 0;}\n"
+}
+
+for name in samples {
+    let answer = run_language(name, samples[name])
+    if answer["ok"] {
+        print(name + " -> " + answer["stdout"].trim())
+    } else {
+        print(name + " failed: " + answer["stderr"].trim())
+    }
+}

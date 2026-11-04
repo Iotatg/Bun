@@ -102,6 +102,34 @@ def test_run_in_spanish(capsys):
     assert capsys.readouterr().out.strip() == "42"
 
 
+def test_every_pack_covers_the_core_keywords():
+    """Tiers: every pack has the basic words, the full packs have all 33."""
+    from bun.lexer import KEYWORDS
+    basic = {"let", "var", "fn", "if", "else", "while", "for", "in",
+             "return", "true", "false", "null"}
+    full = 0
+    for code, _name, count in langpacks.list_packs():
+        _name, table = langpacks.pack(code)
+        assert basic <= set(table), code
+        if set(KEYWORDS) <= set(table):
+            full += 1
+    assert full >= 45
+
+
+def test_struct_in_hindi(capsys):
+    run_source("संरचना Point {\n    x: int,\n    y: int\n}\n"
+               "मानी p = Point(3, 4)\nprint(p.x + p.y)\n",
+               lang="hi", check=True)
+    assert capsys.readouterr().out.strip() == "7"
+
+
+def test_struct_in_chinese(capsys):
+    run_source("结构 Point {\n    x: int,\n    y: int\n}\n"
+               "让 p = Point(2, 5)\nprint(p.x * p.y)\n",
+               lang="zh", check=True)
+    assert capsys.readouterr().out.strip() == "10"
+
+
 def test_detect_directive():
     assert langpacks.detect_directive("#lang: hi\nमानी x = 1\n") == "hi"
     assert langpacks.detect_directive("let x = 1\n") is None

@@ -2357,3 +2357,64 @@ python3 -m pytest -v
 - Phase 25: the `with` and the `scope` under the C backend — the `with` runs the body between the `__enter__` and the `__exit__` of its targets, the `scope` runs its body in a task group whose tasks are joined before the scope ends, and a failure of a child is the failure of the scope — DONE
 - Phase 26: the everyday syntax — the compound assignment, the `++` and the `--`, the `??` and the match that answers a value — DONE
 - Phase 27: the containers speak — `map`, `filter`, `reduce`, `find`, `any`, `all`, `each`, a `sort` with a comparator, a `sort_by`, the `items()` of a dict, the `len` of a dict and a `print` of many values, and the checker refuses a method a container does not have before the program runs — DONE
+## The language packs — Bun in 118 human languages
+
+The keywords of Bun are not fixed to English: a pack renames them, and
+the same engines compile the program.
+
+```bun
+#lang: hi
+मानी नाम = "दुनिया"
+print("नमस्ते " + नाम)
+```
+
+```bun
+#lang: zh
+让 名字 = "世界"
+print("你好 " + 名字)
+```
+
+`bun langs` lists the packs, `--lang <code>` picks one and `--lang auto`
+detects it from the words of the program. The builtins keep their English
+names on purpose. The pack of a language translates all 33 keywords; a
+partial pack leaves the missing word in English and stays usable.
+
+## The other languages — from Bun, and to Bun
+
+`run_language(language, code, args?, timeout?)` runs a piece of another
+language and answers a dictionary: `ok`, `status`, `stdout`, `stderr`,
+`build_failed`, `seconds`.
+
+```bun
+let answer = run_language("python", "print(6 * 7)")
+print(answer["stdout"])
+```
+
+Twenty-three languages are wired: python, javascript, bash, sh, ruby,
+perl, php, lua, tcl, r, elixir, dart, julia, haskell, awk, sed, c, cpp,
+rust, go, java, fortran, zig. A compiled language is built once and the
+build is cached by the SHA-256 of the source.
+
+## The reverse engineer — any binary, any language
+
+`bun reverse <binary> [procedure]` and the `bun:rea` stack put
+[REA](https://github.com/morluto/rea) behind Bun: the disassembler reads
+the binary, Bun asks the questions.
+
+```bun
+import { overview, decompile } from "bun:rea"
+print(overview("program")["normalized_result.procedure_count"])
+print(decompile("program", "calc"))
+```
+
+The language of the binary does not matter: ELF, PE or Mach-O; C, C++,
+Rust, Go, Zig or a stripped release build.
+
+## Why five engines
+
+An interpreter is not a slow compiler. The compiler pays the compile
+cost on every change; the interpreter pays the walk cost on every run.
+Bun ships both, so a line changes in milliseconds while the program is
+being written and the finished program runs on the C backend.
+`tools/bench_engines.py` measures the gap on one workload; the numbers
+are in `docs/reference/engines.md`.

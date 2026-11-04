@@ -1,0 +1,28 @@
+// Reverse engineer a binary of any language, from Bun.
+// Run: bun examples/reverse.bun <path-to-binary> [procedure]
+//
+// The binary is analysed by REA (Ghidra underneath); the language it was
+// written in does not matter.
+
+import { overview, functions, decompile } from "bun:rea"
+
+let args = args()
+if args.len() < 1 {
+    print("usage: bun examples/reverse.bun <binary> [procedure]")
+    exit(2)
+}
+
+let path = args[0]
+let look = overview(path)
+if look == null {
+    print("could not analyse " + path)
+    exit(1)
+}
+
+print("file: " + str(look["subject.name"]))
+print("procedures: " + str(look["normalized_result.procedure_count"]))
+print("strings: " + str(look["normalized_result.string_count"]))
+
+if args.len() > 1 {
+    print(decompile(path, args[1]))
+}

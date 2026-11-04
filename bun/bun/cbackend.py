@@ -118,6 +118,9 @@ LANGUAGE_BUILTINS = frozenset([
     "starts_with", "ends_with", "substring", "index_of", "split", "join",
     "replace", "trim", "lower", "upper",
     "Ok", "Err", "is_ok", "is_err",
+    # The interop pair needs a host interpreter, so the C backend knows
+    # the names but refuses them with a clear message.
+    "run_language", "installed_languages",
 ])
 
 

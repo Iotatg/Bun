@@ -1,0 +1,24 @@
+// The same program in another human language. Run with:
+//   bun --lang hi examples/languages.bun
+//   bun --lang es examples/languages.bun
+//   bun --lang auto examples/languages.bun
+//
+// The keywords change; the library does not: print stays print.
+
+संरचना Person {
+    name: string,
+    age: int
+}
+
+काम greet(p) {
+    लौटो "नमस्ते " + p.name
+}
+
+मानी p = Person("Asha", 21)
+print(greet(p))
+
+अगर p.age >= 18 {
+    print("adult")
+} अन्यथा {
+    print("minor")
+}

@@ -455,7 +455,7 @@ _RAW["or"] = ("ଓଡ଼ିଆ Odia", "let=ରଖ var=ବଦଳାଅ fn=କା�
 _RAW["as"] = ("অসমীয়া Assamese", "let=ৰাখ var=সলাও fn=কাম if=যদি else=নহলে while=যেতিয়া for=প্ৰতি in=ত return=ঘূৰি true=সঁচা false=মিছা null=ৰিক্ত and=আৰু or=অথবা not=নহয়")
 _RAW["ne"] = ("नेपाली Nepali", "let=राख var=बदल fn=काम if=यदि else=अन्यथा while=सम्म for=प्रत्येक in=मा return=फर्क true=साँचो false=झूठो null=खाली and=र or=वा not=होइन")
 _RAW["si"] = ("සිංහල Sinhala", "let=තියන්න var=වෙනස්කරන්න fn=වැඩ if=නම් else=නැත්නම් while=අතරතුර for=සඳහා in=තුළ return=ආපසු true=ඇත්ත false=බොරුව null=හිස් and=සහ or=හෝ not=නැත")
-_RAW["sd"] = ("سنڌي Sindhi", "let=رکھ var=بدل fn=ڪم if=جيڪڏهن else=ٻيصورت while=جڏهن for=هر in=۾ return=موٽ true=سچ false=ڪوڙ null=خالي and=۽ or=يا not=نه")
+_RAW["sd"] = ("سنڌي Sindhi", "let=رکھ var=بدل fn=ڪم if=جيڪڏهن else=ٻيصورت while=جڏهن for=هر in=اندر return=موٽ true=سچ false=ڪوڙ null=خالي and=۽ or=يا not=نه")
 _RAW["sa"] = ("संस्कृतम् Sanskrit", "let=स्थापय var=परिवर्तय fn=कर्म if=चेत् else=अन्यथा while=यावत् for=प्रति in=अन्तर्गत return=प्रत्यर्पय true=सत्यम् false=असत्यम् null=रिक्तम् and=च or=वा not=न")
 _RAW["be"] = ("Беларуская Belarusian", "let=няхай var=змяні fn=функцыя if=калі else=інакше while=пакуль for=для in=у return=вярні true=істина false=лож null=пуста and=і or=або not=не")
 _RAW["sl"] = ("Slovenščina Slovenian", "let=naj var=spremeni fn=funkcija if=če else=sicer while=dokler for=za in=v return=vrni true=res false=laž null=prazno and=in or=ali not=ne")
@@ -504,18 +504,85 @@ _RAW["ti"] = ("ትግርኛ Tigrinya", "let=ተቐምጥ var=ቀይር fn=ሥራ
 _RAW["sm"] = ("Gagana Sāmoa Samoan", "let=tuu var=sui fn=galuega if=afai else=aeleai while=taimi for=mo in=i return=toefoi true=moni false=sese null=gaogao and=ma or=poo not=leai")
 _RAW["jv"] = ("Basa Jawa Javanese", "let=pasang var=owahi fn=gawe if=menawa else=liyane while=nalika for=kanggo in=ing return=bali true=bener false=salah null=kosong and=lan or=utawa not=ora")
 _RAW["su"] = ("Basa Sunda Sundanese", "let=pasang var=robah fn=gawean if=lamun else=sejenna while=mangsa for=bari in=di return=mulang true=bener false=salah null=kosong and=jeung or=atanapi not=henteu")
-_RAW["ceb"] = ("Cebuano Binisaya", "let=ibutang var=ilisan fn=buhat if=kon else=kungdili while= samtang for=alang in=sa return=balik true=tinuod false=sayop null=walay and=ug or=o not=dili")
+_RAW["ceb"] = ("Cebuano Binisaya", "let=ibutang var=ilisan fn=buhat if=kon else=kungdili while=samtang for=alang in=sa return=balik true=tinuod false=sayop null=walay and=ug or=o not=dili")
 
 _RAW["ee"] = ("Eʋegbe Ewe", "let=de var=tɔtrɔ fn=dɔwɔwɔ if=ne else=elala while=nee for=na in=me return=trɔ true=nyate false=meku null=dzeame and=eye or=alo not=meleo")
 _RAW["st"] = ("Sesotho Southern Sotho", "let=beha var=fetola fn=mosebetsi if=haeba else=eseng while=ha for=bakengsa in=ka return=khutlisa true=nnete false=mafele null=senang and=le or=kapa not=eseng")
 _RAW["tn"] = ("Setswana Tswana", "let=baya var=fetola fn=tiro if=fa else=eseng while=nako for=ka in=mo return=boelela true=boammaaruri false=bofodi null=sepe and=le or=kapa not=ga")
 _RAW["ts"] = ("Xitsonga Tsonga", "let=vekela var=cinca fn=nzigetiyo if=loko else=kumbe while=nkarhi for=eka in=ka return=vuyela true=nkoka false=miholo null=nhova and=ni or=kumbe not=hinkwavo")
-_RAW["ve"] = ("Tshivenḓa Venda", "let=vhea var=shandukisa fn=mushumo if=arali else=nanga while=tshifhinga for=kha in=ha return=vhusa true=zwavhudi false=zwi_si→zwisi null=tshisali and=na or=kana not=si")
-_RAW["kg"] = ("Kikongo Kongo", "let=vanda var=tambula fn=kisalu if=kana else=kokve while=ntangu for=ba in=na return=vutuka true=kikumi? kiezolo? use kiese? Simplify: ntoma=true false=ve null=koke and=ye or=to ve=not")
+_RAW["ve"] = ("Tshivenḓa Venda", "let=vhea var=shandukisa fn=mushumo if=arali else=nanga while=tshifhinga for=kha in=ha return=vhusa true=zwavhudi false=zwisi null=tshisali and=na or=kana not=si")
+_RAW["kg"] = ("Kikongo Kongo", "let=vanda var=tambula fn=kisalu if=kana else=kokve while=ntangu for=ba in=na return=vutuka true=ntoma false=ve null=koke and=ye or=to not=ka")
 _RAW["sn"] = ("chiShona Shona", "let=isa var=shandura fn=basa if=kana else=kanaunge while=nguva for=pase in=pa return=dzoka true=chokwadi false=nhema null=chisinachinhu and=ne or=kana not=kwete")
 _RAW["mi"] = ("Te Reo Māori Māori", "let=whakatau var=huri fn=mahi if=mena else=kaore while=iaia for=mo in=roto return=hoki true=pono false=teka null=kore and=me or=ranei not=ehara")
 _RAW["haw"] = ("ʻŌlelo Hawaiʻi Hawaiian", "let=hoonoho var=loli fn=hana if=ina else=aiole while=inamana for=no in=iloko return=hoi true=oiaioo false=hewa null=ole and=a or=paha not=aole")
 _RAW["la"] = ("Latina Latin", "let=esto var=mute fn=munus if=si else=alioquin while=dum for=per in=in return=redde true=verum false=falsum null=inane and=et or=aut not=non")
+
+# The type-system words (struct/enum/impl/protocol) arrived after the packs,
+# so they live in their own table: a pack may translate them, and a pack that
+# does not simply keeps the English word.
+_TYPE_WORDS = {
+    "hinglish": ("dhancha", "soochi", "lagao", "niyam"),
+    "hi": ("संरचना", "गणना", "कार्यान्वयन", "प्रोटोकॉल"),
+    "ur": ("ڈھانچہ", "فہرست", "نفاذ", "ضابطہ"),
+    "bn": ("গঠন", "গণনা", "বাস্তবায়ন", "প্রোটোকল"),
+    "ta": ("அமைப்பு", "கணக்கு", "செயலாக்கம்", "நெறிமுறை"),
+    "te": ("నిర్మాణం", "గణన", "అమలు", "ప్రోటోకాల్"),
+    "ml": ("ഘടന", "ഗണന", "നടപ്പാക്കൽ", "പ്രോട്ടോക്കോൾ"),
+    "kn": ("ರಚನೆ", "ಎಣಿಕೆ", "ಜಾರಿ", "ಪ್ರೋಟೋಕಾಲ್"),
+    "mr": ("रचना", "गणना", "अंमल", "प्रोटोकॉल"),
+    "gu": ("રચના", "ગણતરી", "અમલ", "પ્રોટોકોલ"),
+    "pa": ("ਢਾਂਚਾ", "ਗਿਣਤੀ", "ਲਾਗੂ", "ਪ੍ਰੋਟੋਕੋਲ"),
+    "es": ("estructura", "enumeracion", "implementa", "protocolo"),
+    "fr": ("structure", "enumeration", "implante", "protocole"),
+    "de": ("struktur", "aufzaehlung", "umsetzung", "protokoll"),
+    "pt": ("estrutura", "enumeracao", "implementa", "protocolo"),
+    "it": ("struttura", "enumerazione", "implementa", "protocollo"),
+    "ru": ("структура", "перечисление", "реализация", "протокол"),
+    "ar": ("هيكل", "تعداد", "تنفيذ", "بروتوكول"),
+    "zh": ("结构", "枚举", "实现", "协议"),
+    "zh_tw": ("結構", "列舉", "實作", "協定"),
+    "ja": ("構造", "列挙", "実装", "プロトコル"),
+    "ko": ("구조", "열거", "구현", "프로토콜"),
+    "id": ("struktur", "enumerasi", "implementasi", "protokol"),
+    "tr": ("yapi", "sayim", "uygulama", "protokol"),
+    "vi": ("cau_truc", "liet_ke", "thuc_thi", "giao_thuc"),
+    "th": ("โครงสร้าง", "การแจงนับ", "การนำไปใช้", "โปรโตคอล"),
+    "pl": ("struktura", "wyliczenie", "implementacja", "protokol"),
+    "nl": ("structuur", "opsomming", "implementatie", "protocol"),
+    "fa": ("ساختار", "شمارش", "پیادهسازی", "پروتکل"),
+    "he": ("מבנה", "מנייה", "מימוש", "פרוטוקול"),
+    "sv": ("struktur", "upprakning", "implementering", "protokoll"),
+    "uk": ("структура", "перелік", "реалізація", "протокол"),
+    "el": ("δομή", "απαρίθμηση", "υλοποίηση", "πρωτόκολλο"),
+    "af": ("struktuur", "opsomming", "implementasie", "protokol"),
+    "bg": ("структура", "изброяване", "реализация", "протокол"),
+    "ca": ("estructura", "enumeracio", "implementacio", "protocol"),
+    "cs": ("struktura", "vycet", "implementace", "protokol"),
+    "da": ("struktur", "optaelling", "implementering", "protokol"),
+    "eo": ("strukturo", "enumeracio", "implemento", "protokolo"),
+    "et": ("struktuur", "loend", "teostus", "protokoll"),
+    "fi": ("rakenne", "luettelo", "toteutus", "protokolla"),
+    "hr": ("struktura", "nabrajanje", "provedba", "protokol"),
+    "hu": ("szerkezet", "felsorolas", "megvalositas", "protokoll"),
+    "is": ("bygging", "talning", "framkvaemd", "samskiptaregla"),
+    "lt": ("struktura", "sarasas", "igyvendinimas", "protokolas"),
+    "lv": ("struktura", "uzskaitijums", "ieviesana", "protokols"),
+    "no": ("struktur", "oppramsing", "implementering", "protokoll"),
+    "ro": ("structura", "enumerare", "implementare", "protocol"),
+    "sk": ("struktura", "vycet", "implementacia", "protokol"),
+    "sl": ("struktura", "nastevanje", "izvedba", "protokol"),
+    "sr": ("структура", "набрајање", "примена", "протокол"),
+    "sw": ("muundo", "orodha", "utekelezaji", "itifaki"),
+    "tl": ("istruktura", "enumerasyon", "pagpapatupad", "protokol"),
+    "ms": ("struktur", "penghitungan", "pelaksanaan", "protokol"),
+    "az": ("qurulus", "sayim", "tetbiq", "protokol"),
+    "ka": ("სტრუქტურა", "ჩამოთვლა", "განხორციელება", "ოქმი"),
+    "hy": ("կառուցվածք", "թվարկում", "իրականացում", "արձանագրություն"),
+    "uz": ("tuzilma", "sanov", "amalga", "protokol"),
+    "kk": ("құрылым", "санама", "орындалуы", "хаттама"),
+}
+
+_TYPE_SLOTS = ("struct", "enum", "impl", "protocol")
 
 _CACHE = {}
 
@@ -526,7 +593,15 @@ def pack(lang):
         entry = _RAW.get(lang)
         if entry is None:
             raise KeyError("unknown language pack: %s" % lang)
-        _CACHE[lang] = (entry[0], parse_pack(entry[1]))
+        table = parse_pack(entry[1])
+        words = _TYPE_WORDS.get(lang)
+        if words:
+            taken = set(table.values())
+            for slot, word in zip(_TYPE_SLOTS, words):
+                if word and word not in taken:
+                    table[slot] = word
+                    taken.add(word)
+        _CACHE[lang] = (entry[0], table)
     return _CACHE[lang]
 
 
