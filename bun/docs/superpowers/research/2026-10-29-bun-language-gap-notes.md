@@ -14,6 +14,17 @@ records:
 - `dict.values()` exists in the language; `dict.items()` does not.
 - The list of the builtins holds 130 names, not 153.
 
+> **Update (namespace imports):** the table below is kept as the historical
+> record of 2026-10-29, but item 4 of section 7 is now implemented.
+> `import * as ns from "path"` works on the tree, vm, register (both tiers)
+> and self-hosted front ends, with static checking of namespace fields and
+> methods. The C backend refuses it by name rather than miscompiling it.
+> See `README.md` → Modules, `docs/reference/compatibility.md` → §9, and
+> `tests/test_namespace_import.py`. Several other syntax rows in section 1
+> are also stale: `+=`/`++`/`--`/`??`/match-expression landed in Phase 26 and
+> `map`/`filter`/`reduce`/`find`/`items()`/`len(dict)` in Phase 27 (see the
+> README roadmap). No claim in this report was silently changed.
+
 The report is kept as it was written, in the language it was written in.
 
 ---

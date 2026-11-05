@@ -200,13 +200,29 @@ carries the same hint in `data.hint` of the error.
 
 | Python | Bun |
 |--------|-----|
-| `import os` | `import { read_file } from "./fs.bun"` |
+| `import os` | `import * as fs from "./fs.bun"` |
 | `from x import y` | `import { y } from "./x.bun"` |
 | `__all__` | `export` |
 
-An import always names the symbols it takes. There is no `import x` that
-only runs the module, because a module without an import statement is a
+An import names what it takes. `import { a, b } from "path"` binds the
+named exports, and `import * as ns from "path"` binds one namespace whose
+exports are reached as `ns.a` and `ns.b`. There is no `import x` that only
+runs the module, because a module without an import statement is a
 statement that has no effect.
+
+```bun
+import * as m from "./math.bun"
+print(m.add(2, 3))
+print(m.pi)
+```
+
+A namespace is one binding, not the exports flattened into the scope: two
+modules may export the same name under two aliases without colliding. The
+checker knows the exports of a namespace, so an unknown field or method,
+a call with the wrong number of arguments, and an assignment to a namespace
+field are all errors before the program starts. Namespace imports work
+under every engine and the self-hosted front end; the C backend refuses
+them by name.
 
 A path is always relative and always names a file. `./x.bun` is a file in
 the same directory, `../x.bun` is a file one directory up. An absolute

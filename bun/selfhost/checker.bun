@@ -447,7 +447,7 @@ fn copy_scope(scope) {
 }
 
 fn make_state(base_dir) {
-    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "enums": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": []}
+    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "enums": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": [], "namespace_types": {}}
 }
 
 fn check_annotation(state, name, node) {
@@ -915,6 +915,9 @@ fn collect_module_names(state, statements) {
                 names[imported[k]] = true
                 k = k + 1
             }
+            if statement["alias"] != null {
+                names[statement["alias"]] = true
+            }
         }
         i = i + 1
     }
@@ -936,6 +939,12 @@ fn collect_bound_names(node, names) {
     let kind = node["kind"]
     if kind == "LetStmt" {
         names[node["name"]] = true
+        return
+    }
+    if kind == "ImportStmt" {
+        if node["alias"] != null {
+            names[node["alias"]] = true
+        }
         return
     }
     if kind == "FnDecl" {
@@ -1464,6 +1473,10 @@ fn match_expr_type(state, node, scope) {
 
 // Check the write of a field of a struct.
 fn check_field_assign(state, attr, obj_type, node, scope) {
+    if state["namespace_types"].has(obj_type) {
+        let entry = state["namespace_types"][obj_type]
+        fail("cannot assign to a field of the module namespace '" + entry["path"] + "'", attr)
+    }
     if obj_type == "any" {
         return
     }
@@ -1596,6 +1609,20 @@ fn method_call(state, node, scope) {
     while i < args.len() {
         arg_types.push(check_expr(state, args[i], scope))
         i = i + 1
+    }
+    if state["namespace_types"].has(recv_type) {
+        let entry = state["namespace_types"][recv_type]
+        if !entry["exports"].has(node["method"]) {
+            fail("module '" + entry["path"] + "' does not export '" + node["method"] + "'", node)
+        }
+        let binding = entry["exports"][node["method"]]
+        if binding["type"] == "fn" and binding["params"] != null {
+            check_call_args(state, node["method"], binding["params"], arg_types, {}, node)
+        }
+        if binding["return_type"] == null {
+            return "any"
+        }
+        return binding["return_type"]
     }
     if recv_type == "any" or recv_type == "struct" {
         return "any"
@@ -2257,6 +2284,17 @@ fn check_expr(state, node, scope) {
             return enum_variant_type(variant, node)
         }
         let obj_type = check_expr(state, node["object"], scope)
+        if state["namespace_types"].has(obj_type) {
+            let entry = state["namespace_types"][obj_type]
+            if !entry["exports"].has(node["name"]) {
+                fail("module '" + entry["path"] + "' does not export '" + node["name"] + "'", node)
+            }
+            let binding = entry["exports"][node["name"]]
+            if binding["type"] == null {
+                return "any"
+            }
+            return binding["type"]
+        }
         if obj_type == "any" or obj_type == "struct" {
             return "any"
         }
@@ -2628,6 +2666,17 @@ fn module_exports(state, path, node) {
 
 fn check_import(state, node, scope) {
     let exports = module_exports(state, node["path"], node)
+    if node["alias"] != null {
+        // A namespace gets the synthetic type "module:<path>" and its
+        // export table is kept in the state. That lets the checker verify
+        // `ns.name` and `ns.name(...)` with exactly the same message as
+        // the Python checker, instead of treating the namespace as `any`
+        // and leaving the error to the run time.
+        let ns_type = "module:" + node["path"]
+        state["namespace_types"][ns_type] = {"path": node["path"], "exports": exports}
+        scope[node["alias"]] = make_immutable_binding(ns_type)
+        return
+    }
     var i = 0
     while i < node["names"].len() {
         let name = node["names"][i]

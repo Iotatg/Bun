@@ -409,6 +409,20 @@ class Parser:
 
     def _import_stmt(self):
         kw = self._advance()
+        # A namespace import binds every export of the module under one
+        # name, so that a module with many exports does not force every
+        # one of them to be renamed by hand at the call site.
+        if self._match(TokenType.STAR):
+            self._expect(TokenType.AS,
+                         "expected 'as' after '*' in a namespace import")
+            alias = self._expect(
+                TokenType.IDENT,
+                "expected a namespace name after 'as'").value
+            self._expect(TokenType.FROM,
+                         "expected 'from' after the namespace name")
+            path = self._expect(TokenType.STRING,
+                                "expected module path string")
+            return ast.ImportStmt([], path.value, kw.line, kw.col, alias)
         self._expect(TokenType.LBRACE, "expected '{' after 'import'")
         names = []
         if not self._check(TokenType.RBRACE):

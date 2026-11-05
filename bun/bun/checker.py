@@ -34,6 +34,10 @@ class Checker:
         self.return_stack = []
         self.module_cache = {}
         self.module_loading = set()
+        # The export table of every module namespace, keyed by the type
+        # name "module:<path>". It lets the checker reject `ns.typo`
+        # before the program runs, the way it rejects an unknown field.
+        self.namespace_types = {}
         self.loop_depth = 0
         self.module_names = set()
         self.name_stack = []
@@ -81,6 +85,8 @@ class Checker:
             elif isinstance(statement, ast.ImportStmt):
                 for name in statement.names:
                     self.module_names.add(name)
+                if statement.alias is not None:
+                    self.module_names.add(statement.alias)
 
     def _bound_names(self, statements):
         """Collect the names a block binds.
@@ -97,6 +103,9 @@ class Checker:
     def _collect_bound_names(self, node, names):
         if isinstance(node, ast.LetStmt):
             names.add(node.name)
+        elif isinstance(node, ast.ImportStmt):
+            if node.alias is not None:
+                names.add(node.alias)
         elif isinstance(node, ast.FnDecl):
             names.add(node.name)
         elif isinstance(node, ast.StructDecl):
@@ -829,6 +838,10 @@ class Checker:
         return answer if answer is not None else types.ANY
 
     def _check_field_assign(self, attr, obj_type, node, scope):
+        if isinstance(obj_type, str) and obj_type.startswith("module:"):
+            raise BunTypeError(
+                "cannot assign to a field of the module namespace '%s'"
+                % obj_type[len("module:"):], attr.line, attr.col)
         if obj_type == types.ANY:
             return
         struct = self.structs.get(obj_type)
@@ -860,6 +873,14 @@ class Checker:
 
     def _import(self, node, scope):
         exports = self._module_exports(node.path, node)
+        if node.alias is not None:
+            # One name binds the whole module. The synthetic type carries
+            # the path, so `_expr` can look up the exports of `ns.name`
+            # and refuse a name the module does not export.
+            ns_type = "module:" + node.path
+            self.namespace_types[ns_type] = exports
+            scope[node.alias] = Binding(ns_type, None, None, False)
+            return
         for name in node.names:
             if name not in exports:
                 raise BunTypeError(
@@ -1001,6 +1022,14 @@ class Checker:
             if variant is not None:
                 return self._enum_variant_type(variant, node)
             obj_type = self._expr(node.object, scope)
+            if isinstance(obj_type, str) and obj_type.startswith("module:"):
+                path = obj_type[len("module:"):]
+                exports = self.namespace_types.get(obj_type, {})
+                if node.name not in exports:
+                    raise BunTypeError(
+                        "module '%s' does not export '%s'" % (path, node.name),
+                        node.line, node.col)
+                return exports[node.name].type or types.ANY
             if obj_type == types.ANY:
                 return types.ANY
             if obj_type == types.STRUCT:
@@ -1397,6 +1426,21 @@ class Checker:
                                         for arg in node.args])
         recv_type = self._expr(node.receiver, scope)
         arg_types = [self._expr(arg, scope) for arg in node.args]
+        if isinstance(recv_type, str) and recv_type.startswith("module:"):
+            # `ns.name(...)` is a method call in the grammar, but the
+            # export is called with no receiver. Check the name and the
+            # arity here, before the program runs.
+            path = recv_type[len("module:"):]
+            exports = self.namespace_types.get(recv_type, {})
+            if node.method not in exports:
+                raise BunTypeError(
+                    "module '%s' does not export '%s'" % (path, node.method),
+                    node.line, node.col)
+            binding = exports[node.method]
+            if binding.type == types.FN and binding.params is not None:
+                self._check_call_args(node.method, binding.params,
+                                      arg_types, {}, node)
+            return binding.return_type or types.ANY
         if recv_type in (types.ANY, types.STRUCT):
             return types.ANY
         container = CONTAINER_METHODS.get(recv_type)

@@ -5,8 +5,8 @@ from .ints import check as check_int
 from .methods import LIST_METHODS, SECRET_METHODS, STRING_METHODS
 from .set import BunSet, SET_METHODS
 from .values import (
-    BunSecret, BunStruct, copy_value, is_number, is_truthy, stringify,
-    values_equal,
+    Builtin, BunFunction, BunSecret, BunStruct, copy_value, is_number,
+    is_truthy, stringify, values_equal,
 )
 
 STRUCT_METHODS = {}
@@ -34,6 +34,63 @@ def get_field(obj, name):
         raise BunRuntimeError(
             "unknown field '%s' on %s" % (name, obj.type_name))
     return obj.fields[name]
+
+
+def unpack_import(arg):
+    """The operand of an import instruction.
+
+    Both the Python compiler and the self-hosted compiler now emit the
+    three-element form ``(path, names, alias)``, where ``alias`` is the
+    namespace name or ``None`` for a plain import. The two-element form
+    ``(path, names)`` is the original one, kept here so that code compiled
+    before namespace imports still runs.
+    """
+    if len(arg) >= 3:
+        return arg[0], arg[1], arg[2]
+    return arg[0], arg[1], None
+
+
+class NamespaceMethod:
+    """An exported function reached through ``ns.name(...)``.
+
+    A namespace is a struct, so in the grammar ``ns.name(...)`` is a
+    method call. Every engine passes ``method_call`` a callback that runs
+    a function value; this handler uses that callback, with no receiver
+    prepended, so no engine needs a special case and all four keep the
+    same semantics.
+    """
+
+    needs_call = True
+
+    def __init__(self, function):
+        self.function = function
+
+    def __call__(self, receiver, args, call):
+        return call(self.function, args)
+
+
+def module_namespace(exports, path):
+    """Bind the exports of a module as one read-only struct value.
+
+    The type name carries the module path, so two modules with an export
+    of the same name never share a method table. A namespace is a struct,
+    so ``ns.name`` uses exactly the same field read as any other struct
+    and every engine builds the same value. Fields are copied for the
+    same reason a struct constructor copies its fields: a value type
+    must not alias the module's own bindings.
+    """
+    fields = {name: copy_value(value) for name, value in exports.items()}
+    type_name = "module:" + path
+    table = STRUCT_METHODS.setdefault(type_name, {})
+    table.clear()
+    for name, value in fields.items():
+        if isinstance(value, (BunFunction, Builtin)):
+            table[name] = NamespaceMethod(value)
+    # The dispatch cache is keyed by (type, method); a fresh import may
+    # bring fresh function values, so old entries must not survive.
+    for key in [key for key in _METHOD_DISPATCH if key[0] == type_name]:
+        del _METHOD_DISPATCH[key]
+    return BunStruct(type_name, fields, list(fields.keys()))
 
 
 def set_field(obj, name, value):

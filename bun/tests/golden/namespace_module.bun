@@ -1,0 +1,11 @@
+// A helper module for namespace_import.bun. It has no .out file, so the
+// golden harness treats it as a module, not as a program.
+export fn add(a, b) {
+    return a + b
+}
+
+export let greeting = "namaste"
+
+export fn scale(x) {
+    return x * 3
+}

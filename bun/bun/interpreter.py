@@ -295,11 +295,16 @@ class Interpreter:
             self._register_impl(node, env)
         elif isinstance(node, ast.ImportStmt):
             exports = self._load_module(node.path, node.line, node.col, env)
-            for name in node.names:
-                if name not in exports:
-                    raise BunRuntimeError(
-                        "module '%s' does not export '%s'" % (node.path, name))
-                env.define(name, exports[name], False)
+            if node.alias is not None:
+                env.define(node.alias,
+                           ops.module_namespace(exports, node.path), False)
+            else:
+                for name in node.names:
+                    if name not in exports:
+                        raise BunRuntimeError(
+                            "module '%s' does not export '%s'"
+                            % (node.path, name))
+                    env.define(name, exports[name], False)
         elif isinstance(node, ast.ReturnStmt):
             value = self.evaluate(node.value, env) if node.value is not None else None
             raise ReturnSignal(copy_value(value), node.line, node.col)

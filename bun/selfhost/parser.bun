@@ -494,6 +494,15 @@ fn type_param_list(st) {
 
 fn import_stmt(st) {
     let kw = advance(st)
+    // `import * as ns from "p"` binds every export under one name. The
+    // alias is null for a plain import, so the two forms share one node.
+    if match_token(st, ["STAR"]) != null {
+        expect(st, "AS", "expected 'as' after '*' in a namespace import")
+        let alias = expect(st, "IDENT", "expected a namespace name after 'as'")
+        expect(st, "FROM", "expected 'from' after the namespace name")
+        let path = expect(st, "STRING", "expected module path string")
+        return {"kind": "ImportStmt", "names": [], "alias": alias["value"], "path": path["value"], "line": kw["line"], "col": kw["col"]}
+    }
     expect(st, "LBRACE", "expected '{' after 'import'")
     let names = []
     if !check(st, "RBRACE") {
@@ -505,7 +514,7 @@ fn import_stmt(st) {
     expect(st, "RBRACE", "expected '}' after import names")
     expect(st, "FROM", "expected 'from' after import list")
     let path = expect(st, "STRING", "expected module path string")
-    return {"kind": "ImportStmt", "names": names, "path": path["value"], "line": kw["line"], "col": kw["col"]}
+    return {"kind": "ImportStmt", "names": names, "alias": null, "path": path["value"], "line": kw["line"], "col": kw["col"]}
 }
 
 fn exported_decl(st) {

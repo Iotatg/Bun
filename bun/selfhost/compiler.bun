@@ -731,7 +731,7 @@ fn compile_statement(st, node, code) {
         return
     }
     if kind == "ImportStmt" {
-        emit(code, "IMPORT", [node["path"], node["names"]], node)
+        emit(code, "IMPORT", [node["path"], node["names"], node["alias"]], node)
         return
     }
     if kind == "ReturnStmt" {

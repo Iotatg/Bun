@@ -1,0 +1,9 @@
+// A namespace import binds every export of a module under one name.
+// The C backend refuses this construct by name; the other engines and
+// both tiers print exactly the bytes below.
+import * as m from "./namespace_module.bun"
+
+print(m.add(2, 3))
+print(m.greeting)
+print(m.scale(7))
+print(m.add(10, 5))

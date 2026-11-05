@@ -186,9 +186,28 @@ def _collect_names(node, reads, defines):
     if isinstance(node, ast.ImportStmt):
         for name in node.names:
             defines.add(name)
+        if node.alias is not None:
+            defines.add(node.alias)
         return
     for child in _children(node):
         _collect_names(child, reads, defines)
+
+
+def _refuse_namespace_imports(node):
+    """A namespace import is refused before any C is written.
+
+    The backend links imports by name at compile time, so it cannot build
+    the single struct value that binds all exports of a module. Refusing
+    by name is the rule of this backend; silently importing nothing would
+    be worse.
+    """
+    from . import ast
+    if isinstance(node, ast.ImportStmt) and node.alias is not None:
+        raise CBackendError(
+            "the C backend does not support namespace imports "
+            "('import * as ns from ...')", node.line, node.col)
+    for child in _children(node):
+        _refuse_namespace_imports(child)
 
 
 def check_builtins(program):
@@ -198,6 +217,7 @@ def check_builtins(program):
     reads = {}
     defines = set()
     for statement in program.statements:
+        _refuse_namespace_imports(statement)
         _collect_names(statement, reads, defines)
     for name in sorted(set(reads) & LANGUAGE_BUILTINS):
         if name in defines:
@@ -1480,7 +1500,15 @@ class CEmitter:
                     % (a, a, self.text_expr(spec), self.text_expr(conv),
                        self.text_expr(source_text))]
         if op == regcode.IMPORT:
-            path, names = consts[a]
+            arg = consts[a]
+            path, names, alias = (
+                (arg[0], arg[1], arg[2]) if len(arg) >= 3
+                else (arg[0], arg[1], None))
+            if alias is not None:
+                raise CBackendError(
+                    "the C backend does not support namespace imports "
+                    "('import * as ns from ...')",
+                    *self.position_of(code, position))
             number = self.module_number(path, code)
             lines = ["    {",
                      "        BunModule *module = bun_module_%d();" % number]

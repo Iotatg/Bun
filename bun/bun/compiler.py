@@ -365,7 +365,8 @@ class Compiler:
                      (node.type_name, method.name,
                       self.compile_function(method)), node)
         elif isinstance(node, ast.ImportStmt):
-            emit(code, OP_IMPORT, (node.path, list(node.names)), node)
+            emit(code, OP_IMPORT,
+                 (node.path, list(node.names), node.alias), node)
         elif isinstance(node, ast.ReturnStmt):
             if node.value is not None:
                 self.compile_expr(node.value, code)

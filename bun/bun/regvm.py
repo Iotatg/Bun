@@ -797,7 +797,7 @@ class RegisterVM:
             frame.iterators.pop()
 
     def _op_import(self, frame, a, b, c):
-        path, names = frame.consts[a]
+        path, names, alias = ops.unpack_import(frame.consts[a])
         try:
             full_path = resolve_module_path(
                 path, self._env_base_dir(frame.env, frame.base_dir))
@@ -811,6 +811,9 @@ class RegisterVM:
             if error.line == 0:
                 error.line, error.col = b, c
             raise
+        if alias is not None:
+            frame.env.define(alias, ops.module_namespace(exports, path), False)
+            return
         for name in names:
             if name not in exports:
                 raise BunRuntimeError(

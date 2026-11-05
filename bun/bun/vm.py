@@ -773,7 +773,7 @@ class VM:
         return default
 
     def _op_import(self, frame, arg, line, col):
-        path, names = arg
+        path, names, alias = ops.unpack_import(arg)
         try:
             full_path = resolve_module_path(
                 path, self._env_base_dir(frame.env, frame.base_dir))
@@ -787,6 +787,9 @@ class VM:
             if error.line == 0:
                 error.line, error.col = line, col
             raise
+        if alias is not None:
+            frame.env.define(alias, ops.module_namespace(exports, path), False)
+            return
         for name in names:
             if name not in exports:
                 raise BunRuntimeError(

@@ -165,13 +165,36 @@ import { hello, punctuation } from "./greeting"
 print(hello("Bun") + punctuation)
 ```
 
+A module can also be imported as a whole under one name. The exports are
+then reached through the namespace, and nothing is flattened into the
+importing scope:
+
+```bun
+import * as greet from "./greeting"
+
+print(greet.hello("Bun") + greet.punctuation)
+print(greet.punctuation)
+```
+
 Rules:
 - `export` marks module-level `fn`, `let`, or `var` declarations; it is only
   allowed while a module is loading, not in the file you run.
 - Module paths are relative to the importing file (`./` or `../`); the `.bun`
   suffix is optional.
+- `import { a, b } from "path"` binds the named exports directly;
+  `import * as ns from "path"` binds one namespace instead, so exports are
+  read as `ns.name` and called as `ns.name(...)`. Both forms work with a
+  relative path and with a `bun:` module.
+- Namespaces keep exports separate: two modules that export the same name
+  can be imported under two aliases without colliding, and the exports are
+  not added to the importing scope.
 - Each module runs once per program; importers share its state.
-- Imported bindings cannot be reassigned.
+- Imported bindings and namespace fields cannot be reassigned.
+- Both front ends reject an unknown namespace field or method, a call with
+  the wrong number of arguments, and an assignment to a namespace field,
+  before the program runs — with the same message.
+- Namespace imports run on the tree, vm, register (both tiers) and
+  self-hosted front ends; the C backend refuses them by name (see below).
 - Circular imports are an error.
 
 Anonymous functions are expressions, so they can be stored in dicts or passed
@@ -1889,6 +1912,15 @@ name of the builtin or of the construct it does not have:
 ```bash
 $ bun --engine c program.bun
 error: the C backend does not support the builtin 'ffi_load'
+```
+
+A plain `import { a } from "..."` is translated. A namespace import is a
+construct the backend does not have yet, so it is refused by name rather
+than silently miscompiled:
+
+```bash
+$ bun --engine c program.bun
+error: the C backend does not support namespace imports ('import * as ns from ...')
 ```
 
 The `match` of the language is a pattern of the backend too. A case is a

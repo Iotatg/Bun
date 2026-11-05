@@ -480,3 +480,7 @@ class ImportStmt:
     path: str
     line: int = 0
     col: int = 0
+    # `import * as ns from "path"` binds the whole module under one name.
+    # A plain import leaves this as None. Keeping one node means every
+    # engine sees the same statement and no new opcode is needed.
+    alias: str | None = None
