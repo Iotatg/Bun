@@ -74,6 +74,7 @@ let BUILTIN_SIGNATURES = {
     "http_get": [[["string", "dict", "any"], "dict"]],
     "http_post": [[["string", "dict", "string", "any"], "dict"]],
     "http_get_bytes": [[["string", "dict", "any"], "dict"]],
+    "http_post_bytes": [[["string", "dict", "string", "any"], "dict"]],
     "http_post_multipart": [[["string", "dict", "list", "any"], "dict"]],
     "write_bytes": [[["string", "list"], "int"]],
     "read_bytes": [[["string"], "list"]],

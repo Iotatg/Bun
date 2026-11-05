@@ -9,8 +9,7 @@ import os
 
 import pytest
 
-from bun import ast, ops
-from bun.cbackend import CBackendError, check_builtins
+from bun import ast, cbackend, ops
 from bun.checker import Checker
 from bun.cli import run_file, run_source
 from bun.errors import BunTypeError, ParseError
@@ -210,15 +209,19 @@ def test_namespace_value_is_a_struct_with_the_exports():
 def test_c_backend_refuses_namespace_imports_by_name():
     source = 'import * as m from "./m.bun"\nprint(m.greeting)\n'
     program = Parser(Lexer(source).tokenize()).parse()
-    with pytest.raises(CBackendError, match="namespace imports"):
-        check_builtins(program)
+    # `tests/test_cbackend.py` reloads bun.cbackend while testing its build
+    # cache, which replaces the exception class object. Resolve both the
+    # class and the function through the module at call time, so this test
+    # keeps working no matter which order pytest collects the files in.
+    with pytest.raises(cbackend.CBackendError, match="namespace imports"):
+        cbackend.check_builtins(program)
 
 
 def test_c_backend_cli_path_refuses_namespace_imports(tmp_path):
     # The real `--engine c` path, not just the check_builtins helper: the
     # refusal must happen before any C is written or compiled.
     base = fixture(tmp_path)
-    with pytest.raises(CBackendError, match="namespace imports"):
+    with pytest.raises(cbackend.CBackendError, match="namespace imports"):
         run('import * as m from "./m.bun"\nprint(m.add(1, 2))\n',
             base, engine="c")
 
@@ -226,7 +229,7 @@ def test_c_backend_cli_path_refuses_namespace_imports(tmp_path):
 def test_c_backend_accepts_a_plain_import():
     source = 'import { a } from "./m.bun"\nprint(a)\n'
     program = Parser(Lexer(source).tokenize()).parse()
-    check_builtins(program)
+    cbackend.check_builtins(program)
 
 
 def test_selfhost_front_end_agrees(tmp_path, capsys):

@@ -308,6 +308,11 @@ export let DOCS = {
         "summary": "Perform an HTTP GET request and return the raw body.",
         "details": "The result holds the status and the body as a list of byte values.",
     },
+    "http_post_bytes": {
+        "signature": "http_post_bytes(url: string, headers: dict, body: string, timeout: int) -> dict",
+        "summary": "Perform an HTTP POST request and return the raw body.",
+        "details": "The result holds the status and the body as a list of byte values.",
+    },
     "http_post": {
         "signature": "http_post(url: string, headers: dict, body: string, timeout: any) -> dict",
         "summary": "Perform an HTTP POST request and return status and body.",
