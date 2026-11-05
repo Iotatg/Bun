@@ -52,6 +52,7 @@ BUILTIN_SIGNATURES = {
     "http_get": [((STRING, DICT, ANY), DICT)],
     "http_post": [((STRING, DICT, STRING, ANY), DICT)],
     "http_get_bytes": [((STRING, DICT, ANY), DICT)],
+    "http_post_bytes": [((STRING, DICT, STRING, ANY), DICT)],
     "http_post_multipart": [((STRING, DICT, LIST, ANY), DICT)],
     "write_bytes": [((STRING, LIST), INT)],
     "read_bytes": [((STRING,), LIST)],

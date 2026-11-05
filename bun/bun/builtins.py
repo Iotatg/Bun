@@ -328,6 +328,10 @@ def _http_request(method, args, arity, body_index=None):
         result.set("status", error.code)
         result.set("body", payload)
         return result
+    except urllib.error.URLError as error:
+        raise BunRuntimeError("%s() failed: %s" % (method.lower(), error.reason))
+    except OSError as error:
+        raise BunRuntimeError("%s() failed: %s" % (method.lower(), error))
 
 
 def _http_get(args):
@@ -454,6 +458,44 @@ def _bytes_slice(args):
 
 def _http_post(args):
     return _http_request("POST", args, 4, body_index=2)
+
+
+def _http_post_bytes(args):
+    """Post a body and return the response as a list of byte values."""
+    if len(args) != 4:
+        raise BunRuntimeError(
+            "http_post_bytes() expects 4 arguments, got %d" % len(args))
+    url = args[0]
+    headers = args[1]
+    body = args[2]
+    timeout = args[3]
+    if not isinstance(url, str):
+        raise BunRuntimeError("http_post_bytes() expects a string url")
+    if not isinstance(headers, BunDict):
+        raise BunRuntimeError("http_post_bytes() expects a dict of headers")
+    if body is not None and not isinstance(body, str):
+        raise BunRuntimeError("http_post_bytes() expects a string body")
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        raise BunRuntimeError("http_post_bytes() expects a numeric timeout")
+    payload = body.encode("utf-8") if body is not None else None
+    sandbox.check_net_url(url)
+    header_map = {}
+    for key in headers.keys():
+        header_map[str(key)] = stringify(headers.get(key))
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(
+        url, data=payload, headers=header_map, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _bytes_response(response.status, response.read(),
+                                   response.headers)
+    except urllib.error.HTTPError as error:
+        return _bytes_response(error.code, error.read(), error.headers)
+    except urllib.error.URLError as error:
+        raise BunRuntimeError("http_post_bytes() failed: %s" % error.reason)
+    except OSError as error:
+        raise BunRuntimeError("http_post_bytes() failed: %s" % error)
 
 
 def _http_post_multipart(args):
@@ -2146,6 +2188,8 @@ def register_builtins(env, program_args=None):
     env.define("http_post_multipart",
                Builtin("http_post_multipart", _http_post_multipart), False)
     env.define("http_get_bytes", Builtin("http_get_bytes", _http_get_bytes), False)
+    env.define("http_post_bytes",
+               Builtin("http_post_bytes", _http_post_bytes), False)
     env.define("write_bytes", Builtin("write_bytes", _write_bytes), False)
     env.define("read_bytes", Builtin("read_bytes", _read_bytes), False)
     env.define("bytes_slice", Builtin("bytes_slice", _bytes_slice), False)

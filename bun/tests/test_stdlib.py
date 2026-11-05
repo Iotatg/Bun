@@ -146,6 +146,43 @@ def test_http_post(capsys, server):
     assert capsys.readouterr().out == '{"len": 4}\n'
 
 
+def test_http_post_bytes(capsys, server):
+    """A posted body comes back as raw bytes, not as text."""
+    run_source('let r = http_post_bytes("%s/x", {}, "abcd", 5)\n'
+               'print(str(r["status"]))\n'
+               'print(len(r["body"]))\n'
+               'print(r["body"][0])' % server)
+    out = capsys.readouterr().out
+    assert out == "200\n10\n123\n"
+
+
+def test_http_post_bytes_keeps_binary_payload(capsys):
+    """Binary bytes survive the round trip untouched."""
+
+    class Binary(_Handler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", "3")
+            self.end_headers()
+            self.wfile.write(b"\x00\x01\xff")
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Binary)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = "http://127.0.0.1:%d" % httpd.server_address[1]
+        run_source(
+            'let r = http_post_bytes("%s/x", {}, "abcd", 5)\n'
+            'print(len(r["body"]))\n'
+            'print(r["body"][0])\n'
+            'print(r["body"][2])' % url)
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+    assert capsys.readouterr().out == "3\n0\n255\n"
+
+
 def test_http_post_multipart(capsys, server, tmp_path):
     """A multipart body carries the fields and the files."""
     payload = tmp_path / "track.ogg"

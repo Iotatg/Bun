@@ -818,6 +818,11 @@ DOCS = {
         "summary": "Perform an HTTP GET request and return the raw body.",
         "details": "The result holds the status and the body as a list of byte values.",
     },
+    "http_post_bytes": {
+        "signature": "http_post_bytes(url: string, headers: dict, body: string, timeout: int) -> dict",
+        "summary": "Perform an HTTP POST request and return the raw body.",
+        "details": "The result holds the status and the body as a list of byte values.",
+    },
     "bigint_from_bytes": {
         "signature": "bigint_from_bytes(data: list) -> list",
         "summary": "Read a big integer from a little endian byte list.",
