@@ -1,0 +1,59 @@
+// examples/discovery.bun — a short tour of bun:discovery.
+//
+//   bun examples/discovery.bun
+//
+// The long version, with all nine probes and the openai/math cross-checks,
+// is `bun tools/discover.bun`.
+
+import {
+    pi_digits, fx_pi, fx_hex_digits, bbp_hex, machin_search,
+    irrationality_measure, flint_hills, mahler_bounds, packing_density
+} from "bun:discovery"
+
+// 1. A hundred digits of pi, with no floating point in the final answer.
+print("pi (100 places) =", pi_digits(100))
+
+// 2. The same hex digits by two unrelated algorithms.
+print("pi hex (Machin) =", fx_hex_digits(fx_pi(), 16))
+print("pi hex (BBP)    =", bbp_hex(0, 16))
+
+// 3. Formulas for pi/4, searched for and then confirmed exactly.
+//    machin_search returns raw hits, so symmetric pairs appear twice; fold
+//    each pair into one canonical key before printing.
+let hits = machin_search(5, 8, 250, 3)
+var seen = []
+print("Machin-like formulas found:", hits.len())
+for h in hits {
+    let a = str(h["x"]) + ":" + str(h["m"])
+    let b = str(h["y"]) + ":" + str(h["n"])
+    var key = a + "|" + b
+    if h["x"] > h["y"] { key = b + "|" + a }
+
+    var dup = false
+    for s in seen {
+        if s == key { dup = true }
+    }
+    if dup { continue }
+    seen.push(key)
+
+    var sign = "+"
+    if h["n"] < 0 { sign = "-" }
+    var n = h["n"]
+    if n < 0 { n = 0 - n }
+    print("  pi/4 = " + str(h["m"]) + "*atan(1/" + str(h["x"]) + ") " + sign +
+          " " + str(n) + "*atan(1/" + str(h["y"]) + ")   residual: " + str(h["err"]))
+}
+
+// 4. The empirical irrationality exponent of pi.
+let mus = irrationality_measure(6)
+for m in mus {
+    print("  q =", m["q"], " |pi - p/q| =", m["err"], " mu =", m["mu"])
+}
+
+// 5. Why the Flint-Hills series is delicate: 355/113 is close to pi.
+let f = flint_hills(400)
+print("Flint-Hills largest term:", f["max_term"], "at n =", f["max_n"])
+
+// 6. The two Mahler minimizers, and the circle-packing density.
+print("Mahler n=3:", mahler_bounds(3))
+print("pi/(2*sqrt(3)) =", packing_density(20))

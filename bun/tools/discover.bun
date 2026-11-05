@@ -1,0 +1,159 @@
+// tools/discover.bun — independent numerical probes of openai/math claims.
+//
+//   bun tools/discover.bun [path/to/CONTENTS.md]
+//   BUN_MATH_CORPUS=/path/to/CONTENTS.md bun tools/discover.bun
+//
+// Everything below is computed by bun:discovery at run time; no result is
+// hard-coded. The output is a lab notebook, not a proof. See
+// docs/reference/discovery.md for what each probe can and cannot establish.
+
+import {
+    set_precision, precision, pi_digits, fx_pi, fx_str, fx_hex_digits,
+    fx_hex_digits_at, bbp_hex, machin_search, irrationality_measure,
+    liouville_correlation,
+    flint_hills, mahler_bounds, packing_density, corpus_stats,
+    fx_sqrt, fx_int, fx_mul_int, fx_div
+} from "bun:discovery"
+
+let math = ffi_load("math")
+let f_sin = math["sin"]
+
+fn banner(name) {
+    print("")
+    print("==", name, "==")
+}
+
+fn canon(f) {
+    let a = str(f["x"]) + ":" + str(f["m"])
+    let b = str(f["y"]) + ":" + str(f["n"])
+    if f["x"] <= f["y"] { return a + "|" + b }
+    return b + "|" + a
+}
+
+fn abs_int(n) {
+    if n < 0 { return 0 - n }
+    return n
+}
+
+let t0 = now()
+print("bun:discovery — experimental mathematics lab")
+print("openai/math: 721 manuscripts, 373 result families (README)")
+print("all numbers below are computed, not transcribed")
+print("initial fixed-point precision:", precision(), "decimal places")
+
+banner("1. pi at 100 decimal places (Machin, scaled bigints)")
+set_precision(120)
+let pi100 = pi_digits(100)
+print("pi =", pi100)
+print("reference =", "3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679")
+
+banner("2. Two independent paths to the SAME hexadecimal digits of pi")
+let hex_fixed = fx_hex_digits(fx_pi(), 24)
+let hex_bbp = bbp_hex(0, 24)
+print("fixed-point (Machin):", hex_fixed)
+print("BBP spigot (modular):", hex_bbp)
+print("agreement:", hex_fixed == hex_bbp)
+// A much stronger check: cross-verify the 1000th hex digit. BBP reaches it
+// with modular arithmetic only; the fixed-point path needs ~1250 decimals.
+set_precision(1250)
+let pi_hi = fx_pi()
+let hex1000_fixed = fx_hex_digits_at(pi_hi, 1000, 8)
+let hex1000_bbp = bbp_hex(1000, 8)
+print("Machin at hex digit 1000:", hex1000_fixed)
+print("BBP    at hex digit 1000:", hex1000_bbp)
+print("agreement at digit 1000:", hex1000_fixed == hex1000_bbp)
+
+banner("3. Machin-like formulas found by searching in Bun")
+set_precision(50)
+let hits = machin_search(10, 12, 300, 4)
+var seen = []
+var unique = []
+for f in hits {
+    let key = canon(f)
+    var dup = false
+    for s in seen {
+        if s == key { dup = true }
+    }
+    if not dup {
+        seen.push(key)
+        unique.push(f)
+    }
+}
+print("raw hits:", hits.len(), "| distinct after normalisation:", unique.len())
+for f in unique {
+    var sign = "+"
+    if f["n"] < 0 { sign = "-" }
+    print("  pi/4 =", str(f["m"]) + "*atan(1/" + str(f["x"]) + ")", sign,
+          str(abs_int(f["n"])) + "*atan(1/" + str(f["y"]) + ")",
+          "| exact residual:", f["err"])
+}
+print("pi/4 (40 places) =", unique[0]["lhs"])
+
+banner("4. Empirical irrationality exponent of pi (family 017)")
+let mus = irrationality_measure(14)
+print("claim: mu(pi) = 2. Convergents p/q, |pi - p/q|, mu_k:")
+for m in mus {
+    print("  q =", m["q"], " p =", m["p"], " err =", m["err"], " mu =", m["mu"])
+}
+print("NOTE: finite data; the large partial quotient 292 makes k=2 spike.")
+
+banner("5. Liouville two-point correlation (family 007)")
+let lc = liouville_correlation(5000)
+print("claim: C(X) decays with a power-of-log saving. Observed:")
+for c in lc["checkpoints"] {
+    print("  X =", c["N"], " sum =", c["sum"], " C(X) =", c["C"])
+}
+
+banner("6. Flint-Hills series (family 017)")
+let fh = flint_hills(5000)
+print("claim: sum 1/(n^3 sin^2 n) converges (angles in radians).")
+for c in fh["checkpoints"] {
+    print("  N =", c["N"], " partial =", c["partial"],
+          " largest term =", c["max_term"], " at n =", c["max_n"])
+}
+print("sin(355) =", f_sin(355.0), " (355/113 is a convergent of pi)")
+print("NOTE: a double partial sum cannot prove convergence.")
+
+banner("7. Mahler volume products (family 087)")
+print("claim: symmetric min 4^n/n!, general min (n+1)^(n+1)/(n!)^2.")
+for n in range(1, 7) {
+    let b = mahler_bounds(n)
+    print("  n =", n, " symmetric =", b["symmetric_bound"],
+          " general =", b["general_bound"], " ratio =", b["general_over_symmetric"])
+}
+
+banner("8. Cohn-Elkies packing density")
+print("pi/(2*sqrt(3)) =", packing_density(30))
+
+banner("9. Corpus mining (measurements of the clone)")
+
+// Resolve the corpus path without hard-coding this machine's layout:
+//   bun tools/discover.bun /path/to/CONTENTS.md
+//   BUN_MATH_CORPUS=/path/to/CONTENTS.md bun tools/discover.bun
+fn pick_corpus() {
+    let argv = args()
+    if argv.len() > 0 {
+        return argv[0]
+    }
+    let from_env = getenv_or("BUN_MATH_CORPUS", "")
+    if from_env.len() > 0 {
+        return from_env
+    }
+    return "openai-math/CONTENTS.md"
+}
+
+let corpus_path = pick_corpus()
+print("corpus file =", corpus_path)
+let stats = corpus_stats(corpus_path)
+print("bytes =", stats["bytes"], " lines =", stats["lines"])
+print("indexed result families =", stats["indexed_families"])
+print("linked preprint PDFs    =", stats["preprint_pdfs"])
+print("linked Lean docs        =", stats["lean_docs"])
+print("families with Lean docs =", stats["lean_families"], "of", stats["indexed_families"],
+      "=", stats["lean_family_pct"], "%")
+print("Lean docs per covered family =", stats["lean_docs_per_family"])
+print("README says ~42% of TOP-LINE RESULTS are formalized; these are")
+print("different denominators, not a contradiction.")
+
+print("")
+print("elapsed seconds:", now() - t0)

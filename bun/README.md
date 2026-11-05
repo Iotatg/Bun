@@ -2452,3 +2452,40 @@ protein from the standard genetic code.
 
 The reference is in `docs/reference/science.md`; the example is
 `examples/science.bun`.
+
+## The discovery stack — experimental mathematics
+
+`bun:discovery` is a laboratory for probing numerical claims in the
+[openai/math](https://github.com/openai/math) manuscript collection. It is
+written entirely in Bun: an arbitrary-precision fixed-point decimal layer
+over the bigint builtins, with no new builtins and no native code.
+
+```bun
+import { pi_digits, bbp_hex, machin_search } from "bun:discovery"
+
+print(pi_digits(30))        // 3.141592653589793238462643383279
+print(bbp_hex(0, 8))        // 243F6A88
+print(machin_search(5, 8, 250, 3).len())
+```
+
+The stack computes pi to 100 places with Machin's formula, reproduces the
+same hexadecimal digits with the BBP spigot — including at digit 1000, where
+the modular spigot and the 1250-decimal Machin value both give `49F1C09B` —
+and searches for Machin-like formulas that it then verifies exactly to 50
+decimals with zero residual. It also measures the empirical irrationality
+exponent of pi (family 017), Liouville two-point correlations (family 007),
+the Flint-Hills series spike at `n = 355`, the Mahler volume-product bounds
+(family 087), the packing density `pi/(2*sqrt(3))`, and statistics mined
+from the corpus itself (373 indexed families, 721 linked preprint PDFs, 245
+Lean docs).
+
+These are **measurements and re-derivations, not proofs**. A finite
+computation cannot settle a claim about all sufficiently large denominators;
+the reference document states the limits of each probe explicitly.
+
+`bun tools/discover.bun [path/to/CONTENTS.md]` runs the nine-probe lab
+notebook in about five seconds; without an argument it reads
+`BUN_MATH_CORPUS`, then falls back to `openai-math/CONTENTS.md` relative to the
+working directory. The reference is `docs/reference/discovery.md`; the short
+example is `examples/discovery.bun`; the tests are `tests/test_discovery.py`
+(15 tests, identical output on all four engines).

@@ -1,0 +1,667 @@
+// bun:discovery — experimental mathematics in the language itself.
+//
+// This stack exists to *probe* numerical claims, not to prove them. Every
+// number is built from the language's arbitrary-precision bigint builtins
+// with a fixed-point decimal layer; no floating point constants are trusted
+// for the final digits. The only floats here are the inexpensive screening
+// step of a formula search and the trigonometric / logarithmic probes,
+// where a double is the honest instrument and is reported as such.
+//
+//   import { pi_digits, machin_search, bbp_hex } from "bun:discovery"
+//
+// The corpus this was written against is openai/math (721 manuscripts,
+// 373 result families). Families 007, 017 and 087 make concrete numerical
+// claims; the probes below are independent computations of those claims.
+
+var PREC = 60
+var SCALE = []
+var TEN9 = bigint_from_int(1000000000)
+var SIXTEEN = bigint_from_int(16)
+var HEX = "0123456789ABCDEF"
+
+let math = ffi_load("math")
+let f_atan = math["atan"]
+let f_sin = math["sin"]
+let f_log = math["log"]
+let f_floor = math["floor"]
+let f_sqrt = math["sqrt"]
+
+// ---------------------------------------------------------------------------
+// Fixed-point decimals: {"s": sign, "m": bigint mantissa scaled by 10^PREC}
+// ---------------------------------------------------------------------------
+
+fn _bi_pow10(p) {
+    var r = bigint_from_int(1)
+    let ten = bigint_from_int(10)
+    var i = 0
+    while i < p {
+        r = bigint_mul(r, ten)
+        i = i + 1
+    }
+    return r
+}
+
+// Render a bigint (a little-endian list of base-256 bytes) as a decimal string.
+fn bi_str(m) {
+    if m.len() == 0 { return "0" }
+    var parts = []
+    var cur = m
+    while cur.len() > 0 {
+        let q = bigint_div(cur, TEN9)
+        let r = bigint_mod(cur, TEN9)
+        parts.push(bigint_to_int(r))
+        cur = q
+    }
+    var out = str(parts[parts.len() - 1])
+    var i = parts.len() - 2
+    while i >= 0 {
+        var chunk = str(parts[i])
+        while chunk.len() < 9 { chunk = "0" + chunk }
+        out = out + chunk
+        i = i - 1
+    }
+    return out
+}
+
+export fn set_precision(n) {
+    if n < 1 { throw "precision must be positive" }
+    PREC = n
+    SCALE = _bi_pow10(n)
+    return PREC
+}
+
+export fn precision() { return PREC }
+
+fn fx_zero() { return {"s": 1, "m": []} }
+
+export fn fx_int(n) {
+    if n < 0 { return {"s": -1, "m": bigint_mul(bigint_from_int(0 - n), SCALE)} }
+    return {"s": 1, "m": bigint_mul(bigint_from_int(n), SCALE)}
+}
+
+// Parse a plain decimal string such as "3.14159" into a fixed-point value.
+export fn fx_parse(s) {
+    var neg = false
+    if s.len() > 0 and s.slice(0, 1) == "-" {
+        neg = true
+        s = s.slice(1, s.len())
+    }
+    var whole = "0"
+    var frac = ""
+    var dot = 0
+    var seen = false
+    while dot < s.len() {
+        if s.slice(dot, dot + 1) == "." {
+            seen = true
+        } else if not seen {
+            whole = whole + s.slice(dot, dot + 1)
+        } else {
+            frac = frac + s.slice(dot, dot + 1)
+        }
+        dot = dot + 1
+    }
+    var m = bigint_mul(bigint_from_int(int(whole)), SCALE)
+    var k = 0
+    while k < frac.len() and k < PREC {
+        let d = int(frac.slice(k, k + 1))
+        let place = bigint_div(SCALE, _bi_pow10(k + 1))
+        m = bigint_add(m, bigint_mul(bigint_from_int(d), place))
+        k = k + 1
+    }
+    if neg { return {"s": -1, "m": m} }
+    return {"s": 1, "m": m}
+}
+
+export fn fx_neg(a) {
+    if a["m"].len() == 0 { return a }
+    return {"s": 0 - a["s"], "m": a["m"]}
+}
+
+export fn fx_add(a, b) {
+    if a["s"] == b["s"] { return {"s": a["s"], "m": bigint_add(a["m"], b["m"])} }
+    let c = bigint_cmp(a["m"], b["m"])
+    if c == 0 { return fx_zero() }
+    if c > 0 { return {"s": a["s"], "m": bigint_sub(a["m"], b["m"])} }
+    return {"s": b["s"], "m": bigint_sub(b["m"], a["m"])}
+}
+
+export fn fx_sub(a, b) { return fx_add(a, fx_neg(b)) }
+
+export fn fx_mul(a, b) {
+    return {"s": a["s"] * b["s"], "m": bigint_div(bigint_mul(a["m"], b["m"]), SCALE)}
+}
+
+export fn fx_div(a, b) {
+    if b["m"].len() == 0 { throw "division by zero" }
+    return {"s": a["s"] * b["s"], "m": bigint_div(bigint_mul(a["m"], SCALE), b["m"])}
+}
+
+export fn fx_div_int(a, n) {
+    if n == 0 { throw "division by zero" }
+    if n < 0 { return fx_div_int(fx_neg(a), 0 - n) }
+    return {"s": a["s"], "m": bigint_div(a["m"], bigint_from_int(n))}
+}
+
+export fn fx_mul_int(a, n) {
+    if n < 0 { return fx_mul_int(fx_neg(a), 0 - n) }
+    return {"s": a["s"], "m": bigint_mul(a["m"], bigint_from_int(n))}
+}
+
+export fn fx_cmp(a, b) {
+    if a["s"] != b["s"] {
+        if a["s"] > 0 { return 1 }
+        return -1
+    }
+    let c = bigint_cmp(a["m"], b["m"])
+    if a["s"] < 0 { return 0 - c }
+    return c
+}
+
+export fn fx_abs(a) {
+    if a["s"] < 0 { return fx_neg(a) }
+    return a
+}
+
+export fn fx_str(a, digits) {
+    var s = bi_str(a["m"])
+    while s.len() < PREC + 1 { s = "0" + s }
+    let cut = s.len() - PREC
+    let whole = s.slice(0, cut)
+    var frac = s.slice(cut, s.len())
+    if digits >= 0 and digits < frac.len() { frac = frac.slice(0, digits) }
+    while frac.len() > 0 and frac.slice(frac.len() - 1, frac.len()) == "0" {
+        frac = frac.slice(0, frac.len() - 1)
+    }
+    var out = whole
+    if frac.len() > 0 { out = out + "." + frac }
+    if a["s"] < 0 and out != "0" { out = "-" + out }
+    return out
+}
+
+// A double is only used to hand a value to a floating-point instrument.
+export fn fx_float(a) { return float(fx_str(a, 18)) }
+
+// Integer part of a fixed-point value (safe while the value fits in 64 bits).
+export fn fx_trunc(a) {
+    let q = bigint_div(a["m"], SCALE)
+    return bigint_to_int(q) * a["s"]
+}
+
+// ---------------------------------------------------------------------------
+// Constants, computed by series in the fixed-point layer
+// ---------------------------------------------------------------------------
+
+// atan(1/x) = sum (-1)^k / ((2k+1) x^(2k+1)), all in scaled bigints.
+export fn fx_atan_inv(x) {
+    if x < 2 { throw "atan_inv needs x >= 2" }
+    let x2 = x * x
+    var q = bigint_div(SCALE, bigint_from_int(x))
+    var total = fx_zero()
+    var k = 0
+    var sgn = 1
+    // The loop normally ends when q underflows to zero; the guard is only
+    // a ceiling. It must exceed PREC/log10(x^2), otherwise a high-precision
+    // request would silently truncate the series.
+    while k < 2000 {
+        if q.len() == 0 { break }
+        let term = bigint_div(q, bigint_from_int(2 * k + 1))
+        if sgn == 1 {
+            total = fx_add(total, {"s": 1, "m": term})
+        } else {
+            total = fx_sub(total, {"s": 1, "m": term})
+        }
+        q = bigint_div(q, bigint_from_int(x2))
+        sgn = 0 - sgn
+        k = k + 1
+    }
+    return total
+}
+
+// atanh(1/x) = sum 1 / ((2k+1) x^(2k+1)) — used for logarithms.
+fn fx_atanh_inv(x) {
+    let x2 = x * x
+    var q = bigint_div(SCALE, bigint_from_int(x))
+    var total = fx_zero()
+    var k = 0
+    // The loop normally ends when q underflows to zero; the guard is only
+    // a ceiling. It must exceed PREC/log10(x^2), otherwise a high-precision
+    // request would silently truncate the series.
+    while k < 2000 {
+        if q.len() == 0 { break }
+        let term = bigint_div(q, bigint_from_int(2 * k + 1))
+        total = fx_add(total, {"s": 1, "m": term})
+        q = bigint_div(q, bigint_from_int(x2))
+        k = k + 1
+    }
+    return total
+}
+
+// Machin: pi/4 = 4 atan(1/5) - atan(1/239)  (equivalently 16 and 4).
+export fn fx_pi_quarter() {
+    return fx_sub(fx_mul_int(fx_atan_inv(5), 4), fx_atan_inv(239))
+}
+
+export fn fx_pi() { return fx_mul_int(fx_pi_quarter(), 4) }
+
+export fn fx_ln2() { return fx_mul_int(fx_atanh_inv(3), 2) }
+
+export fn fx_e() {
+    var t = fx_int(1)
+    var s = fx_int(1)
+    var k = 1
+    while k < 400 {
+        t = fx_div_int(t, k)
+        s = fx_add(s, t)
+        if t["m"].len() == 0 { break }
+        k = k + 1
+    }
+    return s
+}
+
+// Newton's method, started from (a+1)/2; converges for moderate a.
+export fn fx_sqrt(a) {
+    if a["s"] < 0 { throw "sqrt of a negative number" }
+    if a["m"].len() == 0 { return fx_zero() }
+    var x = fx_div_int(fx_add(a, fx_int(1)), 2)
+    var two = fx_int(2)
+    var i = 0
+    while i < 80 {
+        x = fx_div_int(fx_add(x, fx_div(a, x)), 2)
+        i = i + 1
+    }
+    return x
+}
+
+export fn fx_sqrt2() { return fx_sqrt(fx_int(2)) }
+
+// pi to `n` decimal places, as a string. The precision is widened first so
+// that the requested digits are all significant.
+export fn pi_digits(n) {
+    set_precision(n + 12)
+    return fx_str(fx_pi(), n)
+}
+
+// The first `n` hexadecimal digits after the point of a fixed-point value.
+export fn fx_hex_digits(x, n) {
+    let sixteen = bigint_from_int(16)
+    var cur = {"s": 1, "m": bigint_mod(x["m"], SCALE)}
+    var out = ""
+    var i = 0
+    while i < n {
+        let m = bigint_mul(cur["m"], sixteen)
+        let d = bigint_to_int(bigint_div(m, SCALE))
+        cur = {"s": 1, "m": bigint_mod(m, SCALE)}
+        out = out + HEX.slice(d, d + 1)
+        i = i + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 1 — Machin-like formulas, found by a search in the language
+//
+// A two-term identity pi/4 = m*atan(1/x) + n*atan(1/y) is screened with a
+// double (cheap) and then confirmed exactly with the fixed-point layer, so
+// the reported formulas are not floating-point coincidences.
+// ---------------------------------------------------------------------------
+
+export fn machin_search(max_x, max_m, max_y, max_n) {
+    let quarter = 0.7853981633974483
+    let target = fx_pi_quarter()
+    var found = []
+    var x = 2
+    while x <= max_x {
+        var m = 1
+        while m <= max_m {
+            let a = float(m) * f_atan(1.0 / float(x))
+            var y = 2
+            while y <= max_y {
+                if y != x {
+                    let b = f_atan(1.0 / float(y))
+                    var n = 0 - max_n
+                    while n <= max_n {
+                        if n != 0 {
+                            let theta = a + float(n) * b
+                            if theta > 0.0 and theta - quarter < 0.000000001 and quarter - theta < 0.000000001 {
+                                let lhs = fx_add(fx_mul_int(fx_atan_inv(x), m), fx_mul_int(fx_atan_inv(y), n))
+                                let err = fx_abs(fx_sub(lhs, target))
+                                if err["m"].len() == 0 or fx_float(err) < 0.0000000000000000000000001 {
+                                    found.push({"x": x, "m": m, "y": y, "n": n,
+                                                "lhs": fx_str(lhs, 40), "err": fx_str(err, 45)})
+                                }
+                            }
+                        }
+                        n = n + 1
+                    }
+                }
+                y = y + 1
+            }
+            m = m + 1
+        }
+        x = x + 1
+    }
+    return found
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 2 — BBP spigot: hexadecimal digits of pi without computing pi
+//
+// {16^d * pi} = frac( sum_k 16^(d-k) * (4/(8k+1) - 2/(8k+4) - 1/(8k+5)
+//                                      - 1/(8k+6)) )
+// The finite part uses exact modular bigints; only the fast-converging tail
+// and the final digit extraction use a double. Eight hex digits per block.
+// ---------------------------------------------------------------------------
+
+fn _bbp_frac(d) {
+    var s = 0.0
+    var k = 0
+    while k <= d {
+        let j1 = 8 * k + 1
+        let j4 = 8 * k + 4
+        let j5 = 8 * k + 5
+        let j6 = 8 * k + 6
+        let e = bigint_from_int(d - k)
+        let r1 = bigint_to_int(bigint_pow_mod(SIXTEEN, e, bigint_from_int(j1)))
+        let r4 = bigint_to_int(bigint_pow_mod(SIXTEEN, e, bigint_from_int(j4)))
+        let r5 = bigint_to_int(bigint_pow_mod(SIXTEEN, e, bigint_from_int(j5)))
+        let r6 = bigint_to_int(bigint_pow_mod(SIXTEEN, e, bigint_from_int(j6)))
+        s = s + 4.0 * float(r1) / float(j1)
+        s = s - 2.0 * float(r4) / float(j4)
+        s = s - float(r5) / float(j5)
+        s = s - float(r6) / float(j6)
+        k = k + 1
+    }
+    var p = 1.0 / 16.0
+    k = d + 1
+    while k <= d + 32 {
+        let t = 4.0 / float(8 * k + 1) - 2.0 / float(8 * k + 4)
+        let u = 1.0 / float(8 * k + 5) + 1.0 / float(8 * k + 6)
+        s = s + (t - u) * p
+        p = p / 16.0
+        k = k + 1
+    }
+    return s - f_floor(s)
+}
+
+fn _bbp_block(d, n) {
+    var frac = _bbp_frac(d)
+    var out = ""
+    var i = 0
+    while i < n {
+        frac = frac * 16.0
+        let digit = int(frac)
+        if digit < 0 { return out }
+        if digit > 15 { return out }
+        out = out + HEX.slice(digit, digit + 1)
+        frac = frac - float(digit)
+        i = i + 1
+    }
+    return out
+}
+
+// Hexadecimal digits of a fixed-point value starting at an arbitrary offset.
+// Used to check a BBP digit block against pi computed by a different method.
+export fn fx_hex_digits_at(x, start, n) {
+    let sixteen = bigint_from_int(16)
+    var cur = {"s": 1, "m": bigint_mod(x["m"], SCALE)}
+    var out = ""
+    var i = 0
+    while i < start + n {
+        let m = bigint_mul(cur["m"], sixteen)
+        let d = bigint_to_int(bigint_div(m, SCALE))
+        cur = {"s": 1, "m": bigint_mod(m, SCALE)}
+        if i >= start { out = out + HEX.slice(d, d + 1) }
+        i = i + 1
+    }
+    return out
+}
+
+// `start` is the zero-based hex digit after the point (BBP's `d`).
+export fn bbp_hex(start, count) {
+    var out = ""
+    var d = start
+    while out.len() < count {
+        out = out + _bbp_block(d, 8)
+        d = d + 8
+    }
+    if out.len() > count { out = out.slice(0, count) }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 3 — the irrationality exponent of pi (corpus family 017)
+//
+// From the continued-fraction convergents p_k/q_k of pi, the quantity
+//   mu_k = -log|q_k*pi - p_k| / log(q_k)
+// is an empirical stand-in for the irrationality exponent. Family 017 claims
+// mu(pi) = 2. This is a numerical consistency check, NOT a proof of the
+// claim; a finite computation can never establish an exponent for all q.
+// ---------------------------------------------------------------------------
+
+export fn pi_convergents(count) {
+    var x = fx_pi()
+    var pm2 = 0
+    var pm1 = 1
+    var qm2 = 1
+    var qm1 = 0
+    var out = []
+    var k = 0
+    while k < count {
+        let a = fx_trunc(x)
+        let p = a * pm1 + pm2
+        let q = a * qm1 + qm2
+        out.push({"a": a, "p": p, "q": q})
+        pm2 = pm1
+        pm1 = p
+        qm2 = qm1
+        qm1 = q
+        let rem = fx_sub(x, fx_int(a))
+        if rem["m"].len() == 0 { break }
+        x = fx_div(fx_int(1), rem)
+        k = k + 1
+    }
+    return out
+}
+
+export fn irrationality_measure(count) {
+    set_precision(120)
+    // The first convergent has q = 1, which carries no exponent information
+    // and is skipped below, so take one extra to return exactly `count`.
+    let cv = pi_convergents(count + 1)
+    let pi_val = fx_pi()
+    var out = []
+    for c in cv {
+        let q = c["q"]
+        if q > 1 {
+            let err = fx_abs(fx_sub(fx_mul_int(pi_val, q), fx_int(c["p"])))
+            let e = float(fx_str(err, 30))
+            if e > 0.0 {
+                // |pi - p/q| = |q*pi - p| / q — this is the quantity in the
+                // definition of the irrationality exponent.
+                let rat_err = e / float(q)
+                let mu = 0.0 - f_log(rat_err) / f_log(float(q))
+                out.push({"k": out.len(), "p": c["p"], "q": q,
+                          "err": fx_str(fx_div_int(err, q), 20), "mu": mu})
+            }
+        }
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 4 — Liouville two-point correlations (corpus family 007)
+//
+// lambda(n) = (-1)^Omega(n). Family 007 claims a power-of-log saving for the
+// ordinary two-point correlation C(X) = (1/X) sum_{n<=X} lambda(n)lambda(n+1).
+// We compute C(X) exactly for integer X and watch its decay.
+// ---------------------------------------------------------------------------
+
+export fn liouville(n) {
+    var m = n
+    var d = 2
+    var omega = 0
+    while d * d <= m {
+        while m % d == 0 {
+            m = int(m / d)
+            omega = omega + 1
+        }
+        d = d + 1
+    }
+    if m > 1 { omega = omega + 1 }
+    if omega % 2 == 0 { return 1 }
+    return -1
+}
+
+export fn liouville_correlation(N) {
+    var lam = []
+    var i = 1
+    while i <= N + 1 {
+        lam.push(liouville(i))
+        i = i + 1
+    }
+    var acc = 0
+    var checkpoints = []
+    i = 1
+    while i <= N {
+        acc = acc + lam[i - 1] * lam[i]
+        if i == 100 or i == 1000 or i == 5000 or i == 10000 or i == N {
+            checkpoints.push({"N": i, "sum": acc, "C": float(acc) / float(i)})
+        }
+        i = i + 1
+    }
+    return {"N": N, "sum": acc, "C": float(acc) / float(N),
+            "checkpoints": checkpoints}
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 5 — the Flint-Hills series (corpus family 017)
+//
+// sum_{n>=1} 1/(n^3 sin^2 n), angles in radians. Family 017 deduces its
+// convergence from mu(pi)=2. A double-precision partial sum cannot prove
+// convergence, but it can show where the near-integer multiples of pi make
+// individual terms blow up — the exact phenomenon the claim is about.
+// ---------------------------------------------------------------------------
+
+export fn flint_hills(N) {
+    var s = 0.0
+    var biggest = 0.0
+    var biggest_n = 0
+    var checkpoints = []
+    var n = 1
+    while n <= N {
+        let sn = f_sin(float(n))
+        let t = 1.0 / (float(n) * float(n) * float(n) * sn * sn)
+        s = s + t
+        if t > biggest {
+            biggest = t
+            biggest_n = n
+        }
+        if n == 100 or n == 1000 or n == 5000 or n == 10000 or n == N {
+            checkpoints.push({"N": n, "partial": s, "max_term": biggest,
+                              "max_n": biggest_n})
+        }
+        n = n + 1
+    }
+    return {"N": N, "partial": s, "max_term": biggest, "max_n": biggest_n,
+            "checkpoints": checkpoints}
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 6 — Mahler volume products (corpus family 087)
+//
+// Family 087 states the minimizers: 4^n/n! for symmetric bodies (cube x
+// cross-polytope, Hanner polytopes) and (n+1)^(n+1)/(n!)^2 for general
+// bodies (simplex). These two numbers are computed here for small n; the
+// ratio between them is a concrete, checkable prediction of the claim.
+// ---------------------------------------------------------------------------
+
+export fn factorial_float(n) {
+    var f = 1.0
+    var i = 1
+    while i <= n {
+        f = f * float(i)
+        i = i + 1
+    }
+    return f
+}
+
+export fn mahler_bounds(n) {
+    let fact = factorial_float(n)
+    var four_n = 1.0
+    var i = 1
+    while i <= n {
+        four_n = four_n * 4.0
+        i = i + 1
+    }
+    var np1_pow = 1.0
+    i = 1
+    while i <= n + 1 {
+        np1_pow = np1_pow * float(n + 1)
+        i = i + 1
+    }
+    let sym = four_n / fact
+    let gen = np1_pow / (fact * fact)
+    return {"n": n, "symmetric_bound": sym, "general_bound": gen,
+            "cube_cross_polytope": sym, "simplex": gen, "general_over_symmetric": gen / sym}
+}
+
+// Cohn-Elkies sharpness (corpus family near 2247): the optimal planar
+// circle-packing density pi/(2*sqrt(3)), recomputed at full precision.
+export fn packing_density(digits) {
+    set_precision(digits + 12)
+    let pi_val = fx_pi()
+    let s3 = fx_sqrt(fx_int(3))
+    let d = fx_div(pi_val, fx_mul_int(s3, 2))
+    return fx_str(d, digits)
+}
+
+// ---------------------------------------------------------------------------
+// Discovery 7 — mining the corpus itself
+//
+// The catalogue is read with the language's own file and regex builtins, so
+// the statistics below are measurements of the clone, not claims copied
+// from the README.
+// ---------------------------------------------------------------------------
+
+export fn corpus_stats(path) {
+    let text = read_file(path)
+    let families = regex_findall("\\*\\*[0-9]{3}\\.", text).len()
+    let lean_docs = regex_findall("\\]\\(lean/docs/", text).len()
+    let pdfs = regex_findall("\\]\\(preprints/", text).len()
+    let all_lines = split_lines(text)
+
+    // A family counts as formalised when its own block carries a Lean link.
+    // `lean_docs` counts links, which is a different (larger) number, so both
+    // are reported instead of pretending they are the same measurement.
+    let covered = {}
+    var current = ""
+    for line in all_lines {
+        // regex_match() is a full-match, so use regex_search() to find a heading
+        // anywhere in the line.
+        let heading = regex_search("\\*\\*[0-9]{3}", line)
+        if heading != "" {
+            current = heading
+        }
+        if current != "" and index_of(line, "lean/docs/") >= 0 {
+            covered[current] = true
+        }
+    }
+    let lean_families = len(covered)
+
+    var pct = 0.0
+    if families > 0 { pct = 100.0 * float(lean_docs) / float(families) }
+    var family_pct = 0.0
+    if families > 0 { family_pct = 100.0 * float(lean_families) / float(families) }
+    var per_family = 0.0
+    if lean_families > 0 { per_family = float(lean_docs) / float(lean_families) }
+
+    return {"bytes": text.len(), "lines": all_lines.len(),
+            "indexed_families": families,
+            "lean_docs": lean_docs, "preprint_pdfs": pdfs,
+            "lean_families": lean_families,
+            "lean_coverage_pct": pct, "lean_family_pct": family_pct,
+            "lean_docs_per_family": per_family}
+}
+
+// Initial precision for a freshly imported module.
+set_precision(60)
