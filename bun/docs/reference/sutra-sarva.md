@@ -97,18 +97,53 @@ A  OUT_OF_SCOPE_FOR_SUTRA: "प्रमाण चाहिए (Lean / mathlib /
 | `7/8 vs 11/12` | ratio | `7/8 < 11/12` (cross-multiply, exact) |
 | `Prove ...` | theorem | `OUT_OF_SCOPE_FOR_SUTRA` |
 
-`calc()` एक शुद्ध-Bun shunting-yard evaluator है (`+ - * / ^ ( )`, decimals)।
-**डिज़ाइन से** unary minus नहीं है — इसे छिपाया नहीं गया, दर्ज किया गया है।
+### दो स्वतंत्र evaluators, एक नहीं
+
+`calc()` शुद्ध-Bun **shunting-yard** है, `calc_alt()` शुद्ध-Bun **recursive
+descent** है। दोनों एक ही strict tokenizer (`tokenize()`) से token लेते हैं,
+पर मूल्यांकन के अलग-अलग algorithms हैं। Certificate इनकी तुलना करता है —
+चार engines का आपसी मेल नहीं, **एक दूसरे algorithm से मेल**।
+
+बाहरी code review के बाद ठीक की गई बातें (सब `review_ledger()` में दर्ज हैं):
+
+| Input | पहले | अब |
+|---|---|---|
+| `2^3^2` | `64` | **`512`** (`^` right-associative) |
+| `-3+5` | `pop on empty list` crash | **`2`** (unary `±`) |
+| `-3^2` | crash | **`-9`** (unary minus `^` से ढीला) |
+| `2^-3` | crash | **`0.125`** |
+| `2(3+4)` | `2.0` (चुपचाप गलत) | **`14`** (implicit `*`) |
+| `2+*3`, `2..3`, `2a+3`, `2*(3+4`, `1/0`, `()` | crash या silent | **`INVALID_EXPRESSION` + कारण**, कोई crash नहीं |
+| `sum 1..-5` | `15` (गलत) | **`INVALID_INPUT`** |
+| `0*x+7=7` | `division by zero` crash | **`INFINITE_SOLUTIONS`** |
+| `0*x+7=10` | crash | **`NO_SOLUTION`** |
+| `2x-5=9` | `x = 2` (गलत) | **`x = 7`** (signed coefficient) |
+
+### Certificate — अब कोई हमेशा-सच्ची जाँच नहीं
+
+पहले `boundary_ok()` की तीन शाखाएँ **कभी fail ही नहीं हो सकती थीं**:
+`f_abs(ans - ans)`, `f_abs(0.0*b/100)` और hardcoded `1*2/2-1`। बाहरी review
+ने यह सही पकड़ा। अब हर check के पास `method` और `detects_wrong_answer` है,
+और हर पहचान ऐसी identity है जो गलत जवाब पर टूटती है:
+
+| Check | स्वतंत्र रास्ता |
+|---|---|
+| shape | `expected_shape` table बनाम keyword-shape route (वर्गीकरण) |
+| number | `calc_alt` (calc), loop `1..n` (sum), substitution `a*x+b` (linear), `(b/100)*a` (percent), cross-multiply (ratio) |
+| dimension | operand domain + पूरी तरह parse हुआ expression |
+| boundary | complement identity, shift invariant, loop recurrence, metamorphic `2*(expr)=2*ans`, decimal-division sign |
 
 हर `SOLVED` जवाब के साथ `certificate` मिलता है: `CERTIFIED 4/4`, लेकिन उसमें
-स्पष्ट `scope` लिखा है:
+`verification_level`, `proof_status: NOT_ESTABLISHED` और स्पष्ट `scope` है:
 
 ```
-"4 module self-checks; THIS IS NOT A PROOF of any theorem"
+"4 checks, 2 can detect a wrong numeric answer (2 distinct oracles);
+ computation, NOT A PROOF of any theorem"
 ```
 
-`check_answer(q, 999.0)` जैसे गलत जवाब को `REJECTED 3/4` मिलता है — यानी
-certificate खुद को भी गलत साबित कर सकता है (`bun:nyaya` का सबक)।
+`certificate_probe()` सातों kinds में जान-बूझकर गलत जवाब (`999.0`) डालता है और
+**7/7 `REJECTED`** पाता है। `check_answer(q, 999.0)` को अब `REJECTED 2/4`
+मिलता है (पहले `3/4` था — certificate **सख़्त** हुआ है, कमज़ोर नहीं)।
 
 ---
 
@@ -119,14 +154,17 @@ certificate खुद को भी गलत साबित कर सकत�
 | `alphabet()`, `charter()`, `lesson()` | 5-कदम विधि |
 | `shapes()`, `seven_moves()`, `four_checks()` | 5 / 7 / 4 |
 | `strip(text)`, `shape_of(text)`, `choose_move(shape, kind)` | S, U, T |
-| `calc(expr)` | arithmetic evaluator |
-| `solve(q)`, `check_answer(q, ans)` | जवाब + 4 जाँचें |
+| `calc(expr)`, `calc_alt(expr)`, `tokenize(expr)` | shunting-yard / recursive-descent / strict tokenizer |
+| `solve(q)`, `check_answer(q, ans)`, `certificate_probe()` | जवाब + 4 जाँचें + false-positive scan |
 | `parse_question(text)`, `ask(text)`, `steps(q)` | एक-लाइन + 5 कदम |
 | `course()`, `teach(i)` | 10 काम किए उदाहरण (class 1 → research) |
 | `parse_catalogue(text)`, `catalogue(path)`, `catalogue_summary(cards)` | पूरा corpus |
 | `status_rules()`, `measurement_notes()` | मापों की सीमा |
 | `eth_evidence(root)`, `eth_bound_check()` | ETH दावे की जाँच |
-| `verdict()`, `audit()` | ईमानदार निष्कर्ष + 17 self-checks |
+| `review_ledger()` | बाहरी review के 11 दावे: claim / reproduced / verdict / fix |
+| `verification_levels()` | 5 स्तर, जिनमें **सिर्फ़ 1–2 IMPLEMENTED** हैं |
+| `roadmap()` | 10 phases, जिनमें **सिर्फ़ Phase 0 DONE** है |
+| `verdict()`, `audit()` | ईमानदार निष्कर्ष + 34 self-checks |
 
 `course()` में 10 सवाल हैं: **9 `SOLVED`** (exact जवाब, 4/4 checks) और **1
 `OUT_OF_SCOPE`** (research theorem)। `course()` class 1 से graduation होते हुए
@@ -232,20 +270,69 @@ ETH को `UNRESOLVED` कहा गया था; अब repo में एक
 
 ---
 
-## 6. अंतिम निष्कर्ष
+## 6. बाहरी roadmap का ईमानदार जवाब
+
+बाहरी review ने 12–18 महीने का 10-phase roadmap, 5 verification levels,
+~100 नई files, Lean bridge, symbolic algebra, calculus, science engines और
+एक unified `SutraResult` protocol propose किया। **Direction सही है और स्वीकार
+है; delivery नहीं हुई।** लिखा हुआ phase बनाया हुआ phase नहीं होता — यही
+`bun:nyaya` का *"tests लिखे होना / execute होना अलग"* वाला सबक है, अब roadmap
+पर भी लागू।
+
+### Verification levels
+
+| Level | नाम | SUTRA की स्थिति |
+|---|---|---|
+| 1 | COMPUTED | **IMPLEMENTED** |
+| 2 | INDEPENDENTLY_CHECKED | **IMPLEMENTED** (7 elementary kinds, दो algorithms / identities) |
+| 3 | SYMBOLICALLY_VERIFIED | `NOT_IMPLEMENTED` |
+| 4 | FORMALLY_VERIFIED (Lean kernel) | `NOT_IMPLEMENTED` |
+| 5 | RESEARCH_REVIEWED | `NOT_IMPLEMENTED` (ETH `UNDER_REVIEW` ही रहेगा) |
+
+`verification_levels()` यही table machine-readable लौटाता है। `growth` जैसे
+scalar passthrough पर सिर्फ़ **एक** distinct oracle है, इसलिए वह ईमानदारी से
+`COMPUTED` कहता है, `INDEPENDENTLY_CHECKED` नहीं।
+
+### Phase status
+
+| Phase | स्थिति |
+|---|---|
+| 0 — correctness audit, parser / solver / certificate fix | **DONE** (यह commit; `certificate_probe()` 7/7) |
+| 1–9 — AST/rational, symbolic, advanced math, science, Lean, research, router, reliability, release | **`NOT_IMPLEMENTED`** |
+
+`roadmap()` में `phase_0 = DONE`, बाकी नौ `NOT_IMPLEMENTED` हैं। कोई 12–18
+महीने की delivery date नहीं दी गई — वह review का planning estimate था, कोई
+commitment नहीं।
+
+### इस commit में क्या वाकई बना
+
+- **P0 (पूरा):** expression parser correctness, unary/invalid handling,
+  zero-coefficient equations, negative summation, negative coefficients.
+- **P1 (आंशिक):** genuine independent four checks + **independent Python
+  oracle** वाली 24 regression tests. **Exact rational arithmetic अभी नहीं** —
+  `1/2+1/4 = 0.75` floating point पर सही है, पर यह exact rational engine नहीं।
+- **P2/P3: कुछ नहीं।** Symbolic algebra, Lean integration, research theorem
+  verification — सब `NOT_IMPLEMENTED`।
+
+> **नियम नहीं बदला:** SUTRA अपनी confidence को कभी mathematical proof के रूप
+> में पेश नहीं करेगा। हर result में `proof_status: NOT_ESTABLISHED` है।
+
+---
+
+## 7. अंतिम निष्कर्ष
 
 ```bun
 import { verdict, audit } from "bun:sutra_sarva"
 print(verdict()["research_theorems_solved_by_sutra"])   // 0
 print(verdict()["research_families_mapped"])            // 373
-print(audit()["verdict"])                               // CERTIFIED 17/17
+print(audit()["passed"])                                // 34
 ```
 
 | सवाल | उत्तर |
 |---|---|
 | "सब कुछ SUTRA से solve हो गया?" | **नहीं** — 373 research theorems में से 0 |
 | तो क्या हुआ? | **एक आसान विधि** + **9/10 आसान सवालों के exact जवाब** + **पूरे corpus का ईमानदार नक्शा** |
-| `CERTIFIED 17/17` | 17 module self-checks, किसी theorem का प्रमाण नहीं |
+| `CERTIFIED 34/34` | 34 module self-checks, किसी theorem का प्रमाण नहीं |
 | ETH | **UNDER_REVIEW** |
 | SUTRA है | आसान तरीका + ईमानदार नक्शा |
 | SUTRA नहीं है | research mathematics का proof engine |
@@ -255,12 +342,13 @@ print(audit()["verdict"])                               // CERTIFIED 17/17
 
 ---
 
-## 7. चलाने के तरीके
+## 8. चलाने के तरीके
 
 ```sh
-./bin/bun examples/sutra_sarva.bun          # छोटा उदाहरण
-./bin/bun tools/sutra_sarva_lab.bun         # पूरा 373-family record
-python3 -m pytest -q tests/test_sutra_sarva.py   # 34 four-engine parity tests
+./bin/bun examples/sutra_sarva.bun                  # छोटा उदाहरण
+./bin/bun tools/sutra_sarva_lab.bun                 # पूरा 373-family record
+./bin/bun tools/sutra_sarva_review_lab.bun          # बाहरी review के corrections
+python3 -m pytest -q tests/test_sutra_sarva.py tests/test_sutra_sarva_correctness.py
 python3 tools/check.py lib/bun/sutra_sarva.bun
 ```
 
@@ -268,13 +356,22 @@ Lab की डिलीवरी `SUTRA_SARVA_LAB_OUTPUT.txt` में **373/37
 चलाए गए pytest का वास्तविक output append है — क्योंकि tests लिखे होना और
 execute होकर pass होना अलग बातें हैं (`bun:nyaya` review point 5)।
 
-वास्तविक बाहरी run:
+**Correction commit का वास्तविक बाहरी run**
+(`SUTRA_SARVA_CORRECTION_PYTEST.txt`, और `SUTRA_SARVA_REVIEW_LAB_OUTPUT.txt`
+के अंत में append):
 
 ```
-2206 passed, 2 skipped in 1010.34s (0:16:50)   PYTEST_EXIT=0
+2234 passed, 2 skipped in 1070.09s (0:17:50)   PYTEST_EXIT=0
 ```
 
-पिछली public suite 2164 थी; **+34** नई parity tests और **+8**
-`tests/test_selfhost.py` के auto-corpus से (नया `examples/` और `tools/` file
-अपने आप 4-4 मौजूदा parity tests में जुड़े)। Lab का 612-पंक्ति output चारों
-engines पर byte-for-byte समान है (`md5 6cb6c78d…`)।
+पिछली public suite (`fe6cc9c`) 2206 थी. Is commit में **+24** नई regression
+tests (`tests/test_sutra_sarva_correctness.py`, independent Python oracle) और
+**+4** `tests/test_selfhost.py` के auto-corpus से (नया
+`tools/sutra_sarva_review_lab.bun` अपने आप 4 parity tests में जुड़ा) =
+**2234**. 373-card lab अछूता रहा — uska 612-पंक्ति output चारों engines पर
+byte-for-byte समान है (`md5 6cb6c78d…`). Naya review lab का 142-पंक्ति output
+भी चारों engines पर समान है (`md5 0265618d…`)।
+
+> Receipt code tree पर चलाई गई है; ऊपर की docs/README edits सिर्फ
+> documentation हैं, tests उन्हें import नहीं करते (`bun:nyaya` point 5:
+> लिखना और चलाना अलग)।

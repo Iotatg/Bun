@@ -2725,11 +2725,15 @@ print(ask("3*x + 7 = 22")["answer_text"])// 3x + 7 = 22  =>  x = 5
 print(ask("7/8 vs 11/12")["answer_text"])// 7/8 < 11/12
 print(ask("Prove the quasi-Riemann hypothesis")["status"])
 // OUT_OF_SCOPE_FOR_SUTRA
-print(audit()["verdict"])                 // CERTIFIED 17/17
+print(audit()["verdict"])                 // CERTIFIED
+print(audit()["passed"], "/", audit()["total"])          // 34 / 34
 ```
 
-`calc()` is a pure-Bun shunting-yard evaluator (`+ - * / ^ ( )`, decimals;
-unary minus deliberately unsupported and documented). `course()` walks the
+`calc()` and `calc_alt()` are two independent pure-Bun evaluators
+(shunting-yard and recursive-descent) fed by one strict tokenizer: `+ - * / ^
+( )`, decimals, unary `±`, right-associative `^`, implicit multiplication, and
+controlled error dicts instead of crashes. An independent Python oracle in
+`tests/test_sutra_sarva_correctness.py` checks both. `course()` walks the
 *same five steps* from class 1 to a research theorem: 9 of 10 are `SOLVED`,
 the tenth is honestly `OUT_OF_SCOPE`.
 
@@ -2755,9 +2759,42 @@ the bound's shape, **not** the proof's correctness. Status is
 
 > Level 1's rule still holds: *SUTRA is a filter, not a solver.* Level 4 adds a
 > genuine solver for the elementary layer and an honest machine-generated map
-> for the research layer. `CERTIFIED 17/17` means 17 module self-checks.
+> for the research layer. `CERTIFIED 34/34` means 34 module self-checks, not a
+> proof of any theorem.
 
 Reference: [`docs/reference/sutra-sarva.md`](docs/reference/sutra-sarva.md);
-lab: `bun tools/sutra_sarva_lab.bun` (373 cards); example:
+labs: `bun tools/sutra_sarva_lab.bun` (373 cards) and
+`bun tools/sutra_sarva_review_lab.bun` (review corrections); example:
 `examples/sutra_sarva.bun`; tests: `tests/test_sutra_sarva.py` (34 four-engine
-parity tests).
+parity tests) and `tests/test_sutra_sarva_correctness.py` (24 regression tests
+against an independent Python oracle).
+
+**External code review — verified, fixed, re-run (not blindly accepted).** A
+pasted external review of `Bun-Main.zip` reported 6 runtime bugs, a
+"certificates are vacuous" problem, a development priority order, and a 12–18
+month roadmap. Every claim was reproduced live **before** being believed:
+B1–B6 confirmed, and probing found 5 more defects (X1–X5), the worst being
+`2x-5=9` returning `x=2` instead of `x=7`. One review sentence needed
+correction: `0*x+7=7` did not merely mishandle infinite solutions — it
+**crashed** with division by zero. Fixes: a strict tokenizer, two independent
+evaluators (both right-associative `^`, unary `±`, implicit multiplication,
+controlled errors), signed-coefficient linear solving with
+`INFINITE_SOLUTIONS` / `NO_SOLUTION` / `INVALID_INPUT`, and a redesigned
+certificate where every check declares a `method` and `detects_wrong_answer`.
+`certificate_probe()` injects wrong answers and reports
+`ALL_WRONG_ANSWERS_REJECTED 7/7`; `check_answer(sum n=10, 999.0)` now says
+`REJECTED 2/4`. `review_ledger()` records all 11 claims and their verdicts.
+
+**The roadmap answered honestly.** `verification_levels()` implements only
+Level 1 `COMPUTED` and Level 2 `INDEPENDENTLY_CHECKED`; Levels 3–5
+(`SYMBOLICALLY_VERIFIED`, `FORMALLY_VERIFIED`, `RESEARCH_REVIEWED`) are
+`NOT_IMPLEMENTED`. `roadmap()` marks Phase 0 correctness work `DONE` and
+Phases 1–9 `NOT_IMPLEMENTED` — a 12–18 month delivery claim is **not** made.
+`audit()` is `CERTIFIED 34/34`, explicitly scoped as module self-checks only.
+Research theorems solved by SUTRA: **0**. ETH: **`UNDER_REVIEW`**.
+
+`tools/sutra_sarva_review_lab.bun` re-runs every fixed case; its 142-line
+output is byte-identical on all four engines. Following the `bun:nyaya`
+review point, tests written ≠ tests executed: the real external pytest receipt
+for this commit is appended to `SUTRA_SARVA_REVIEW_LAB_OUTPUT.txt` and the
+whole story is in `SUTRA_SARVA_CORRECTION_REPORT.md`.

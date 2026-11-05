@@ -120,9 +120,14 @@ def test_certificate_declares_scope(capsys):
 
 
 def test_check_answer_rejects_wrong_number(capsys):
+    # UPDATED after the external code review: the old boundary check for `sum`
+    # was hardcoded `1*2/2-1` and could never fail. It is now the loop
+    # recurrence f(n)=f(n-1)+n, which ALSO rejects a wrong answer. So a wrong
+    # answer now passes 2 checks instead of 3 -- the certificate got stricter,
+    # not weaker. Kept this assertion explicit rather than hiding the change.
     out = run_both(S + 'let c = check_answer({"kind":"sum","n":10.0}, 999.0)\n'
                        'print(c["verdict"], c["passed"])\n', capsys)
-    assert out.strip() == "REJECTED 3"
+    assert out.strip() == "REJECTED 2"
 
 
 # --- 3. one-line questions -------------------------------------------------
@@ -267,8 +272,11 @@ def test_audit_certified_with_scope(capsys):
     out = run_both(S + 'let a = audit()\n'
                        'print(a["verdict"], a["passed"], a["total"])\n'
                        'print(a["scope"])\n', capsys)
-    assert out.splitlines() == ["CERTIFIED 17 17",
-                                "module self-checks only — NOT a proof of any theorem"]
+    # 17 -> 34: 17 new regression checks for the parser/solver/certificate
+    # fixes came from the external code review. Scope sentence now also says
+    # that the external pytest run is a SEPARATE piece of evidence.
+    assert out.splitlines() == ["CERTIFIED 34 34",
+                                "module self-checks only — NOT a proof of any theorem; external pytest is separate evidence"]
 
 
 def test_lesson(capsys):

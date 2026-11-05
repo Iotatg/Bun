@@ -182,9 +182,18 @@ export fn choose_move(shape, kind) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. A real arithmetic evaluator (shunting-yard, pure Bun)
-//    Supports + - * / ^ ( ) and decimals. No unary minus, by design: it is
-//    documented, not silently guessed.
+// 5. Arithmetic — TWO INDEPENDENT algorithms, not one.
+//    calc()     : shunting-yard (explicit value/operator stacks)
+//    calc_alt() : recursive descent (call stack + precedence grammar)
+//    The certificate compares them. Agreement is evidence, never proof.
+//
+//    Correctness fixes (external code review, verified by reproduction):
+//      * ^ is RIGHT-associative: 2^3^2 = 2^(3^2) = 512, not 64
+//      * unary +/- supported: -3+5 = 2, 2^-3 = 0.125, -3^2 = -9
+//      * implicit multiplication: 2(3+4) = 14
+//      * unknown chars, malformed numbers, unmatched parens, missing operands
+//        and division by zero return a CONTROLLED error dict, never a crash
+//        and never a silently wrong number.
 // ---------------------------------------------------------------------------
 
 fn precedence(op) {
@@ -192,8 +201,22 @@ fn precedence(op) {
     if op == "-" { return 1 }
     if op == "*" { return 2 }
     if op == "/" { return 2 }
-    if op == "^" { return 3 }
+    if op == "u-" { return 3 }
+    if op == "u+" { return 3 }
+    if op == "^" { return 4 }
     return 0
+}
+
+fn is_unary(op) {
+    return op == "u-" or op == "u+"
+}
+
+fn should_reduce(top_op, op) {
+    let tp = precedence(top_op)
+    let p = precedence(op)
+    // Right-associative ^ keeps an equal-precedence ^ on the stack.
+    if op == "^" { return tp > p }
+    return tp >= p
 }
 
 fn apply_op(a, b, op) {
@@ -202,69 +225,252 @@ fn apply_op(a, b, op) {
     if op == "*" { return a * b }
     if op == "/" { return a / b }
     if op == "^" { return a ** b }
+    if op == "u-" { return -a }
+    if op == "u+" { return a }
     return 0.0
 }
 
-fn tokens_of(expr) {
+fn err_toks(msg) {
+    return {"ok": false, "toks": [], "error": msg, "count": 0}
+}
+
+// Strict tokenizer. Every rejected input gets a reason; nothing is skipped.
+export fn tokenize(expr) {
     var toks = []
     var i = 0
+    var expect_operand = true
+    var depth = 0
     while i < expr.len() {
         let ch = expr[i]
         if ch == " " { i = i + 1 continue }
         if digit_char(ch) or ch == "." {
             var s = ""
+            var dots = 0
             while i < expr.len() {
                 let c = expr[i]
-                if digit_char(c) or c == "." { s = s + c i = i + 1 continue }
+                if digit_char(c) or c == "." {
+                    if c == "." { dots = dots + 1 }
+                    s = s + c
+                    i = i + 1
+                    continue
+                }
                 break
             }
+            if dots > 1 { return err_toks("invalid number: multiple decimal points") }
+            if s == "." { return err_toks("invalid number: bare decimal point") }
+            if not expect_operand { return err_toks("missing operator before number") }
             toks.push(["n", float(s)])
+            expect_operand = false
             continue
         }
-        if op_char(ch) { toks.push(["o", ch]) i = i + 1 continue }
-        i = i + 1
+        if ch == "(" {
+            // A number or ')' immediately before '(' means multiplication.
+            if not expect_operand { toks.push(["o", "*"]) }
+            toks.push(["o", "("])
+            depth = depth + 1
+            expect_operand = true
+            i = i + 1
+            continue
+        }
+        if ch == ")" {
+            if expect_operand { return err_toks("empty parentheses or trailing operator") }
+            if depth == 0 { return err_toks("unmatched closing parenthesis") }
+            toks.push(["o", ")"])
+            depth = depth - 1
+            expect_operand = false
+            i = i + 1
+            continue
+        }
+        if ch == "+" or ch == "-" {
+            if expect_operand {
+                toks.push(["o", "u" + ch])
+            } else {
+                toks.push(["o", ch])
+                expect_operand = true
+            }
+            i = i + 1
+            continue
+        }
+        if ch == "*" or ch == "/" or ch == "^" {
+            if expect_operand { return err_toks("operator '" + ch + "' has no left operand") }
+            toks.push(["o", ch])
+            expect_operand = true
+            i = i + 1
+            continue
+        }
+        return err_toks("unknown character '" + ch + "'")
     }
-    return toks
+    if expect_operand { return err_toks("expression ends with an operator") }
+    if depth != 0 { return err_toks("unmatched opening parenthesis") }
+    return {"ok": true, "toks": toks, "error": "", "count": toks.len()}
 }
 
 fn reduce_one(vals, ops) {
+    let o = ops.pop()
+    if vals.len() < 1 { return "stack underflow" }
+    if is_unary(o) {
+        let a = vals.pop()
+        vals.push(apply_op(a, 0.0, o))
+        return ""
+    }
+    if vals.len() < 2 { return "stack underflow" }
     let b = vals.pop()
     let a = vals.pop()
-    let o = ops.pop()
+    if o == "/" and f_abs(b) < 1e-15 { return "division by zero" }
     vals.push(apply_op(a, b, o))
-    return true
+    return ""
+}
+
+fn calc_error(expr, msg, count) {
+    return {"ok": false, "value": 0.0, "error": msg,
+            "tokens": count, "expr": expr, "kind": "calc",
+            "method": "shunting-yard"}
 }
 
 export fn calc(expr) {
-    let toks = tokens_of(expr)
+    let t = tokenize(expr)
+    if not t["ok"] { return calc_error(expr, t["error"], 0) }
+    let toks = t["toks"]
     var vals = []
     var ops = []
     var i = 0
     while i < toks.len() {
-        let t = toks[i]
-        if t[0] == "n" { vals.push(t[1]) }
-        if t[0] == "o" {
-            let op = t[1]
+        let tk = toks[i]
+        if tk[0] == "n" { vals.push(tk[1]) }
+        if tk[0] == "o" {
+            let op = tk[1]
             if op == "(" { ops.push(op) }
             if op == ")" {
                 while ops.len() > 0 and ops[ops.len() - 1] != "(" {
-                    reduce_one(vals, ops)
+                    let e = reduce_one(vals, ops)
+                    if e != "" { return calc_error(expr, e, t["count"]) }
                 }
                 if ops.len() > 0 { ops.pop() }
             }
             if op != "(" and op != ")" {
-                while ops.len() > 0 and ops[ops.len() - 1] != "(" and precedence(ops[ops.len() - 1]) >= precedence(op) {
-                    reduce_one(vals, ops)
+                if is_unary(op) {
+                    // A unary operator appears in operand position: never
+                    // reduce the operator that is waiting for its right side.
+                    ops.push(op)
+                } else {
+                    while ops.len() > 0 and ops[ops.len() - 1] != "(" and should_reduce(ops[ops.len() - 1], op) {
+                        let e = reduce_one(vals, ops)
+                        if e != "" { return calc_error(expr, e, t["count"]) }
+                    }
+                    ops.push(op)
                 }
-                ops.push(op)
             }
         }
         i = i + 1
     }
-    while ops.len() > 0 { reduce_one(vals, ops) }
-    var value = 0.0
-    if vals.len() > 0 { value = vals[0] }
-    return {"expr": expr, "value": value, "tokens": toks.len(), "kind": "calc"}
+    while ops.len() > 0 {
+        if ops[ops.len() - 1] == "(" { return calc_error(expr, "unmatched opening parenthesis", t["count"]) }
+        let e = reduce_one(vals, ops)
+        if e != "" { return calc_error(expr, e, t["count"]) }
+    }
+    if vals.len() != 1 { return calc_error(expr, "unconsumed operands", t["count"]) }
+    return {"ok": true, "value": vals[0], "error": "",
+            "tokens": t["count"], "expr": expr, "kind": "calc",
+            "method": "shunting-yard"}
+}
+
+// ---- independent oracle: recursive descent -------------------------------
+
+fn alt_peek(st) {
+    if st["i"] >= st["toks"].len() { return ["e", ""] }
+    return st["toks"][st["i"]]
+}
+
+fn alt_expr(st) {
+    var v = alt_term(st)
+    while 1 == 1 {
+        let p = alt_peek(st)
+        if p[0] != "o" { break }
+        if p[1] != "+" and p[1] != "-" { break }
+        st["i"] = st["i"] + 1
+        let w = alt_term(st)
+        if p[1] == "+" { v = v + w } else { v = v - w }
+    }
+    return v
+}
+
+fn alt_term(st) {
+    var v = alt_unary(st)
+    while 1 == 1 {
+        let p = alt_peek(st)
+        if p[0] != "o" { break }
+        if p[1] != "*" and p[1] != "/" { break }
+        st["i"] = st["i"] + 1
+        let w = alt_unary(st)
+        if p[1] == "*" {
+            v = v * w
+        } else {
+            if f_abs(w) < 1e-15 { st["err"] = "division by zero" return 0.0 }
+            v = v / w
+        }
+    }
+    return v
+}
+
+fn alt_unary(st) {
+    let p = alt_peek(st)
+    if p[0] == "o" and (p[1] == "u-" or p[1] == "u+") {
+        st["i"] = st["i"] + 1
+        let v = alt_unary(st)
+        if p[1] == "u-" { return -v }
+        return v
+    }
+    return alt_power(st)
+}
+
+fn alt_power(st) {
+    let v = alt_primary(st)
+    let p = alt_peek(st)
+    if p[0] == "o" and p[1] == "^" {
+        st["i"] = st["i"] + 1
+        // Exponent calls alt_unary, so 2^3^2 groups from the RIGHT.
+        let e = alt_unary(st)
+        return v ** e
+    }
+    return v
+}
+
+fn alt_primary(st) {
+    let p = alt_peek(st)
+    if p[0] == "n" { st["i"] = st["i"] + 1 return p[1] }
+    if p[0] == "o" and p[1] == "(" {
+        st["i"] = st["i"] + 1
+        let v = alt_expr(st)
+        let q = alt_peek(st)
+        if q[0] == "o" and q[1] == ")" {
+            st["i"] = st["i"] + 1
+        } else {
+            st["err"] = "unmatched opening parenthesis"
+        }
+        return v
+    }
+    st["err"] = "expected a number or parenthesised expression"
+    return 0.0
+}
+
+export fn calc_alt(expr) {
+    let t = tokenize(expr)
+    if not t["ok"] {
+        return {"ok": false, "value": 0.0, "error": t["error"],
+                "tokens": 0, "expr": expr, "method": "recursive-descent"}
+    }
+    let st = {"i": 0, "toks": t["toks"], "err": ""}
+    let v = alt_expr(st)
+    if st["err"] != "" {
+        return {"ok": false, "value": 0.0, "error": st["err"],
+                "tokens": t["count"], "expr": expr, "method": "recursive-descent"}
+    }
+    if st["i"] != t["count"] {
+        return {"ok": false, "value": 0.0, "error": "unconsumed tokens",
+                "tokens": t["count"], "expr": expr, "method": "recursive-descent"}
+    }
+    return {"ok": true, "value": v, "error": "",
+            "tokens": t["count"], "expr": expr, "method": "recursive-descent"}
 }
 
 // ---------------------------------------------------------------------------
@@ -293,10 +499,26 @@ fn shape_word(kind) {
     return "constant bounded"
 }
 
+// ---------------------------------------------------------------------------
+// 6b. Certificate, redesigned after external code review.
+//
+// The old boundary_ok() had three branches that were ALWAYS true:
+//   calc    : f_abs(ans - ans) < 1e-9
+//   percent : f_abs(0.0 * b / 100.0) < 1e-9
+//   sum     : f_abs(1*2/2 - 1) < 1e-9       (hardcoded, ignores the input)
+// Those could never reject anything. Now every check has an explicit METHOD,
+// a flag saying whether it can detect a wrong numeric answer, and a route
+// that does NOT reuse the solver's own formula. See certificate_probe().
+// ---------------------------------------------------------------------------
+
 fn recompute(q, ans) {
     let kind = q["kind"]
-    if kind == "calc" { return calc(q["expr"])["value"] }
-    if kind == "percent" { return q["b"] * q["a"] / 100.0 }
+    if kind == "calc" {
+        let a = calc_alt(q["expr"])
+        if not a["ok"] { return 0.0 }
+        return a["value"]
+    }
+    if kind == "percent" { return (q["b"] / 100.0) * q["a"] }
     if kind == "linear" { return q["a"] * ans + q["b"] }
     if kind == "sum" {
         var s = 0.0
@@ -305,16 +527,92 @@ fn recompute(q, ans) {
     }
     if kind == "ratio" { return float(q["a"] * q["d"] - q["c"] * q["b"]) }
     if kind == "unit" { return q["a"] * q["factor"] }
+    if kind == "growth" { return float(q["exponent"]) }
     return ans
 }
 
+fn recompute_method(kind) {
+    if kind == "calc" { return "recursive-descent evaluator, independent of shunting-yard" }
+    if kind == "percent" { return "(b/100)*a, different association from solver" }
+    if kind == "linear" { return "substitute x back into a*x+b" }
+    if kind == "sum" { return "explicit loop 1..n, independent of n(n+1)/2" }
+    if kind == "ratio" { return "cross multiplication a*d - c*b" }
+    if kind == "unit" { return "a * factor" }
+    if kind == "growth" { return "exponent scalar" }
+    return "no independent route"
+}
+
+fn domain_ok(q, ans) {
+    let kind = q["kind"]
+    if kind == "calc" {
+        let c = calc(q["expr"])
+        return c["ok"] and c["tokens"] > 0
+    }
+    if kind == "ratio" { return f_abs(q["b"]) > 1e-15 and f_abs(q["d"]) > 1e-15 }
+    if kind == "sum" { return q["n"] >= 1.0 }
+    if kind == "linear" { return f_abs(q["a"]) > 1e-12 }
+    if kind == "percent" { return q["b"] >= 0.0 }
+    if kind == "unit" { return f_abs(q["factor"]) > 1e-15 }
+    return true
+}
+
+// An identity that a WRONG answer must violate. No always-true branches.
 fn boundary_ok(q, ans) {
     let kind = q["kind"]
-    if kind == "percent" { return f_abs(0.0 * q["b"] / 100.0) < 1e-9 }
-    if kind == "linear" { return f_abs(q["a"] * ((q["c"] - q["b"]) / q["a"]) + q["b"] - q["c"]) < 1e-9 }
-    if kind == "sum" { return f_abs(1.0 * 2.0 / 2.0 - 1.0) < 1e-9 }
-    if kind == "calc" { return f_abs(ans - ans) < 1e-9 }
-    return true
+    if kind == "percent" {
+        let comp = (100.0 - q["a"]) * q["b"] / 100.0
+        return f_abs(ans + comp - q["b"]) < 1e-9
+    }
+    if kind == "linear" {
+        return f_abs(q["a"] * (ans + 1.0) + q["b"] - q["c"] - q["a"]) < 1e-9
+    }
+    if kind == "sum" {
+        var s = 0.0
+        for k in range(1, int(q["n"])) { s = s + float(k) }
+        return f_abs(ans - (s + q["n"])) < 1e-9
+    }
+    if kind == "calc" {
+        let m = calc("2*(" + q["expr"] + ")")
+        if not m["ok"] { return false }
+        return f_abs(m["value"] - 2.0 * ans) < 1e-9
+    }
+    if kind == "ratio" {
+        if f_abs(q["b"]) < 1e-15 or f_abs(q["d"]) < 1e-15 { return false }
+        let diff = q["a"] / q["b"] - q["c"] / q["d"]
+        if f_abs(ans) < 1e-12 { return f_abs(diff) < 1e-9 }
+        if ans > 0.0 { return diff > 0.0 }
+        return diff < 0.0
+    }
+    if kind == "unit" { return f_abs(ans / q["factor"] - q["a"]) < 1e-9 }
+    if kind == "growth" { return f_abs(ans - float(q["exponent"])) < 1e-9 }
+    return false
+}
+
+fn boundary_method(kind) {
+    if kind == "percent" { return "complement identity: a%b + (100-a)%b = b" }
+    if kind == "linear" { return "shift invariant: a*(x+1)+b-c = a" }
+    if kind == "sum" { return "loop recurrence: f(n) = f(n-1) + n" }
+    if kind == "calc" { return "metamorphic relation: 2*(expr) = 2*ans" }
+    if kind == "ratio" { return "independent decimal-division sign agreement" }
+    if kind == "unit" { return "inverse: ans/factor = a" }
+    if kind == "growth" { return "scalar identity (duplicates number check; see level)" }
+    return "none"
+}
+
+// How many DISTINCT independent numeric oracles this kind really has.
+// growth is a scalar passthrough: honestly 1, not 2.
+fn distinct_oracles(kind) {
+    if kind == "growth" { return 1 }
+    return 2
+}
+
+fn no_certificate(reason) {
+    return {"checks": [], "passed": 0, "total": 4,
+            "verdict": "NOT_APPLICABLE",
+            "scope": "no certificate issued: " + reason,
+            "verification_level": "NONE",
+            "proof_status": "NOT_ESTABLISHED",
+            "independent_oracles": 0}
 }
 
 export fn check_answer(q, ans) {
@@ -322,25 +620,87 @@ export fn check_answer(q, ans) {
     let sh = expected_shape(q["kind"])
     let independent = shape_of(shape_word(q["kind"]))["shape"]
     checks.push({"check": "shape", "pass": sh == independent,
+                 "method": "expected_shape table vs independent keyword-shape route",
+                 "detects_wrong_answer": false,
                  "detail": "expected " + sh + ", keyword route says " + independent})
     let r = recompute(q, ans)
     var number_ok = false
     if q["kind"] == "linear" { number_ok = f_abs(r - q["c"]) < 1e-9 }
     if q["kind"] != "linear" { number_ok = f_abs(r - ans) < 1e-9 }
     checks.push({"check": "number", "pass": number_ok,
+                 "method": recompute_method(q["kind"]),
+                 "detects_wrong_answer": true,
                  "detail": "independent recompute = " + num(r)})
-    var dim_ok = true
-    if has_key(q, "unit") { dim_ok = q["unit"] != "" }
-    if q["kind"] == "calc" { dim_ok = calc(q["expr"])["tokens"] > 0 }
-    checks.push({"check": "dimension", "pass": dim_ok,
-                 "detail": "tokens / unit / maatra"})
-    checks.push({"check": "boundary", "pass": boundary_ok(q, ans),
-                 "detail": "chhota case (n=1, 0%, x=0)"})
+    let dim = domain_ok(q, ans)
+    checks.push({"check": "dimension", "pass": dim,
+                 "method": "operand domain validation + fully parsed expression",
+                 "detects_wrong_answer": false,
+                 "detail": "inputs in domain, tokens consumed"})
+    let bnd = boundary_ok(q, ans)
+    checks.push({"check": "boundary", "pass": bnd,
+                 "method": boundary_method(q["kind"]),
+                 "detects_wrong_answer": true,
+                 "detail": "identity that a wrong answer must break"})
     var passed = 0
-    for c in checks { if c["pass"] { passed = passed + 1 } }
+    var numeric = 0
+    for c in checks {
+        if c["pass"] { passed = passed + 1 }
+        if c["pass"] and c["detects_wrong_answer"] { numeric = numeric + 1 }
+    }
+    let certified = passed == 4
+    // Two checks can pass, but if they are the SAME identity (growth is a
+    // scalar passthrough) there is still only one distinct oracle. Cap it.
+    let cap = distinct_oracles(q["kind"])
+    var effective = numeric
+    if effective > cap { effective = cap }
+    var level = "COMPUTED_UNVERIFIED"
+    if certified and effective >= 2 { level = "INDEPENDENTLY_CHECKED" }
+    if certified and effective < 2 { level = "COMPUTED" }
     return {"checks": checks, "passed": passed, "total": 4,
-            "verdict": pick(passed == 4, "CERTIFIED", "REJECTED"),
-            "scope": "4 module self-checks; THIS IS NOT A PROOF of any theorem"}
+            "verdict": pick(certified, "CERTIFIED", "REJECTED"),
+            "scope": "4 checks, " + str(numeric) + " can detect a wrong numeric answer (" + str(effective) + " distinct oracles); computation, NOT A PROOF of any theorem",
+            "verification_level": level,
+            "proof_status": "NOT_ESTABLISHED",
+            "independent_oracles": effective}
+}
+
+// The real test of a certificate: inject WRONG answers and see if it rejects.
+export fn certificate_probe() {
+    let cases = [
+        {"name": "sum-wrong", "q": {"kind": "sum", "n": 10.0}, "bad": 999.0},
+        {"name": "percent-wrong", "q": {"kind": "percent", "a": 50.0, "b": 80.0}, "bad": 999.0},
+        {"name": "linear-wrong", "q": {"kind": "linear", "a": 3.0, "b": 7.0, "c": 22.0}, "bad": 999.0},
+        {"name": "calc-wrong", "q": {"kind": "calc", "expr": "2+3"}, "bad": 999.0},
+        {"name": "ratio-wrong", "q": {"kind": "ratio", "a": 7.0, "b": 8.0, "c": 11.0, "d": 12.0}, "bad": 999.0},
+        {"name": "unit-wrong", "q": {"kind": "unit", "a": 3.0, "factor": 1000.0, "from": "km", "to": "m", "unit": "m"}, "bad": 999.0},
+        {"name": "growth-wrong", "q": {"kind": "growth", "exponent": 1}, "bad": 999.0}
+    ]
+    var rows = []
+    var caught = 0
+    for c in cases {
+        let r = check_answer(c["q"], c["bad"])
+        let rejected = r["verdict"] == "REJECTED"
+        if rejected { caught = caught + 1 }
+        rows.push({"case": c["name"], "rejected": rejected, "passed": r["passed"]})
+    }
+    return {"cases": rows, "caught": caught, "total": cases.len(),
+            "verdict": pick(caught == cases.len(), "ALL_WRONG_ANSWERS_REJECTED", "FALSE_POSITIVE_RISK"),
+            "note": "a certificate that cannot reject a wrong answer is vacuous"} 
+}
+
+fn special_result(kind, status, text, reason) {
+    return {"kind": kind, "status": status, "answer": 0.0,
+            "answer_text": text, "reason": reason,
+            "shape": expected_shape(kind),
+            "move": choose_move(expected_shape(kind), kind),
+            "certificate": no_certificate(reason),
+            "verification_level": "NONE",
+            "proof_status": "NOT_ESTABLISHED"}
+}
+
+fn signed_term(x) {
+    if x < 0.0 { return "- " + num(-x) }
+    return "+ " + num(x)
 }
 
 export fn solve(q) {
@@ -351,7 +711,40 @@ export fn solve(q) {
                 "shape": "structural", "move": 7,
                 "reason": "ek research theorem ko pramaan chahiye (Lean / mathlib / independent review); shape aur move batana pramaan nahi hai",
                 "sutra_can_do": "shape + move + 4 checks + verification map",
-                "certificate": {"verdict": "NOT_APPLICABLE", "scope": "no certificate issued"}}
+                "certificate": {"verdict": "NOT_APPLICABLE", "scope": "no certificate issued"},
+                "verification_level": "NONE",
+                "proof_status": "NOT_ESTABLISHED"}
+    }
+    // Reject bad inputs BEFORE computing anything. No crash, no silent guess.
+    if kind == "calc" {
+        let c = calc(q["expr"])
+        if not c["ok"] {
+            return special_result(kind, "INVALID_EXPRESSION", c["error"],
+                                  "parser rejected the expression: " + c["error"])
+        }
+    }
+    if kind == "sum" {
+        if q["n"] < 1.0 {
+            return special_result(kind, "INVALID_INPUT", "sum needs an integer n >= 1",
+                                  "upper limit out of domain (negative or zero)")
+        }
+        if f_abs(q["n"] - float(int(q["n"]))) > 1e-9 {
+            return special_result(kind, "INVALID_INPUT", "sum needs an integer n >= 1",
+                                  "upper limit is not an integer")
+        }
+    }
+    if kind == "linear" {
+        if f_abs(q["a"]) < 1e-12 {
+            let eq = num(q["a"]) + "x " + signed_term(q["b"]) + " = " + num(q["c"])
+            if f_abs(q["b"] - q["c"]) < 1e-9 {
+                return special_result(kind, "INFINITE_SOLUTIONS",
+                    eq + "  =>  har x ke liye sach (infinitely many solutions)",
+                    "a = 0 and b = c: identity, no unique solution")
+            }
+            return special_result(kind, "NO_SOLUTION",
+                eq + "  =>  koi x nahi",
+                "a = 0 and b != c: inconsistent equation")
+        }
     }
     var ans = 0.0
     var text = ""
@@ -365,7 +758,7 @@ export fn solve(q) {
     }
     if kind == "linear" {
         ans = (q["c"] - q["b"]) / q["a"]
-        text = num(q["a"]) + "x + " + num(q["b"]) + " = " + num(q["c"]) + "  =>  x = " + num(ans)
+        text = num(q["a"]) + "x " + signed_term(q["b"]) + " = " + num(q["c"]) + "  =>  x = " + num(ans)
     }
     if kind == "sum" {
         ans = q["n"] * (q["n"] + 1.0) / 2.0
@@ -392,7 +785,9 @@ export fn solve(q) {
     return {"kind": kind, "status": pick(cert["verdict"] == "CERTIFIED", "SOLVED", "REJECTED"),
             "answer": ans, "answer_text": text,
             "shape": expected_shape(kind), "move": choose_move(expected_shape(kind), kind),
-            "certificate": cert}
+            "certificate": cert,
+            "verification_level": cert["verification_level"],
+            "proof_status": "NOT_ESTABLISHED"}
 }
 
 // ---------------------------------------------------------------------------
@@ -417,18 +812,34 @@ export fn parse_question(text) {
     if has(low, "%") and has(low, "of") and vals.len() >= 2 {
         return {"kind": "percent", "a": vals[0], "b": vals[1]}
     }
-    if has(low, "sum") and vals.len() >= 1 {
-        return {"kind": "sum", "n": vals[vals.len() - 1]}
+    // Signed pattern: the old unsigned pattern dropped the minus in
+    // "sum 1..-5" and in "2x-5=9", producing a confidently wrong answer.
+    let signed_pat = "-?[0-9]+\\.[0-9]+|-?[0-9]+"
+    if has(low, "sum") {
+        let signed = regex_findall(signed_pat, text)
+        if signed.len() >= 1 {
+            return {"kind": "sum", "n": float(signed[signed.len() - 1])}
+        }
     }
     if has(low, " vs ") and vals.len() >= 4 {
         return {"kind": "ratio", "a": vals[0], "b": vals[1], "c": vals[2], "d": vals[3]}
     }
-    if has(text, "=") and has(low, "x") and vals.len() >= 3 {
-        return {"kind": "linear", "a": vals[0], "b": vals[1], "c": vals[2]}
+    if has(text, "=") and has(low, "x") {
+        let eq = index_of(text, "=")
+        let left = substring(text, 0, eq)
+        let right = substring(text, eq + 1, text.len())
+        let ln = regex_findall(signed_pat, left)
+        let rn = regex_findall(signed_pat, right)
+        if ln.len() >= 2 and rn.len() >= 1 {
+            return {"kind": "linear", "a": float(ln[0]),
+                    "b": float(ln[1]), "c": float(rn[0])}
+        }
+        return {"kind": "theorem", "text": text}
     }
-    if numeric_only(text) and (has(text, "+") or has(text, "*") or has(text, "-") or has(text, "/") or has(text, "^")) {
-        return {"kind": "calc", "expr": text}
-    }
+    // Any purely arithmetic-looking string goes to the strict tokenizer,
+    // so "2..3" and "()" get a controlled INVALID_EXPRESSION instead of
+    // quietly becoming a research theorem.
+    if numeric_only(text) { return {"kind": "calc", "expr": text} }
     return {"kind": "theorem", "text": text}
 }
 
@@ -448,7 +859,7 @@ fn question_text(q) {
     if has_key(q, "text") { return q["text"] }
     if has_key(q, "expr") { return q["expr"] }
     if k == "percent" { return num(q["a"]) + "% of " + num(q["b"]) }
-    if k == "linear" { return num(q["a"]) + "*x + " + num(q["b"]) + " = " + num(q["c"]) }
+    if k == "linear" { return num(q["a"]) + "*x " + signed_term(q["b"]) + " = " + num(q["c"]) }
     if k == "sum" { return "sum 1.." + num(q["n"]) }
     if k == "ratio" { return num(q["a"]) + "/" + num(q["b"]) + " vs " + num(q["c"]) + "/" + num(q["d"]) }
     if k == "growth" { return "growth exponent " + num(q["exponent"]) }
@@ -695,6 +1106,82 @@ export fn lesson() {
     return "SUTRA = S saaf karo, U uska roop, T tareeka, R rakh-jaanch, A answer + admit scope. Paanch kadam, har sawaal."
 }
 
+// ---------------------------------------------------------------------------
+// 13. Response to the external code review: what was claimed, what we measured
+// ---------------------------------------------------------------------------
+
+export fn review_ledger() {
+    return [
+        {"id": "B1", "claim": "2^3^2 -> 64, expected 512",
+         "reproduced": "64", "verdict": "CONFIRMED",
+         "fix": "^ right-associative in both evaluators"},
+        {"id": "B2", "claim": "-3+5 crashes: pop on empty list",
+         "reproduced": "pop on empty list", "verdict": "CONFIRMED",
+         "fix": "unary +/- tokens; result 2"},
+        {"id": "B3", "claim": "2+*3 crashes: pop on empty list",
+         "reproduced": "pop on empty list", "verdict": "CONFIRMED",
+         "fix": "controlled 'no left operand' error"},
+        {"id": "B4", "claim": "sum 1..-5 returns 15",
+         "reproduced": "SOLVED 1+2+...+5 = 15", "verdict": "CONFIRMED",
+         "fix": "signed endpoint, INVALID_INPUT for n < 1"},
+        {"id": "B5", "claim": "0*x+7=7 infinitely many; solver mishandles a=0",
+         "reproduced": "Runtime error: division by zero", "verdict": "CONFIRMED_WITH_CORRECTION",
+         "fix": "INFINITE_SOLUTIONS / NO_SOLUTION, no crash"},
+        {"id": "B6", "claim": "boundary_ok has always-true checks",
+         "reproduced": "ans-ans, 0*b/100, hardcoded 1*2/2-1", "verdict": "CONFIRMED",
+         "fix": "falsifiable identities + certificate_probe 7/7"},
+        {"id": "X1", "claim": "2x-5=9 negative coefficient parsing risk",
+         "reproduced": "2x + 5 = 9 => x = 2 (correct is 7)", "verdict": "CONFIRMED_NEW_BUG",
+         "fix": "signed coefficients; now x = 7"},
+        {"id": "X2", "claim": "2a+3 unknown chars silently ignored",
+         "reproduced": "5.0", "verdict": "CONFIRMED",
+         "fix": "unknown character rejected"},
+        {"id": "X3", "claim": "2(3+4) implicit multiplication unsupported",
+         "reproduced": "2.0", "verdict": "CONFIRMED",
+         "fix": "implicit * inserted; result 14"},
+        {"id": "X4", "claim": "2*(3+4 unmatched parenthesis",
+         "reproduced": "pop on empty list", "verdict": "CONFIRMED",
+         "fix": "unmatched opening parenthesis error"},
+        {"id": "X5", "claim": "2..3 invalid numeric token",
+         "reproduced": "cannot convert to float", "verdict": "CONFIRMED",
+         "fix": "invalid number: multiple decimal points"}
+    ]
+}
+
+// The five verification levels proposed by the review, with HONEST status.
+// SUTRA currently reaches level 2 on the elementary kinds and NOTHING above.
+export fn verification_levels() {
+    return [
+        {"level": 1, "name": "COMPUTED", "status": "IMPLEMENTED",
+         "meaning": "numerical answer calculated"},
+        {"level": 2, "name": "INDEPENDENTLY_CHECKED", "status": "IMPLEMENTED",
+         "meaning": "a second, different algorithm verifies the result"},
+        {"level": 3, "name": "SYMBOLICALLY_VERIFIED", "status": "NOT_IMPLEMENTED",
+         "meaning": "algebraic transformations and identities checked"},
+        {"level": 4, "name": "FORMALLY_VERIFIED", "status": "NOT_IMPLEMENTED",
+         "meaning": "Lean kernel accepted a proof"},
+        {"level": 5, "name": "RESEARCH_REVIEWED", "status": "NOT_IMPLEMENTED",
+         "meaning": "original claim + formalization independently reviewed"}
+    ]
+}
+
+// Accepted as DIRECTION, not delivered. A written phase is not a built phase.
+export fn roadmap() {
+    return [
+        {"phase": 0, "name": "correctness audit + parser/certificate fix", "status": "DONE",
+         "evidence": "this commit; 7/7 wrong answers rejected"},
+        {"phase": 1, "name": "AST, exact rationals, domain system", "status": "NOT_IMPLEMENTED"},
+        {"phase": 2, "name": "symbolic algebra / calculus / linear algebra", "status": "NOT_IMPLEMENTED"},
+        {"phase": 3, "name": "advanced mathematics engines", "status": "NOT_IMPLEMENTED"},
+        {"phase": 4, "name": "universal science engines", "status": "NOT_IMPLEMENTED"},
+        {"phase": 5, "name": "Lean 4 + Mathlib proof bridge", "status": "NOT_IMPLEMENTED"},
+        {"phase": 6, "name": "research intelligence / theorem graph", "status": "NOT_IMPLEMENTED"},
+        {"phase": 7, "name": "universal reasoning router", "status": "NOT_IMPLEMENTED"},
+        {"phase": 8, "name": "performance, reliability, self-testing", "status": "NOT_IMPLEMENTED"},
+        {"phase": 9, "name": "public release and ecosystem", "status": "NOT_IMPLEMENTED"}
+    ]
+}
+
 export fn audit() {
     var checks = []
     checks.push({"check": "recipe-has-5-steps", "pass": alphabet().len() == 5})
@@ -714,9 +1201,27 @@ export fn audit() {
     checks.push({"check": "steps-are-5", "pass": steps(course()[0]["q"]).len() == 5})
     checks.push({"check": "measurement-notes-present", "pass": measurement_notes().len() >= 4})
     checks.push({"check": "eth-not-claimed-solved", "pass": verdict()["research_theorems_solved_by_sutra"] == 0})
+    // --- regression checks for the external review -----------------------
+    checks.push({"check": "calc-right-assoc", "pass": f_abs(calc("2^3^2")["value"] - 512.0) < 1e-9})
+    checks.push({"check": "calc-unary-minus", "pass": f_abs(calc("-3+5")["value"] - 2.0) < 1e-9})
+    checks.push({"check": "calc-unary-vs-power", "pass": f_abs(calc("-3^2")["value"] + 9.0) < 1e-9})
+    checks.push({"check": "calc-implicit-mult", "pass": f_abs(calc("2(3+4)")["value"] - 14.0) < 1e-9})
+    checks.push({"check": "calc-controlled-error", "pass": not calc("2+*3")["ok"]})
+    checks.push({"check": "two-oracles-agree", "pass": f_abs(calc("(2+3)*4^2")["value"] - calc_alt("(2+3)*4^2")["value"]) < 1e-9})
+    checks.push({"check": "sum-negative-rejected", "pass": ask("sum 1..-5")["status"] == "INVALID_INPUT"})
+    checks.push({"check": "linear-zero-infinite", "pass": ask("0*x + 7 = 7")["status"] == "INFINITE_SOLUTIONS"})
+    checks.push({"check": "linear-zero-none", "pass": ask("0*x + 7 = 10")["status"] == "NO_SOLUTION"})
+    checks.push({"check": "linear-negative-coeff", "pass": has(ask("2x-5=9")["answer_text"], "x = 7")})
+    checks.push({"check": "certificate-probe-7-of-7", "pass": certificate_probe()["caught"] == certificate_probe()["total"]})
+    checks.push({"check": "no-vacuous-check", "pass": check_answer({"kind": "calc", "expr": "2+3"}, 999.0)["verdict"] == "REJECTED"})
+    checks.push({"check": "verification-level-honest", "pass": solve({"kind": "sum", "n": 10.0})["verification_level"] == "INDEPENDENTLY_CHECKED"})
+    checks.push({"check": "proof-status-not-established", "pass": solve({"kind": "sum", "n": 10.0})["proof_status"] == "NOT_ESTABLISHED"})
+    checks.push({"check": "roadmap-mostly-unbuilt", "pass": roadmap()[1]["status"] == "NOT_IMPLEMENTED"})
+    checks.push({"check": "levels-honest", "pass": verification_levels()[4]["status"] == "NOT_IMPLEMENTED"})
+    checks.push({"check": "review-ledger-recorded", "pass": review_ledger().len() == 11})
     var passed = 0
     for c in checks { if c["pass"] { passed = passed + 1 } }
     return {"checks": checks, "passed": passed, "total": checks.len(),
             "verdict": pick(passed == checks.len(), "CERTIFIED", "FAILED"),
-            "scope": "module self-checks only — NOT a proof of any theorem"}
+            "scope": "module self-checks only — NOT a proof of any theorem; external pytest is separate evidence"}
 }

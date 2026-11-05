@@ -1,0 +1,109 @@
+// SUTRA Level 4 — response to the external code review.
+//
+// Run:  ./bin/bun tools/sutra_sarva_review_lab.bun
+//
+// This lab re-runs every reported defect LIVE after the fix. It does not
+// quote the review's expected values as truth: it prints what the code
+// actually does now, plus the claim-vs-reproduced ledger recorded during
+// verification. Tests written and tests executed are separate evidence, so
+// the external pytest receipt is appended from OUTSIDE this program.
+
+import { num } from "bun:sutra"
+import { calc, calc_alt, tokenize, ask, solve, check_answer,
+         certificate_probe, review_ledger, verification_levels,
+         roadmap, audit, verdict, eth_bound_check } from "bun:sutra_sarva"
+
+print("===========================================================================")
+print("SUTRA LEVEL 4 — EXTERNAL CODE REVIEW : VERIFY -> FIX -> RE-RUN")
+print("===========================================================================")
+print("Rule: blind accept NAHI. Har daava pehle reproduce, phir fix, phir evidence.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("1. CLAIM vs REPRODUCED vs VERDICT vs FIX  (review_ledger)")
+print("---------------------------------------------------------------------------")
+for r in review_ledger() {
+    print("  ", r["id"], "|", r["verdict"])
+    print("      claim      :", r["claim"])
+    print("      reproduced :", r["reproduced"])
+    print("      fix        :", r["fix"])
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("2. LIVE RE-RUN — same inputs, AFTER the fix")
+print("---------------------------------------------------------------------------")
+let exprs = ["2^3^2", "(2^3)^2", "-3+5", "-3^2", "2^-3", "2(3+4)",
+             "3--5", "2*-3", "1/2+1/4", "(2+3)*4^2"]
+for e in exprs {
+    let a = calc(e)
+    let b = calc_alt(e)
+    print("  CALC ", e, "=>", num(a["value"]),
+          "| alt:", num(b["value"]), "| two algorithms agree:", a["value"] == b["value"])
+}
+let bad = ["2+*3", "2..3", "2*(3+4", "2a+3", "1/0", "()", "2+", "2)"]
+for e in bad {
+    let a = calc(e)
+    print("  ERR  ", e, "=> ok:", a["ok"], "|", a["error"])
+}
+let qs = ["sum 1..-5", "sum 1..0", "0*x + 7 = 7", "0*x + 7 = 10",
+          "2x-5=9", "-2*x + 3 = 9", "3*x + 7 = 22", "3*x + 7 = 7"]
+for q in qs {
+    let r = ask(q)
+    print("  ASK  ", q, "=>", r["status"], "|", r["answer_text"])
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("3. CERTIFICATE — can it reject a WRONG answer?")
+print("---------------------------------------------------------------------------")
+let p = certificate_probe()
+print("  verdict :", p["verdict"], " caught", p["caught"], "/", p["total"])
+for row in p["cases"] {
+    print("   ", row["case"], "rejected:", row["rejected"], "checks still passing:", row["passed"])
+}
+let c2 = check_answer({"kind": "sum", "n": 10.0}, 999.0)
+print("  check_answer(sum n=10, 999.0) =>", c2["verdict"], c2["passed"], "/", c2["total"])
+print("  note: old boundary_ok had ans-ans / 0*b/100 / hardcoded 1*2/2-1.")
+print("        Those could NEVER fail. Now every check declares a method.")
+for x in c2["checks"] {
+    print("   ", x["check"], "pass:", x["pass"], "detects_wrong:", x["detects_wrong_answer"], "|", x["method"])
+}
+let s2 = solve({"kind": "sum", "n": 10.0})
+print("  solved result =>", s2["status"], s2["certificate"]["verdict"],
+      s2["verification_level"], "proof_status:", s2["proof_status"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("4. VERIFICATION LEVELS — honest status")
+print("---------------------------------------------------------------------------")
+for v in verification_levels() {
+    print("  L", v["level"], v["name"], "=>", v["status"])
+}
+print("  growth (scalar passthrough) level:", solve({"kind": "growth", "exponent": 1})["verification_level"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("5. ROADMAP — likhna alag, banana alag")
+print("---------------------------------------------------------------------------")
+for ph in roadmap() {
+    print("  Phase", ph["phase"], "=>", ph["status"], "|", ph["name"])
+}
+print("  Direction accepted (phased, Bun-first, no false universality).")
+print("  Phase 1-9 NOT IMPLEMENTED. No 12-18 month delivery claim.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("6. HONEST BOUNDARY")
+print("---------------------------------------------------------------------------")
+let a2 = audit()
+print("  audit            :", a2["verdict"], a2["passed"], "/", a2["total"], "(module self-checks ONLY)")
+print("  research theorems:", verdict()["research_theorems_solved_by_sutra"], "solved by SUTRA")
+print("  families mapped  :", verdict()["research_families_mapped"])
+print("  ETH status       :", verdict()["eth_status"])
+print("  ETH shape only   :", eth_bound_check()["honest_scope"])
+print("")
+print("  Tests WRITTEN and tests EXECUTED are different. The external pytest")
+print("  receipt for this commit is appended to this file from OUTSIDE the")
+print("  Bun program, and recorded in SUTRA_SARVA_CORRECTION_REPORT.md.")
+print("===========================================================================")
