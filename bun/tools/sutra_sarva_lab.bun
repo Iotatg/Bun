@@ -1,0 +1,154 @@
+// SUTRA Level 4 lab — "ek hi raasta, har sawaal", applied to ALL of openai/math.
+//
+// Run:  ./bin/bun tools/sutra_sarva_lab.bun
+// The catalogue is read from the local clone with Bun's own read_file(), so
+// every number printed below is a MEASUREMENT, not a copied claim.
+//
+// What this lab is NOT: a proof of any of the 373 research theorems. See
+// verdict() and the last section for the honest boundary.
+
+import { num, fmt } from "bun:sutra"
+import { alphabet, charter, shapes, seven_moves, four_checks,
+         calc, solve, ask, steps, course, teach,
+         parse_catalogue, catalogue, catalogue_summary, status_rules,
+         measurement_notes, eth_evidence, eth_bound_check,
+         verdict, lesson, audit } from "bun:sutra_sarva"
+
+let ROOT = "/root/work/openai-math"
+let CATALOGUE = ROOT + "/CONTENTS.md"
+
+print("===========================================================================")
+print("SUTRA LEVEL 4 — bun:sutra_sarva : EK HI RAASTA, HAR SAWAAL")
+print("===========================================================================")
+print("")
+let ch = charter()
+print("0. CHARTER")
+print("   Recipe    :", ch["recipe"], "- paanch kadam, har sawaal par wahi")
+print("   Solves    :", ch["solves"])
+print("   Does NOT  :", ch["does_not_solve"])
+print("   Promise   :", ch["promise"])
+print("   Antidote  :", ch["antidote"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("1. S-U-T-R-A — the ONLY thing to memorise")
+print("---------------------------------------------------------------------------")
+for a in alphabet() {
+    print("  ", a["letter"], " ", a["name"], "/", a["english"], "|", a["hindi"])
+    print("      karta hai :", a["does"])
+    print("      yaad rakh :", a["one_line"])
+}
+print("")
+print("   Shapes (5):", shapes())
+print("   Moves  (7):", seven_moves().len(), "| Checks (4):", four_checks().len())
+for m in seven_moves() {
+    print("      move", m["id"], m["name"], "(" + m["hindi"] + ")", "-", m["ask"])
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("2. EASY WAY — 10 sawaal, class 1 se research tak, WAHI 5 kadam")
+print("---------------------------------------------------------------------------")
+for i in range(0, course().len()) {
+    for line in teach(i) { print(line) }
+    print("")
+}
+
+print("---------------------------------------------------------------------------")
+print("3. EK LINE ME SAWAAL DO, JAWAAB LO  (ask)")
+print("---------------------------------------------------------------------------")
+let qs = ["2+3", "50% of 80", "sum 1..100", "3*x + 7 = 22", "7/8 vs 11/12",
+          "(2+3)*4^2", "1/2+1/4", "Prove the quasi-Riemann hypothesis Re(s)>7/8"]
+for q in qs {
+    let r = ask(q)
+    print("   Q:", q)
+    print("   A:", r["answer_text"], "| status:", r["status"])
+    if r["status"] == "SOLVED" {
+        print("      certificate:", r["certificate"]["verdict"],
+              r["certificate"]["passed"], "/", r["certificate"]["total"],
+              "| scope:", r["certificate"]["scope"])
+    }
+    if r["status"] != "SOLVED" { print("      reason:", r["reason"]) }
+}
+print("")
+print("   calc(\"(2+3)*4^2\") =", num(calc("(2+3)*4^2")["value"]), "(operator precedence sahi)")
+print("   calc(\"1/2+1/4\")   =", num(calc("1/2+1/4")["value"]))
+print("")
+let au = audit()
+print("   self-audit:", au["verdict"], au["passed"], "/", au["total"], "|", au["scope"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("4. POORA openai/math — 373/373 families ka SUTRA card")
+print("---------------------------------------------------------------------------")
+let cards = catalogue(CATALOGUE)
+let sum = catalogue_summary(cards)
+print("   Source        :", CATALOGUE)
+print("   Families      :", sum["families"])
+print("   Manuscripts   :", sum["manuscripts"])
+print("   Lean-link fam :", sum["lean_families"])
+print("   Mapped by SUTRA:", sum["sutra_maps"], "/", sum["families"])
+print("   Proved by SUTRA:", sum["sutra_can_prove"])
+print("")
+print("   Shape distribution (keyword evidence, 5 aakaar):")
+for k in sum["shapes"] { print("      ", k, "->", sum["shapes"][k]) }
+print("   Status distribution:")
+for k in sum["statuses"] { print("      ", k, "->", sum["statuses"][k]) }
+print("")
+print("   Status rules:")
+for r in status_rules() { print("      ", r["status"], ":", r["meaning"]) }
+print("")
+print("   Measurement notes (do alag maap ko jodna galat hai):")
+for n in measurement_notes() { print("      -", n["measure"], "|", n["caveat"]) }
+print("")
+print("   --- ALL FAMILY CARDS (id | shape | move | lean | pdfs | status | title) ---")
+for c in cards {
+    print("   ", c["id"], "|", c["shape"], "| m" + str(c["move"]),
+          "| lean=" + str(c["lean"]), "| pdfs=" + str(c["pdfs"]),
+          "|", c["status"], "|", c["title"])
+}
+print("   --- END OF 373 CARDS ---")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("5. ISI REPO ME ETH KA NAYA DAAVA — SUTRA kya tay karta hai")
+print("---------------------------------------------------------------------------")
+let ev = eth_evidence(ROOT)
+print("   manuscript announced      :", ev["manuscript_announced"])
+print("   independent review group  :", ev["review_group_named"], "(Impagliazzo / Paturi / Williams)")
+print("   challenge stub `sorry`    :", ev["challenge_stub_sorry_count"], "(stub hai, pramaan nahi)")
+print("   solution module `sorry`   :", ev["solution_sorry_count"], "(pramaan wahan hai)")
+print("   exact_count_eth theorem   :", ev["eth_theorem_present"])
+print("   translation gap           :", ev["translation_gap"])
+print("   verdict                   :", ev["verdict"])
+print("")
+let eb = eth_bound_check()
+print("   SUTRA checks the SHAPE of the bound, not the proof:")
+print("   invariant :", eb["invariant"])
+print("   claimed T :", eb["claimed_T"])
+print("   s(n)      :", eb["s_of_n"])
+print("   n              s(n) = log2(T)/n")
+for r in eb["rows"] { print("   ", str(r["n"]), "   ", fmt(r["s_of_n"])) }
+print("   limit     :", eb["limit"])
+print("   shape     :", eb["shape_verdict"])
+print("   practical :", eb["practical_note"])
+print("   scope     :", eb["honest_scope"])
+print("   ETH       :", eb["eth_status"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("6. HONEST VERDICT")
+print("---------------------------------------------------------------------------")
+let v = verdict()
+print("   ek recipe            :", v["one_recipe"])
+print("   elementary solved    :", v["elementary_solved"], "/", v["elementary_total"], "(exact jawaab + 4/4 checks)")
+print("   research thm solved  :", v["research_theorems_solved_by_sutra"])
+print("   research fam mapped  :", v["research_families_mapped"])
+print("   ETH status           :", v["eth_status"])
+print("   reason               :", v["eth_reason"])
+print("   SUTRA hai            :", v["sutra_is"])
+print("   SUTRA nahi hai       :", v["sutra_is_not"])
+print("   rule                 :", v["rule"])
+print("")
+print("   LESSON:", lesson())
+print("===========================================================================")

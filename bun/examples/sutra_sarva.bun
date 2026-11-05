@@ -1,0 +1,45 @@
+// SUTRA Level 4 — "ek hi raasta, har sawaal", the shortest possible example.
+// Run: ./bin/bun examples/sutra_sarva.bun
+//
+// Poora 373-family record: tools/sutra_sarva_lab.bun
+// Reference + easy tutorial: docs/reference/sutra-sarva.md
+
+import { num } from "bun:sutra"
+import { alphabet, calc, ask, steps, course, teach,
+         catalogue_summary, parse_catalogue, verdict, audit } from "bun:sutra_sarva"
+
+// 1. Poora subject paanch kadam me.
+print("1. S-U-T-R-A")
+for a in alphabet() { print("  ", a["letter"], a["name"], "-", a["one_line"]) }
+print("")
+
+// 2. Ek line me sawaal, exact jawaab + 4 jaanchein.
+print("2. EK LINE ME SAWAAL DO")
+for q in ["2+3", "50% of 80", "sum 1..100", "3*x + 7 = 22", "7/8 vs 11/12"] {
+    let r = ask(q)
+    print("   ", q, "=>", r["answer_text"], "|", r["certificate"]["verdict"])
+}
+print("")
+
+// 3. Wahi paanch kadam, class 1 se research tak.
+print("3. WAHI 5 KADAM, HAR LEVEL")
+for l in teach(0) { print("   ", l) }
+for l in teach(9) { print("   ", l) }
+print("")
+
+// 4. Poore corpus ka naksha (hermetic sample yahan; asli 373 lab me).
+print("4. CORPUS KA NAKSHA")
+let sample = "**001. Alpha.** constant bound. ([Lean](lean/docs/001.md))\n**002. Beta.** exponential growth.\n"
+let s = catalogue_summary(parse_catalogue(sample))
+print("   families:", s["families"], "| mapped:", s["sutra_maps"],
+      "| proved by SUTRA:", s["sutra_can_prove"])
+print("")
+
+// 5. Imaandaari.
+print("5. HONEST VERDICT")
+let v = verdict()
+print("   elementary solved:", v["elementary_solved"], "/", v["elementary_total"])
+print("   research theorems solved:", v["research_theorems_solved_by_sutra"])
+print("   ETH:", v["eth_status"])
+let a = audit()
+print("   audit:", a["verdict"], a["passed"], "/", a["total"], "-", a["scope"])

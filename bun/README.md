@@ -2695,3 +2695,69 @@ Reference: [`docs/reference/nyaya.md`](docs/reference/nyaya.md); lab:
 tests: `tests/test_nyaya.py` (28 four-engine parity tests). Corrected:
 `lib/bun/eth.bun`, `docs/reference/eth.md`, `docs/reference/pramana.md`.
 ETH remains **UNRESOLVED**; what got solved is our own theorem statement.
+
+### SUTRA Level 4 — `bun:sutra_sarva` (one easy recipe, whole catalogue)
+
+Asked to "solve ALL of openai/math with SUTRA, the easiest way", Level 4 does
+three things and is explicit about the one thing it does **not** do.
+
+`openai/math` is not a book of exercises: the clone measures **373 result
+families, 721 manuscripts, 245 families with a Lean link, 418 comparator
+challenges**, and its README says only ~42% of top-line results are formalized.
+Those are two different measurements and must not be added together.
+
+**1. The recipe.** The five letters of SUTRA *are* the five steps —
+**S**aaf karo (strip), **U**ska roop (shape), **T**areeka (move),
+**R**akh-jaanch (4 checks), **A**nswer + admit scope. Five shapes, seven moves
+(inherited from Level 1), four checks. Nothing else to memorise.
+
+**2. A real solver for a defined easy class.** `ask()` takes one line and
+returns an exact answer plus a `CERTIFIED 4/4` certificate whose `scope`
+explicitly says it is not a proof:
+
+```bun
+import { ask, audit } from "bun:sutra_sarva"
+
+print(ask("2+3")["answer_text"])          // 5
+print(ask("50% of 80")["answer_text"])    // 50% of 80 = 40
+print(ask("sum 1..100")["answer_text"])   // 1+2+...+100 = 5050
+print(ask("3*x + 7 = 22")["answer_text"])// 3x + 7 = 22  =>  x = 5
+print(ask("7/8 vs 11/12")["answer_text"])// 7/8 < 11/12
+print(ask("Prove the quasi-Riemann hypothesis")["status"])
+// OUT_OF_SCOPE_FOR_SUTRA
+print(audit()["verdict"])                 // CERTIFIED 17/17
+```
+
+`calc()` is a pure-Bun shunting-yard evaluator (`+ - * / ^ ( )`, decimals;
+unary minus deliberately unsupported and documented). `course()` walks the
+*same five steps* from class 1 to a research theorem: 9 of 10 are `SOLVED`,
+the tenth is honestly `OUT_OF_SCOPE`.
+
+**3. The whole catalogue.** `tools/sutra_sarva_lab.bun` reads the real
+`CONTENTS.md` and emits a card for **every one of the 373 families**:
+shape, move, Lean-link, manuscript count, status. Real distribution:
+power 119, structural 101, constant 75, logarithmic 50, exponential 28;
+`FORMALIZED_IN_LEAN` 244, `MANUSCRIPT_ONLY` 128, `CLAIM_UNDER_REVIEW` 1.
+Mapped 373/373; **proved by SUTRA: 0**. Every card carries
+`sutra_can_prove: false`.
+
+**The ETH claim inside that very repo.** `history.md` (26 Oct 2026) adds
+*"The Exponential Time Hypothesis is False"* and names the Impagliazzo /
+Paturi / Williams independent review group. `eth_evidence()` measures from the
+clone: the `SubexponentialSAT` **challenge stub contains `sorry`**, the
+`OAI/.../SqrtLogSpace/Final.lean` solution contains **zero `sorry`** and does
+contain `exact_count_eth` — a translation gap, not a defect. `eth_bound_check()`
+then verifies the *shape* of the claimed runtime using Level 3's corrected
+`s = log2(T)/n`: the bound is `2^o(n)` in the limit (s falls to 1.63 by
+`n = 10^300`), so **if the theorem is accepted, ETH is false**. SUTRA checked
+the bound's shape, **not** the proof's correctness. Status is
+**`UNDER_REVIEW`**, never `SOLVED_BY_SUTRA`.
+
+> Level 1's rule still holds: *SUTRA is a filter, not a solver.* Level 4 adds a
+> genuine solver for the elementary layer and an honest machine-generated map
+> for the research layer. `CERTIFIED 17/17` means 17 module self-checks.
+
+Reference: [`docs/reference/sutra-sarva.md`](docs/reference/sutra-sarva.md);
+lab: `bun tools/sutra_sarva_lab.bun` (373 cards); example:
+`examples/sutra_sarva.bun`; tests: `tests/test_sutra_sarva.py` (34 four-engine
+parity tests).
