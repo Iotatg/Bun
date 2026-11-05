@@ -2529,3 +2529,68 @@ short example is `examples/sutra.bun`; the tests are `tests/test_sutra.py`
 SUTRA is a filter, not a solver: it tells you the shape and rejects wrong
 answers, but the formula still has to come from somewhere. `CERTIFIED` means
 four independent checks agree, not that the law is true.
+
+## SUTRA at school — class 1 to graduation
+
+`bun:sutra_school` answers "what does a six-year-old actually study?" Fifteen
+years, fifteen new ideas: four shapes, seven moves, four instruments, one per
+year. Class 1 meets `constant` (add marbles, the glass does not change);
+class 2 meets `power` (double the pencils, double the price); class 10 meets
+`exponential` (compound interest); class 11 meets `logarithmic` (pH, decibels,
+binary search); graduation adds the derivative, the differential equation and
+finally the certificate.
+
+The syllabus is a program, not a table of contents. `audit()` checks that each
+year introduces exactly one new atom, uses only atoms already taught, and that
+each year's own law measures — with `classify` — as the shape that year claims
+to teach. It currently returns `CERTIFIED 7 7`, with 15/15 sample laws verified
+across 2280 hours.
+
+```bun
+import { audit, path, teach, place } from "bun:sutra_school"
+
+print(path())
+print(audit()["verdict"])          // CERTIFIED
+print(teach(1))                    // the first day of class 1
+print(place(8, 12)["stage"])       // class 9
+```
+
+Reference: `docs/reference/sutra-school.md`; lab: `bun tools/sutra_school_lab.bun`;
+example: `examples/sutra_school.bun`; tests: `tests/test_sutra_school.py`
+(15 tests, identical output on all four engines).
+
+## ETH, handled with SUTRA
+
+`bun:eth` takes a claim like "an AI has disproved the Exponential Time
+Hypothesis" and asks what shape it is. ETH says 3SAT's growth is not
+`power(k)` for any fixed `k`. The module measures a runtime table's **local
+exponent** and the slope of that exponent (`alpha` — the exponent of the
+exponent): `alpha = 0` polynomial, `0 < alpha < 1` subexponential,
+`alpha = 1` exponential. Both of the first two would refute ETH; the third
+would not, no matter how small its base.
+
+A real DPLL measurement on random 3SAT at the satisfiability threshold is
+included, plus an exhaustive-oracle correctness check (25/25). On the
+reachable window `n = 12…32`, `fit_compare` reports `UNDETERMINED`: polynomial
+`k = 2.384` and exponential `d = 0.168` fit the same data equally well (rms
+0.2965 vs 0.2953). That is the numerical reason ETH is a theorem and not an
+experiment.
+
+Five claims from the discussion get five verdicts from a five-check
+certificate (SUTRA's four plus `quantifier`): `CERTIFIED`, `OUT_OF_REACH`, and
+three `REJECTED`. `OUT_OF_REACH` is the interesting one — a claim about *all*
+algorithms cannot be settled by any number of runs. The module also computes
+when a subexponential algorithm would actually win: `n* = 1/d²`, so a 1%
+saving only bites after 10 000 variables and a 0.1% saving after a million.
+
+```bun
+import { growth, synthetic, crossover, claims, certificate_growth } from "bun:eth"
+
+print(growth(synthetic([8.0, 16.0, 32.0, 64.0], "subexponential", 0.5))["alpha"])
+print(crossover(0.01, 0.5, 1.0))   // 10000
+print(certificate_growth(claims()[0])["verdict"])   // CERTIFIED
+```
+
+Reference: `docs/reference/eth.md`; lab: `bun tools/eth_lab.bun`; example:
+`examples/eth.bun`; tests: `tests/test_eth.py` (16 tests, identical output on
+all four engines). The lab takes about 24 seconds because of the DPLL sweep.

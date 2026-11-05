@@ -1,0 +1,438 @@
+// lib/bun/sutra_school.bun — SUTRA, class 1 to graduation.
+//
+// `bun:sutra` says what the subject is: four shapes, seven moves, four checks.
+// This module says in what order a person (or a model) should meet them, and
+// it does not take that order on trust:
+//
+//   * every year introduces exactly ONE new atom, and no atom twice;
+//   * every year's `uses` list may only name atoms taught in an earlier year;
+//   * every year carries a real law from that year's syllabus, and
+//     classify() must measure the shape that year claims to teach.
+//
+// So the syllabus is not a table of contents. It is a program that either
+// audits itself or fails loudly. `audit()` returns CERTIFIED only when all
+// fifteen years pass all of their checks.
+//
+// The arc is deliberate. School builds the three shapes by hand. The last
+// three years build the three instruments that make the shapes computable
+// (derivative, differential equation, certificate), and the final year ends
+// exactly where the subject stops: measuring a law is not the same as proving
+// a theorem about all laws. That boundary is what the ETH lab walks into.
+
+import { classify, num, fmt, moves, SHAPES, has_key } from "bun:sutra"
+
+let M = ffi_load("math")
+let f_sqrt = M["sqrt"]
+let f_log = M["log"]
+let f_exp = M["exp"]
+let f_abs = M["fabs"]
+
+// ---------------------------------------------------------------------------
+// 1. The atoms
+//
+// Fifteen years, fifteen atoms: four shapes, seven moves, four instruments.
+// Nothing else is allowed to be "new", which is what makes the audit possible.
+// ---------------------------------------------------------------------------
+
+export fn atoms() {
+    return [
+        {"id": "shape:constant", "kind": "shape",
+         "name": "constant", "hindi": "जो नहीं बदलता"},
+        {"id": "shape:power", "kind": "shape",
+         "name": "power", "hindi": "गुना"},
+        {"id": "shape:exponential", "kind": "shape",
+         "name": "exponential", "hindi": "ब्याज़"},
+        {"id": "shape:logarithmic", "kind": "shape",
+         "name": "logarithmic", "hindi": "जोड़"},
+        {"id": "move:name", "kind": "move", "name": "name", "hindi": "नाम दो"},
+        {"id": "move:shrink", "kind": "move", "name": "shrink", "hindi": "छोटा करो"},
+        {"id": "move:change", "kind": "move", "name": "change", "hindi": "बदलो"},
+        {"id": "move:invariant", "kind": "move", "name": "invariant", "hindi": "जो नहीं बदलता"},
+        {"id": "move:bound", "kind": "move", "name": "bound", "hindi": "बाहर से घेरो"},
+        {"id": "move:compose", "kind": "move", "name": "compose", "hindi": "जोड़ो"},
+        {"id": "move:check", "kind": "move", "name": "check", "hindi": "जाँच लो"},
+        {"id": "tool:dimension", "kind": "tool", "name": "dimension", "hindi": "इकाई"},
+        {"id": "tool:graph", "kind": "tool", "name": "graph", "hindi": "चित्र"},
+        {"id": "tool:derivative", "kind": "tool", "name": "derivative", "hindi": "ढलान"},
+        {"id": "tool:ode", "kind": "tool", "name": "ode", "hindi": "बदलाव का समीकरण"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 2. The sample laws
+//
+// One real formula per year, from that year's own syllabus. The audit measures
+// each one, so a year cannot claim to teach a shape it does not actually show.
+// ---------------------------------------------------------------------------
+
+fn s_constant(x) { return 7.0 }
+fn s_linear(x) { return 3.0 * x }
+fn s_share(n) { return 120.0 / n }
+fn s_area(s) { return s * s }
+fn s_fall(t) { return 5.0 * t * t }
+fn s_volume(x) { return x * x * x }
+fn s_inverse_square(r) { return 6.0 / (r * r) }
+fn s_root(x) { return f_sqrt(x) }
+fn s_kepler(a) { return a ** 1.5 }
+fn s_interest(t) { return 1000.0 * (2.0 ** (t / 20.0)) }
+fn s_log2(x) { return f_log(x) / f_log(2.0) }
+fn s_integral(n) { return (n * n * n) / 3.0 }
+fn s_slope(x) { return 3.0 * x * x }
+fn s_decay(t) { return f_exp(-0.3 * t) }
+fn s_search(n) { return 2.0 ** n }
+
+// ---------------------------------------------------------------------------
+// 3. The syllabus
+// ---------------------------------------------------------------------------
+
+export fn syllabus() {
+    return [
+        {"level": 1, "stage": "class 1", "age": "6-7", "hours": 100,
+         "title": "Same or different", "hindi": "एक चीज़ बदलती है, दूसरी नहीं",
+         "new": "shape:constant", "uses": [],
+         "idea": "Two things are put side by side. One changes, one does not. The one that does not change is the first law you ever own.",
+         "can_now": "say which of two things stays the same while the other moves",
+         "unlocks": ["bigger/smaller", "counting by twos", "the idea of a rule"],
+         "exercise": "A glass has 5 marbles. You add marbles one by one. What stays the same?",
+         "answer": "The number of glasses. The marbles change, the glass count does not — that is a constant.",
+         "sample": s_constant, "sample_at": 2.0, "sample_lam": 3.0,
+         "expect": "constant", "expect_param": 0.0},
+
+        {"level": 2, "stage": "class 2", "age": "7-8", "hours": 110,
+         "title": "Double", "hindi": "दुगना करो, दुगना मिलेगा",
+         "new": "shape:power", "uses": ["shape:constant"],
+         "idea": "Double the input and the answer doubles. That is power(1), and it is the first shape a child can predict without counting.",
+         "can_now": "predict the answer for twice the input without recomputing",
+         "unlocks": ["recipes for 4 people from recipes for 2", "price of 3 vs 6 pencils"],
+         "exercise": "2 pencils cost 10 rupees. What do 6 cost?",
+         "answer": "30. Three times the pencils, three times the price: power(1).",
+         "sample": s_linear, "sample_at": 2.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": 1.0},
+
+        {"level": 3, "stage": "class 3", "age": "8-9", "hours": 120,
+         "title": "Share", "hindi": "बाँटो — जितने लोग, उतना कम",
+         "new": "move:shrink", "uses": ["shape:power"],
+         "idea": "Before solving for n people, solve for 1, then 2, then 3. The smallest case is not a toy; it is the proof.",
+         "can_now": "replace 'n' with 1, 2, 3 and see the pattern before touching algebra",
+         "unlocks": ["splitting a bill", "half and quarter", "the habit of trying the easy case first"],
+         "exercise": "120 sweets are shared equally. How many does each get for 1, 2, 3, 4 children?",
+         "answer": "120, 60, 40, 30 — each extra child divides the share again. The pattern is 120/n, a power law with exponent -1.",
+         "sample": s_share, "sample_at": 2.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": -1.0},
+
+        {"level": 4, "stage": "class 4", "age": "9-10", "hours": 120,
+         "title": "Name it, and give it a unit", "hindi": "नाम दो, इकाई दो",
+         "new": "move:name", "uses": ["move:shrink"],
+         "idea": "An unknown is not a mystery, it is a name plus a unit. 'The side' is not an answer; 'the side, in metres' is.",
+         "can_now": "write every unknown as a symbol with a unit before writing any formula",
+         "unlocks": ["area in m^2", "perimeter in m", "why 3 m + 2 m^2 is nonsense"],
+         "exercise": "A square has side s. What is its area, and in what unit?",
+         "answer": "A = s^2, in m^2. The unit is part of the answer, not decoration.",
+         "sample": s_area, "sample_at": 2.0, "sample_lam": 3.0,
+         "expect": "power", "expect_param": 2.0},
+
+        {"level": 5, "stage": "class 5", "age": "10-11", "hours": 130,
+         "title": "The unit check", "hindi": "इकाई मिले तो गणित सही",
+         "new": "tool:dimension", "uses": ["move:name"],
+         "idea": "Multiply and divide the units before you multiply the numbers. If the unit is wrong, the formula is wrong, and you found out for free.",
+         "can_now": "reject a wrong formula without computing it",
+         "unlocks": ["speed in m/s", "why v = d/t and not d*t", "density in kg/m^3"],
+         "exercise": "Distance is in m, time in s. Which is a speed: d*t, d/t, t/d?",
+         "answer": "d/t, because m/s is the unit of speed. d*t gives m*s, which is nothing anyone measures.",
+         "sample": s_fall, "sample_at": 2.0, "sample_lam": 3.0,
+         "expect": "power", "expect_param": 2.0},
+
+        {"level": 6, "stage": "class 6", "age": "11-12", "hours": 130,
+         "title": "How many times bigger", "hindi": "कितना गुना — अनुपात",
+         "new": "move:change", "uses": ["tool:dimension", "shape:power"],
+         "idea": "Change the representation, not the problem. Percentages, ratios and log-log graphs are three views of one number: the multiplier.",
+         "can_now": "turn a percentage into a multiplier and a multiplier into an exponent",
+         "unlocks": ["18% GST as x1.18", "scale models", "reading a log-log plot as a straight line"],
+         "exercise": "A price rises 18%. By what number do you multiply it, and what is the reverse?",
+         "answer": "x1.18; the reverse is dividing by 1.18, not subtracting 18%.",
+         "sample": s_volume, "sample_at": 2.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": 3.0},
+
+        {"level": 7, "stage": "class 7", "age": "12-13", "hours": 140,
+         "title": "What does not change", "hindi": "जो नहीं बदलता, वही पकड़ो",
+         "new": "move:invariant", "uses": ["move:change"],
+         "idea": "When everything moves, find the one product that stays fixed. For an inverse square, F times r^2 is constant — so F alone never needs to be tracked.",
+         "can_now": "find the conserved product in a changing system and use it to skip the algebra",
+         "unlocks": ["gravity and light both falling as 1/r^2", "why a satellite far away is slow", "energy as a shortcut"],
+         "exercise": "Light is 100 lux at 1 m. What is it at 4 m?",
+         "answer": "100/16 = 6.25 lux. The invariant is I*r^2 = 100, so I = 100/r^2 without any physics.",
+         "sample": s_inverse_square, "sample_at": 2.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": -2.0},
+
+        {"level": 8, "stage": "class 8", "age": "13-14", "hours": 140,
+         "title": "Squeeze it", "hindi": "दो जवाबों के बीच फँसाओ",
+         "new": "move:bound", "uses": ["move:invariant", "shape:power"],
+         "idea": "If you cannot compute the answer, trap it. sqrt(2) sits between 1 and 2 because 1^2 < 2 < 2^2. A bound is a real answer when the exact one is out of reach.",
+         "can_now": "give a defensible answer with no formula, and know how tight it is",
+         "unlocks": ["estimating roots by hand", "Pythagoras without a calculator", "error bars"],
+         "exercise": "Between which two whole numbers is sqrt(50)?",
+         "answer": "7 and 8, because 49 < 50 < 64. Tighter: 7.07, because 7.07^2 = 49.98.",
+         "sample": s_root, "sample_at": 4.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": 0.5},
+
+        {"level": 9, "stage": "class 9", "age": "14-15", "hours": 150,
+         "title": "Read the picture", "hindi": "ग्राफ़ से shape पढ़ो",
+         "new": "tool:graph", "uses": ["shape:power", "move:change"],
+         "idea": "A straight line, a parabola and a cliff look different before you write a single equation. The graph is the shape made visible.",
+         "can_now": "name the shape of a law from its picture, and predict its behaviour outside the picture",
+         "unlocks": ["linear vs quadratic vs cubic", "Kepler's 3/2 from a log-log slope", "reading a stock chart's curve"],
+         "exercise": "On log-log axes a law is a straight line of slope 1.5. What is the law?",
+         "answer": "power(1.5): y = c*x^1.5. A straight line in log-log is always a power law, and the slope is the exponent.",
+         "sample": s_kepler, "sample_at": 4.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": 1.5},
+
+        {"level": 10, "stage": "class 10", "age": "15-16", "hours": 160,
+         "title": "Interest, and the shape that compounds", "hindi": "ब्याज़ — हर कदम पर गुना",
+         "new": "shape:exponential", "uses": ["tool:graph", "move:change"],
+         "idea": "Power multiplies the input; exponential multiplies the output, every step. A fixed ratio per fixed step is the whole definition.",
+         "can_now": "tell a power law from an exponential, which is the mistake that ruins most forecasts",
+         "unlocks": ["compound interest and EMI", "population growth", "radioactive half-life", "why 'exponential' is not a synonym for 'fast'"],
+         "exercise": "1000 rupees at 10% compounded yearly. Is the growth a power of t or an exponential in t?",
+         "answer": "exponential: each year multiplies by 1.1, so the ratio per step is constant. A power law would multiply the *time*, not the money.",
+         "sample": s_interest, "sample_at": 20.0, "sample_lam": 2.0,
+         "expect": "exponential", "expect_param": 0.03465735902799726},
+
+        {"level": 11, "stage": "class 11", "age": "16-17", "hours": 170,
+         "title": "When the answer adds instead", "hindi": "जब जवाब जुड़ता है, गुणा नहीं",
+         "new": "shape:logarithmic", "uses": ["shape:exponential"],
+         "idea": "Halve the input repeatedly and the count adds one each time. Anything that turns multiplication into addition is a logarithm: pH, decibels, Richter, binary search.",
+         "can_now": "convert a multiplicative scale into an additive one and back",
+         "unlocks": ["pH and acidity", "sound in dB", "earthquake magnitude", "why 30 comparisons find one item in a billion"],
+         "exercise": "pH falls from 5 to 3. How much more acidic is it?",
+         "answer": "100x, because pH is -log10, so 2 pH units is 10^2. The scale adds; the acid multiplies.",
+         "sample": s_log2, "sample_at": 100.0, "sample_lam": 4.0,
+         "expect": "logarithmic", "expect_param": 2.0},
+
+        {"level": 12, "stage": "class 12", "age": "17-18", "hours": 180,
+         "title": "Build the whole from the small", "hindi": "छोटे टुकड़ों से पूरा बनाओ",
+         "new": "move:compose", "uses": ["move:bound", "shape:power"],
+         "idea": "A curve is a pile of thin rectangles. Add infinitely many small cases and the whole appears — integration, series and induction are one move wearing three costumes.",
+         "can_now": "derive an area or a sum by adding the smallest case many times, instead of memorising the result",
+         "unlocks": ["area under a curve", "sum of squares", "why the integral of x^2 is x^3/3"],
+         "exercise": "Add n thin strips of width 1/n and height (k/n)^2. What do you get as n grows?",
+         "answer": "1/3. The sum of k^2/n^3 tends to 1/3, which is exactly the integral of x^2 from 0 to 1.",
+         "sample": s_integral, "sample_at": 2.0, "sample_lam": 4.0,
+         "expect": "power", "expect_param": 3.0},
+
+        {"level": 13, "stage": "graduation 1", "age": "18-19", "hours": 200,
+         "title": "The local exponent", "hindi": "ढलान ही छोटा exponent है",
+         "new": "tool:derivative", "uses": ["move:compose"],
+         "idea": "The derivative is the exponent measured in the small. For x^k it returns k*x^(k-1) — the exponent walks down by one, which is why calculus never needs a table of every function.",
+         "can_now": "read the shape of a law from its slope, and the slope from its shape",
+         "unlocks": ["maxima and minima", "marginal cost", "velocity from position", "Taylor's first term"],
+         "exercise": "Differentiate x^3 and say what happened to the exponent.",
+         "answer": "3x^2. The exponent 3 came down as a multiplier and dropped by one — that is the whole power rule.",
+         "sample": s_slope, "sample_at": 2.0, "sample_lam": 3.0,
+         "expect": "power", "expect_param": 2.0},
+
+        {"level": 14, "stage": "graduation 2", "age": "19-20", "hours": 210,
+         "title": "The equation of change", "hindi": "बदलाव का समीकरण shape तय करता है",
+         "new": "tool:ode", "uses": ["tool:derivative", "shape:exponential"],
+         "idea": "Do not solve for the function; read what its rate of change says. 'Rate proportional to the amount' can only be an exponential — the shape is forced before any algebra.",
+         "can_now": "name the shape of a solution from the differential equation alone",
+         "unlocks": ["cooling and decay", "RC circuits", "epidemic curves", "why e appears everywhere"],
+         "exercise": "dy/dt = -0.3y. What shape is y, without solving?",
+         "answer": "exponential decay, because the rate is a fixed fraction of the amount — a constant ratio per step.",
+         "sample": s_decay, "sample_at": 2.0, "sample_lam": 2.0,
+         "expect": "exponential", "expect_param": -0.3},
+
+        {"level": 15, "stage": "graduation 3", "age": "20-21", "hours": 220,
+         "title": "Certify, and know where it stops", "hindi": "जाँच करो, और जहाँ तरीका रुकता है वहाँ रुको",
+         "new": "move:check", "uses": ["tool:ode", "move:name"],
+         "idea": "Four checks — shape, number, dimension, boundary — turn a guess into a certificate. But a certificate is about ONE law. A statement about ALL algorithms is a theorem, and no measurement can produce one. That line is the last lesson of the subject.",
+         "can_now": "certify any single law, and say precisely when a claim has left the reach of measurement",
+         "unlocks": ["algorithm analysis", "unit-safe engineering", "reading a proof claim without being fooled", "the ETH question"],
+         "exercise": "A paper says 'our solver is faster than 2^n, so ETH is false'. What do the four checks ask?",
+         "answer": "Shape: is the measured growth really subexponential, or exponential with a smaller base? Number: at which n does it actually win? Boundary: does it hold for all instances or only random ones? And the fourth question is not a check but a proof: ETH is a statement about every algorithm, so no data can settle it.",
+         "sample": s_search, "sample_at": 8.0, "sample_lam": 2.0,
+         "expect": "exponential", "expect_param": 0.6931471805599453}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 4. The audit — the syllabus checks itself
+// ---------------------------------------------------------------------------
+
+fn chk(name, ok, detail) {
+    return {"check": name, "pass": ok, "detail": detail}
+}
+
+export fn audit() {
+    let levels = syllabus()
+    let reg = atoms()
+    let checks = []
+
+    // 1. exactly fifteen years, numbered 1..15 with no holes
+    var numbered = true
+    for i in range(0, levels.len()) {
+        if levels[i]["level"] != i + 1 { numbered = false }
+    }
+    checks.push(chk("count", levels.len() == 15 and numbered,
+                    str(levels.len()) + " levels, contiguous: " + str(numbered)))
+
+    // 2. one new atom per year, and no atom taught twice
+    let seen = {}
+    var dup = ""
+    for lv in levels {
+        let id = lv["new"]
+        if has_key(seen, id) { dup = id }
+        seen[id] = lv["level"]
+    }
+    checks.push(chk("one-new-atom", dup == "" and seen.keys().len() == 15,
+                    str(seen.keys().len()) + " distinct atoms across 15 years" +
+                    pick(dup != "", ", repeated: " + dup, "")))
+
+    // 3. the eleven core atoms are all in the syllabus
+    var core = 0
+    var core_missing = ""
+    for a in reg {
+        if a["kind"] != "tool" {
+            core = core + 1
+            if not has_key(seen, a["id"]) { core_missing = core_missing + " " + a["id"] }
+        }
+    }
+    checks.push(chk("core-covered", core_missing == "",
+                    str(core) + " shapes+moves taught" + core_missing))
+
+    // 4. every `uses` name was taught strictly earlier
+    var order_ok = true
+    var order_detail = "every dependency precedes its use"
+    for lv in levels {
+        for need in lv["uses"] {
+            var taught_at = 99
+            if has_key(seen, need) { taught_at = seen[need] }
+            if taught_at >= lv["level"] {
+                order_ok = false
+                order_detail = lv["stage"] + " uses " + need + " (taught at " + str(taught_at) + ")"
+            }
+        }
+    }
+    checks.push(chk("prerequisites", order_ok, order_detail))
+
+    // 5. every year's own sample law measures as the shape it claims to teach
+    var shape_ok = 0
+    var shape_detail = ""
+    for lv in levels {
+        let c = classify(lv["sample"], lv["sample_at"], lv["sample_lam"])
+        var ok = c["shape"] == lv["expect"]
+        if ok and lv["expect"] != "constant" {
+            ok = f_abs(c["param"] - lv["expect_param"]) <= 1e-6 * (1.0 + f_abs(lv["expect_param"]))
+        }
+        if ok { shape_ok = shape_ok + 1 }
+        if not ok {
+            shape_detail = shape_detail + " " + lv["stage"] + ":" + c["shape"]
+        }
+    }
+    checks.push(chk("samples-measure-true", shape_ok == levels.len(),
+                    str(shape_ok) + "/" + str(levels.len()) + " sample laws match their year" + shape_detail))
+
+    // 6. every year is complete enough to teach from
+    var complete = true
+    var missing = ""
+    for lv in levels {
+        if lv["exercise"] == "" or lv["answer"] == "" or lv["can_now"] == "" {
+            complete = false
+            missing = missing + " " + lv["stage"]
+        }
+        if lv["hours"] <= 0 { complete = false }
+    }
+    checks.push(chk("teachable", complete, "every year has idea, exercise, answer, hours" + missing))
+
+    // 7. hours accumulate to a real number of years
+    var total = 0
+    for lv in levels { total = total + lv["hours"] }
+    checks.push(chk("hours", total >= 2000 and total <= 2600,
+                    str(total) + " hours across 15 years"))
+
+    var passed = 0
+    for c in checks { if c["pass"] { passed = passed + 1 } }
+    var verdict = "REJECTED"
+    if passed == checks.len() { verdict = "CERTIFIED" }
+
+    return {"checks": checks, "passed": passed, "total": checks.len(),
+            "verdict": verdict, "hours": total}
+}
+
+fn pick(cond, a, b) {
+    if cond { return a }
+    return b
+}
+
+// ---------------------------------------------------------------------------
+// 5. Using the syllabus
+// ---------------------------------------------------------------------------
+
+export fn teach(level) {
+    let levels = syllabus()
+    var lv = levels[0]
+    for x in levels {
+        if x["level"] == level { lv = x }
+    }
+    let a = atoms()
+    var atom_name = lv["new"]
+    for x in a {
+        if x["id"] == lv["new"] { atom_name = x["name"] + " (" + x["hindi"] + ")" }
+    }
+    let lines = []
+    lines.push(lv["stage"] + "  ·  age " + lv["age"] + "  ·  " + str(lv["hours"]) + " hours")
+    lines.push(lv["title"] + "  —  " + lv["hindi"])
+    lines.push("")
+    lines.push("NEW      " + atom_name)
+    lines.push("IDEA     " + lv["idea"])
+    lines.push("NOW YOU  " + lv["can_now"])
+    lines.push("")
+    lines.push("EXERCISE " + lv["exercise"])
+    lines.push("ANSWER   " + lv["answer"])
+    lines.push("")
+    lines.push("UNLOCKS")
+    for u in lv["unlocks"] { lines.push("  - " + u) }
+    let c = classify(lv["sample"], lv["sample_at"], lv["sample_lam"])
+    lines.push("")
+    lines.push("THIS YEAR'S LAW, MEASURED")
+    lines.push("  classify at x = " + num(lv["sample_at"]) +
+               "  ->  " + c["shape"] + "(" + num(c["param"]) + ")")
+    return join(lines, "\n")
+}
+
+export fn path() {
+    let lines = []
+    for lv in syllabus() {
+        lines.push(pad(lv["stage"], 14) + "  " + lv["title"])
+    }
+    return join(lines, "\n")
+}
+
+fn pad(s, n) {
+    var out = s
+    while out.len() < n { out = out + " " }
+    return out
+}
+
+// A diagnostic score out of `total` questions places the learner in a year.
+// Monotone by construction: more correct answers never move you backwards.
+export fn place(score, total) {
+    var frac = 0.0
+    if total > 0 { frac = float(score) / float(total) }
+    var level = 1 + int(frac * 15.0)
+    if level > 15 { level = 15 }
+    if level < 1 { level = 1 }
+    var lv = syllabus()[level - 1]
+    return {"level": level, "stage": lv["stage"], "title": lv["title"],
+            "score": score, "total": total}
+}
+
+// What a given year makes visible in the real world: the shortest honest
+// answer to "why am I learning this?".
+export fn unlocks(level) {
+    let levels = syllabus()
+    var lv = levels[0]
+    for x in levels {
+        if x["level"] == level { lv = x }
+    }
+    return lv["unlocks"]
+}

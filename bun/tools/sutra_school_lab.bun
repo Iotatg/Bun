@@ -1,0 +1,100 @@
+// tools/sutra_school_lab.bun — SUTRA from class 1 to graduation, in one run.
+//
+//   bun tools/sutra_school_lab.bun
+//
+// Everything printed here is produced by the library. The audit is a real set
+// of checks: if a year claims a shape its own law does not have, or uses an
+// idea before teaching it, the run says REJECTED.
+
+import { syllabus, atoms, audit, teach, path, place, unlocks } from "bun:sutra_school"
+import { moves, SHAPES, classify } from "bun:sutra"
+
+fn banner(title) {
+    print("")
+    print("================================================================")
+    print(title)
+    print("================================================================")
+}
+
+let t0 = now()
+
+banner("SUTRA — basic kya hai? / what is the basics?")
+print("SUTRA ka basic sirf ek line ka hai:")
+print("  koi bhi law ek SHAPE hai, formula nahin.  (कानून एक आकार है, सूत्र नहीं)")
+print("")
+print("Teen shapes (तीन आकार):")
+print("  power        f(Lx)/f(x) = L^k     input गुना -> output गुना")
+print("  exponential  f(x+d)/f(x) = r      हर कदम पर वही गुना")
+print("  logarithmic  f(Lx)-f(x) = c       input गुना -> output में जोड़")
+print("  constant     f(Lx) = f(x)          कुछ बदलता ही नहीं")
+print("")
+print("Saat chaalein (सात चालें):")
+for m in moves() {
+    print("  " + str(m["id"]) + ". " + m["name"] + " (" + m["hindi"] + ") — " + m["ask"])
+}
+print("")
+print("Aur chaar jaanch (चार जाँचें): shape, number, dimension, boundary.")
+print("Ek bhi fail hua to jawab REJECTED — 3/4 pass kafi nahin.")
+print("")
+print("Bachcha class 1 me kya karta hai? 5 कंचे हैं, एक-एक जोड़ो,")
+print("गिनती बदलती है, गिलास नहीं — बस यही 'constant' है. कोई सूत्र नहीं, कोई अलजेब्रा नहीं.")
+
+// ---------------------------------------------------------------------------
+banner("1. Pandrah saal ka raasta / the 15-year path")
+print(path())
+
+// ---------------------------------------------------------------------------
+banner("2. Syllabus khud ki jaanch karta hai / the self-audit")
+let a = audit()
+for ck in a["checks"] {
+    var mark = "FAIL"
+    if ck["pass"] { mark = "ok  " }
+    print("  [" + mark + "] " + ck["check"] + ": " + ck["detail"])
+}
+print("")
+print("  verdict: " + a["verdict"] + "  " + str(a["passed"]) + "/" + str(a["total"]) +
+      "   total " + str(a["hours"]) + " hours")
+
+// ---------------------------------------------------------------------------
+banner("3. Class 1 — pehla din / the first day")
+print(teach(1))
+
+// ---------------------------------------------------------------------------
+banner("4. Class 10 — jahan 'exponential' milta hai")
+print(teach(10))
+
+// ---------------------------------------------------------------------------
+banner("5. Graduation 3 — aakhri din / the last day")
+print(teach(15))
+
+// ---------------------------------------------------------------------------
+banner("6. Har saal kya khulta hai / what each year unlocks")
+for lv in syllabus() {
+    let u = unlocks(lv["level"])
+    print("  " + lv["stage"] + " -> " + join(u, ", "))
+}
+
+// ---------------------------------------------------------------------------
+banner("7. Placement — diagnostic se class tak")
+let scores = [[1, 12], [4, 12], [8, 12], [12, 12]]
+for s in scores {
+    let p = place(s[0], s[1])
+    print("  " + str(s[0]) + "/" + str(s[1]) + " sahi -> " + p["stage"] +
+          " : " + p["title"])
+}
+
+// ---------------------------------------------------------------------------
+banner("8. Atom registry — 15 saal, 15 naye vichaar")
+for atom in atoms() {
+    print("  " + atom["kind"] + "  " + atom["name"] + "  (" + atom["hindi"] + ")")
+}
+
+// ---------------------------------------------------------------------------
+banner("run summary")
+print("levels:      " + str(syllabus().len()))
+print("atoms:       " + str(atoms().len()))
+print("shapes:      " + str(SHAPES.len()))
+print("moves:       " + str(moves().len()))
+print("audit:       " + a["verdict"])
+print("hours:       " + str(a["hours"]))
+print("elapsed sec: " + str(now() - t0))

@@ -1,0 +1,43 @@
+// examples/eth.bun — ETH as a shape question, in four short steps.
+//
+//   bun examples/eth.bun
+//
+// This example is deliberately fast. The real DPLL measurement is in
+// `bun tools/eth_lab.bun`.
+
+import {
+    eth_statement, worlds, synthetic, growth, fit_compare,
+    crossover, claims, certificate_growth
+} from "bun:eth"
+
+import { num } from "bun:sutra"
+
+let M = ffi_load("math")
+let f_log = M["log"]
+
+print("1. ETH in SUTRA's language")
+let e = eth_statement()
+print("   " + e["sutra_form"])
+print("   measurable: " + str(e["measurable"]))
+
+print("")
+print("2. alpha = the exponent of the exponent")
+let ns = [8.0, 16.0, 32.0, 64.0, 128.0, 256.0]
+for w in worlds() {
+    print("   " + w["name"] + " -> alpha " + num(w["alpha"]) + " -> " + w["eth"])
+}
+let g = growth(synthetic(ns, "subexponential", 0.5))
+print("   measured from a 2^sqrt(n) table: " + g["kind"] +
+      ", alpha = " + num(g["alpha"]))
+
+print("")
+print("3. a 1% saving only wins at n = " + num(crossover(0.01, 0.5, 1.0)))
+let fc = fit_compare(synthetic(ns, "exponential", 0.1 * f_log(2.0)))
+print("   on a clean wide table: " + fc["verdict"])
+
+print("")
+print("4. five claims, five verdicts")
+for c in claims() {
+    let r = certificate_growth(c)
+    print("   " + r["verdict"] + "  " + r["id"])
+}

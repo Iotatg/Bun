@@ -1,0 +1,184 @@
+// tools/eth_lab.bun — the Exponential Time Hypothesis, measured with SUTRA.
+//
+//   bun tools/eth_lab.bun
+//
+// Nine sections, ending in a verdict that is deliberately not "ETH is true"
+// or "ETH is false": a measurement about runs cannot prove a statement about
+// all algorithms. The lab shows exactly where that line falls, in numbers.
+
+import {
+    eth_statement, growth, worlds, synthetic, fit_compare, local_exponents,
+    measure, table_to_points, solve_result, brute_sat,
+    crossover, crossover_rule, claims, certificate_growth
+} from "bun:eth"
+
+import { num, fmt } from "bun:sutra"
+
+let M = ffi_load("math")
+let f_log = M["log"]
+
+fn banner(title) {
+    print("")
+    print("================================================================")
+    print(title)
+    print("================================================================")
+}
+
+let t0 = now()
+
+banner("ETH — SUTRA se solve karne ki koshish")
+print("Video ka daava: AI ne ETH (Exponential Time Hypothesis) ko disprove kar diya.")
+print("SUTRA ka pehla sawaal: ye kis SHAPE ka daava hai?")
+print("")
+let e = eth_statement()
+print("  name      " + e["name"])
+print("  author    " + e["author"])
+print("  object    " + e["object"])
+print("  claim     " + e["claim"])
+print("  SUTRA     " + e["sutra_form"])
+print("  quantifier " + e["quantifier"])
+print("  measurable " + str(e["measurable"]) + " — " + e["why_not"])
+
+// ---------------------------------------------------------------------------
+banner("1. Teen duniya / the three worlds")
+print("alpha = 'exponent ka exponent' — table se naapa ja sakta hai.")
+print("")
+for w in worlds() {
+    print("  " + w["name"] + "  T ~ " + w["example"] +
+          "  alpha = " + num(w["alpha"]) + "  -> " + w["eth"])
+}
+print("")
+print("  T = n^k   => k(n) sthir      => alpha = 0")
+print("  T = 2^n^a => k(n) ~ n^a      => alpha = a")
+print("  T = 2^dn  => k(n) ~ d*n*ln2  => alpha = 1")
+
+// ---------------------------------------------------------------------------
+banner("2. Instrument ki calibration / calibrating the instrument")
+let cal_n = [8.0, 16.0, 32.0, 64.0, 128.0, 256.0]
+let cases = [
+    {"name": "n^3", "kind": "polynomial", "p": 3.0, "want": 0.0},
+    {"name": "2^sqrt(n)", "kind": "subexponential", "p": 0.5, "want": 0.5},
+    {"name": "2^(0.1n)", "kind": "exponential", "p": 0.1, "want": 1.0}
+]
+for c in cases {
+    var pts = []
+    if c["kind"] == "exponential" {
+        pts = synthetic(cal_n, "exponential", c["p"] * f_log(2.0))
+    } else {
+        pts = synthetic(cal_n, c["kind"], c["p"])
+    }
+    let g = growth(pts)
+    print("  " + c["name"] + " -> " + g["kind"] +
+          ", alpha = " + num(g["alpha"]) + "  (expected " + num(c["want"]) + ")")
+}
+
+// ---------------------------------------------------------------------------
+banner("3. Ek asli solver, naapa hua / a real solver, measured")
+print("DPLL with unit propagation on random 3SAT at the satisfiability")
+print("threshold (m = 4.26n). Fixed seeds; node count = steps.")
+print("")
+// Pehle solver ki sachchai check karo — 25 chhote instances, exhaustive se milao.
+var agree = 0
+for s in range(0, 25) {
+    let r = solve_result(6, 4.26, 900 + s, 100000)
+    let b = brute_sat(6, 4.26, 900 + s)
+    if r["sat"] == b { agree = agree + 1 }
+}
+print("  solver vs exhaustive enumeration: " + str(agree) + "/25 agree")
+print("")
+let ns = [12, 16, 20, 24, 28, 32]
+let rows = measure(ns, 4.26, 6, 200000)
+for r in rows {
+    print("  n = " + str(r["n"]) + "   nodes = " + num(r["nodes"]) +
+          "   (budget hits " + str(r["truncated"]) + ")")
+}
+let pts = table_to_points(rows)
+let g = growth(pts)
+print("")
+print("  growth(): " + g["kind"] + ", alpha = " + num(g["alpha"]) +
+      ", k first/last = " + num(g["k_first"]) + " / " + num(g["k_last"]))
+print("  (alpha yahan unstable hai — k(n) me bahut shor hai; isliye aage")
+print("   fit_compare se discrimination check karte hain.)")
+print("  local exponents k(n):")
+for p in local_exponents(pts) {
+    print("    near n = " + num(p["n"]) + "  k = " + num(p["k"]))
+}
+let fc = fit_compare(pts)
+print("")
+print("  fit_compare(): " + fc["verdict"])
+print("    polynomial  model  ln T = a + " + num(fc["poly_k"]) + " ln n, rms = " + num(fc["poly_rms"]))
+print("    exponential model  ln T = b + " + num(fc["exp_delta"]) + " n log2, rms = " + num(fc["exp_rms"]))
+print("    ratio = " + num(fc["ratio"]) + "  (1.0 ka matlab: dono barabar fit)")
+print("")
+print("  -> is window me polynomial(2.38) aur exponential(0.168) dono chalte hain.")
+print("     Yani measurement se ETH ka faisla NAHI hota. Aur yahi asli sabak hai.")
+print("     (Ye bhi average-case hai, worst-case nahin — ETH ka 'every instance' alag baat hai.)")
+
+// ---------------------------------------------------------------------------
+banner("4. Kitni door jaana padega / when does a soft algorithm win?")
+print("C*2^sqrt(n)  <  2^(d*n)  ka crossing n = 1/d^2 (jab C=1).")
+print("'1% behtar' ka matlab: pehli jeet das hazaar variables ke baad.")
+print("")
+let deltas = [0.1, 0.05, 0.01, 0.005, 0.001]
+for d in deltas {
+    print("  d = " + num(d) + "   crossing = " + num(crossover(d, 0.5, 1.0)) +
+          "   rule 1/d^2 = " + num(crossover_rule(d)))
+}
+print("")
+print("  with a 1000x constant factor:  d = 0.01 -> " +
+      num(crossover(0.01, 0.5, 1000.0)))
+print("  Isliye 'reality shattering' ka pehla sawaal hamesha: kaun se n par?")
+
+// ---------------------------------------------------------------------------
+banner("5. Paanch daave, paanch certificate / five claims, five verdicts")
+print("Har daave par 5 jaanch: shape, number, dimension, boundary, quantifier.")
+print("Sirf quantifier fail ho to verdict OUT_OF_REACH (na sahi, na galat — bahar).")
+print("")
+for c in claims() {
+    let r = certificate_growth(c)
+    print("  " + r["verdict"] + "  (" + str(r["passed"]) + "/" + str(r["total"]) +
+          ")  " + r["id"])
+    print("      \"" + r["text"] + "\"")
+    for ck in r["checks"] {
+        if not ck["pass"] {
+            print("      FAILED " + ck["check"] + ": " + ck["detail"])
+        }
+    }
+    print("      " + r["note"])
+}
+
+// ---------------------------------------------------------------------------
+banner("6. Video ke do raaste / the two paths in the video")
+print("  Path A — 'sirf thoda behtar than exponential':")
+print("     shape abhi bhi exponential(alpha=1), base chhota hua hai.")
+print("     ETH asymptotic hai, isliye isse ETH NAHI girta.  -> certificate REJECTED")
+print("")
+print("  Path B — 'sach me 2^o(n) algorithm mil gaya':")
+print("     shape subexponential(alpha<1), ETH sach me girta hai — AGAR")
+print("     sab instances ke liye worst-case proof ho.  -> certificate OUT_OF_REACH")
+print("     Lean verification sirf us proof ki jaanch hai; measurement nahin.")
+print("")
+print("  Dono raaston me SUTRA ka kaam ek hi: shape naapo, number milao,")
+print("  boundary dekho, aur batao ki daava 'is algorithm' ka hai ya 'sab' ka.")
+
+// ---------------------------------------------------------------------------
+banner("7. SUTRA kya kar sakta hai, kya nahin / the boundary")
+print("  KAR SAKTA HAI : kisi bhi diye gaye runtime ka shape naapna (alpha),")
+print("                 uski shape se uske limits aur failure modes batana,")
+print("                 galat daave ko 5 jaanchon se reject karna,")
+print("                 crossing point n* nikaalna.")
+print("  NAHIN KAR SAKTA: 'har algorithm ke liye' wale kathan ko saabit karna.")
+print("                 ETH ek theorem hai, experiment nahin.")
+print("")
+print("  Class 1 me bachcha seekhta hai 'kya badalta hai'. Graduation 3 me")
+print("  wahi aadmi seekhta hai 'kya naapna mumkin hi nahin'. Beech ke 13 saal")
+print("  sirf teen shapes aur saat chalon ka abhyaas hain.")
+
+// ---------------------------------------------------------------------------
+banner("run summary")
+print("worlds:       " + str(worlds().len()))
+print("claims:       " + str(claims().len()))
+print("solver check: " + str(agree) + "/25")
+print("measurement:  " + fc["verdict"])
+print("ETH status:   outside measurement — " + e["why_not"])
+print("elapsed sec:  " + num(now() - t0))

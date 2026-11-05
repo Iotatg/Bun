@@ -1,0 +1,35 @@
+// examples/sutra_school.bun — SUTRA from a six-year-old to a graduate.
+//
+//   bun examples/sutra_school.bun
+//
+// The syllabus is data, and audit() checks it with the same classifier the
+// syllabus teaches. Nothing in the course is taken on trust.
+
+import { syllabus, audit, teach, path, place } from "bun:sutra_school"
+
+print("1. the 15-year path")
+print(path())
+
+print("")
+print("2. does the syllabus check out?")
+let a = audit()
+for ck in a["checks"] {
+    var mark = "FAIL"
+    if ck["pass"] { mark = "ok" }
+    print("   [" + mark + "] " + ck["check"] + ": " + ck["detail"])
+}
+print("   verdict: " + a["verdict"] + " (" + str(a["passed"]) + "/" +
+      str(a["total"]) + "), " + str(a["hours"]) + " hours")
+
+print("")
+print("3. first day of class 1")
+print(teach(1))
+
+print("")
+print("4. last day of graduation")
+print(teach(15))
+
+print("")
+print("5. a diagnostic places the learner")
+let p = place(8, 12)
+print("   8/12 correct -> " + p["stage"] + ": " + p["title"])

@@ -1,0 +1,575 @@
+// lib/bun/eth.bun — the Exponential Time Hypothesis, handled with SUTRA.
+//
+// The video's claim is: an AI has disproved ETH. ETH says 3SAT cannot be
+// solved in 2^(o(n)) time. In SUTRA's language that is not a statement about a
+// number; it is a statement about a SHAPE:
+//
+//     ETH  <=>  the growth of 3SAT is NOT power(k) for any fixed k.
+//
+// So the subject applies directly, but with one honest limit built into the
+// code. classify() works on a formula; a paper gives you a table. This module
+// therefore extends the same idea to tables: measure the LOCAL exponent
+// k(n) = d log T / d log n, then measure how k itself grows.
+//
+//     T = n^k            k constant            alpha = 0    polynomial
+//     T = 2^(n^a)        k ~ n^a               alpha = a    subexponential (0<a<1)
+//     T = 2^(d*n)        k ~ d*n*ln2           alpha = 1    exponential
+//
+// `alpha` is the exponent of the exponent. One number decides which of the
+// three worlds an algorithm lives in — and it is measurable from data, which
+// is exactly what a claim about a new algorithm gives you.
+//
+// What this module cannot do is prove ETH or refute it. ETH quantifies over
+// ALL algorithms; a measurement quantifies over the runs you performed. The
+// certificate below has a fifth check for that, `quantifier`, and a claim that
+// fails only that check gets the verdict OUT_OF_REACH instead of CERTIFIED or
+// REJECTED. That verdict is the point of the whole module.
+
+import { num, fmt, classify } from "bun:sutra"
+
+let M = ffi_load("math")
+let f_log = M["log"]
+let f_exp = M["exp"]
+let f_abs = M["fabs"]
+let f_sqrt = M["sqrt"]
+
+fn lg(x) { return f_log(x) / f_log(2.0) }
+
+// sutra's fmt() rounds through a 64-bit int, which overflows for runtimes like
+// 2^99. Big numbers are printed as plain floats instead of being rounded.
+fn sfmt(x) {
+    if f_abs(x) >= 1e15 { return str(x) }
+    return fmt(x)
+}
+
+// ---------------------------------------------------------------------------
+// 1. The statement, as data
+// ---------------------------------------------------------------------------
+
+export fn eth_statement() {
+    return {
+        "name": "Exponential Time Hypothesis",
+        "author": "Impagliazzo and Paturi, 1999 (after Nash's 1955 letter)",
+        "object": "3SAT with n variables",
+        "claim": "no algorithm decides every 3SAT instance in 2^(o(n)) time",
+        "sutra_form": "the growth of 3SAT is not power(k) for any fixed k",
+        "kind": "universal",
+        "quantifier": "for every algorithm, for all instances",
+        "measurable": false,
+        "why_not": "a measurement is a statement about runs; ETH is a statement about all possible runs",
+        "equivalent": "ETH false  <=>  some algorithm has alpha < 1 with a proved worst-case bound"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Growth from a table — classify() for data instead of formulas
+// ---------------------------------------------------------------------------
+
+export fn local_exponents(points) {
+    let out = []
+    for i in range(1, points.len()) {
+        let n1 = points[i - 1][0]
+        let n2 = points[i][0]
+        let t1 = points[i - 1][1]
+        let t2 = points[i][1]
+        var k = 0.0
+        if t1 > 0.0 and t2 > 0.0 and n2 > n1 {
+            k = f_log(t2 / t1) / f_log(n2 / n1)
+        }
+        out.push({"n": f_sqrt(n1 * n2), "k": k})
+    }
+    return out
+}
+
+// Least-squares slope of log k against log n: this is alpha.
+export fn drift(ks) {
+    var sx = 0.0
+    var sy = 0.0
+    var sxx = 0.0
+    var sxy = 0.0
+    var m = 0
+    for p in ks {
+        if p["k"] > 0.0 {
+            let x = f_log(p["n"])
+            let y = f_log(p["k"])
+            sx = sx + x
+            sy = sy + y
+            sxx = sxx + x * x
+            sxy = sxy + x * y
+            m = m + 1
+        }
+    }
+    if m < 2 { return 0.0 }
+    let denom = float(m) * sxx - sx * sx
+    if f_abs(denom) < 1e-12 { return 0.0 }
+    return (float(m) * sxy - sx * sy) / denom
+}
+
+export fn growth(points) {
+    let ks = local_exponents(points)
+    let alpha = drift(ks)
+    var kind = "polynomial"
+    if alpha >= 0.15 { kind = "subexponential" }
+    if alpha >= 0.85 { kind = "exponential" }
+
+    var k_first = 0.0
+    var k_last = 0.0
+    if ks.len() > 0 {
+        k_first = ks[0]["k"]
+        k_last = ks[ks.len() - 1]["k"]
+    }
+    return {"kind": kind, "alpha": alpha, "k_first": k_first,
+            "k_last": k_last, "points": ks, "measured": true}
+}
+
+// The three worlds, as a check rather than a slogan.
+export fn worlds() {
+    return [
+        {"name": "polynomial", "example": "n^3", "alpha": 0.0,
+         "eth": "would refute ETH", "meaning": "the wall is not there"},
+        {"name": "subexponential", "example": "2^(sqrt(n))", "alpha": 0.5,
+         "eth": "would refute ETH", "meaning": "the wall is there but it is soft"},
+        {"name": "exponential", "example": "2^(0.1n)", "alpha": 1.0,
+         "eth": "consistent with ETH", "meaning": "the wall is there and it is hard"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 3. A real solver, measured
+//
+// A plain DPLL with unit propagation, no heuristics, on random 3SAT at the
+// satisfiability threshold (m = 4.26 n). Node counts are the measurement; the
+// seed is fixed so the numbers are reproducible.
+//
+// This measures the AVERAGE case for ONE algorithm. It is evidence about where
+// the wall sits, not a proof that the wall is everywhere. The lab says so out
+// loud, because that distinction is the whole lesson.
+// ---------------------------------------------------------------------------
+
+// xorshift32. A plain LCG's low bits alternate with period two, which makes
+// every generated formula share the same sign pattern — an easy, structured
+// instance that would quietly fake a polynomial measurement. High bits only.
+fn next_rand(s) {
+    var x = s % 4294967296
+    x = (x ^ (x << 13)) % 4294967296
+    x = (x ^ (x >> 17)) % 4294967296
+    x = (x ^ (x << 5)) % 4294967296
+    return x
+}
+
+fn gen_clauses(n, m, seed) {
+    var s = seed
+    let cls = []
+    for j in range(0, m) {
+        var lits = []
+        var used = []
+        while lits.len() < 3 {
+            s = next_rand(s)
+            let v = 1 + (s >> 16) % n
+            var dup = false
+            for u in used {
+                if u == v { dup = true }
+            }
+            if not dup {
+                used.push(v)
+                var lit = v
+                if (s >> 8) % 2 == 0 { lit = 0 - v }
+                lits.push(lit)
+            }
+        }
+        cls.push(lits)
+    }
+    return cls
+}
+
+fn copy_list(a) {
+    let out = []
+    for x in a { out.push(x) }
+    return out
+}
+
+// state = [nodes, budget, truncated]
+fn dpll(n, cls, assign, state) {
+    state[0] = state[0] + 1
+    if state[0] > state[1] {
+        state[2] = 1
+        return true
+    }
+    var a = copy_list(assign)
+
+    while true {
+        var unit = 0
+        var all_sat = true
+        for c in cls {
+            var sat = false
+            var cnt = 0
+            var last = 0
+            for lit in c {
+                var v = lit
+                if v < 0 { v = 0 - v }
+                let val = a[v - 1]
+                if val == 0 {
+                    cnt = cnt + 1
+                    last = lit
+                } else {
+                    if (val > 0) == (lit > 0) { sat = true }
+                }
+                if sat { break }
+            }
+            if sat { continue }
+            if cnt == 0 { return false }
+            all_sat = false
+            if cnt == 1 {
+                unit = last
+                break
+            }
+        }
+        if unit == 0 {
+            if all_sat { return true }
+            break
+        }
+        var uv = unit
+        if uv < 0 { uv = 0 - uv }
+        var uval = 1
+        if unit < 0 { uval = -1 }
+        a[uv - 1] = uval
+    }
+
+    for i in range(0, n) {
+        if a[i] == 0 {
+            for val in [1, -1] {
+                let b = copy_list(a)
+                b[i] = val
+                if dpll(n, cls, b, state) { return true }
+            }
+            return false
+        }
+    }
+    return true
+}
+
+// Nodes visited for one instance. Returns -1 if the budget was hit.
+export fn solve_nodes(n, ratio, seed, budget) {
+    let m = int(ratio * float(n))
+    let cls = gen_clauses(n, m, seed)
+    var assign = []
+    for i in range(0, n) { assign.push(0) }
+    let state = [0, budget, 0]
+    dpll(n, cls, assign, state)
+    if state[2] == 1 { return -1 }
+    return state[0]
+}
+
+// Average node count at each n, over `trials` fixed seeds.
+export fn measure(ns, ratio, trials, budget) {
+    let out = []
+    for n in ns {
+        var total = 0
+        var used = 0
+        var hit = 0
+        for t in range(0, trials) {
+            let r = solve_nodes(n, ratio, 7000 + n * 13 + t, budget)
+            if r < 0 {
+                hit = hit + 1
+            } else {
+                total = total + r
+                used = used + 1
+            }
+        }
+        var avg = 0.0
+        if used > 0 { avg = float(total) / float(used) }
+        out.push({"n": n, "nodes": avg, "truncated": hit})
+    }
+    return out
+}
+
+export fn table_to_points(rows) {
+    let pts = []
+    for r in rows { pts.push([float(r["n"]), r["nodes"]]) }
+    return pts
+}
+
+// Expose the SAT verdict too, so the solver can be checked against exhaustive
+// enumeration instead of being trusted.
+export fn solve_result(n, ratio, seed, budget) {
+    let m = int(ratio * float(n))
+    let cls = gen_clauses(n, m, seed)
+    var assign = []
+    for i in range(0, n) { assign.push(0) }
+    let state = [0, budget, 0]
+    let sat = dpll(n, cls, assign, state)
+    return {"nodes": state[0], "sat": sat, "truncated": state[2]}
+}
+
+// Exhaustive truth-table check, used only as a correctness oracle for small n.
+export fn brute_sat(n, ratio, seed) {
+    let m = int(ratio * float(n))
+    let cls = gen_clauses(n, m, seed)
+    var mask = 0
+    while mask < (1 << n) {
+        var all = true
+        for c in cls {
+            var ok = false
+            for lit in c {
+                var v = lit
+                if v < 0 { v = 0 - v }
+                let bit = (mask >> (v - 1)) % 2
+                if lit > 0 and bit == 1 { ok = true }
+                if lit < 0 and bit == 0 { ok = true }
+            }
+            if not ok { all = false }
+        }
+        if all { return true }
+        mask = mask + 1
+    }
+    return false
+}
+
+// Clean data for the three worlds, for checking the instruments themselves.
+export fn synthetic(ns, kind, param) {
+    let out = []
+    for n in ns {
+        var t = 0.0
+        if kind == "polynomial" { t = n ** param }
+        if kind == "subexponential" { t = 2.0 ** (n ** param) }
+        if kind == "exponential" { t = f_exp(param * n) }
+        out.push([n, t])
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// 3b. Can a finite table even tell the difference?
+//
+// Least-squares fit of two models in log space:
+//     polynomial     ln T = a + k ln n
+//     exponential    ln T = b + d n
+// `discriminate` reports the RMS residual of each. When both fit about equally
+// well, the honest answer is UNDETERMINED — and that is the numerical reason
+// ETH is a theorem and not an experiment.
+// ---------------------------------------------------------------------------
+
+export fn linfit(xs, ys) {
+    var sx = 0.0
+    var sy = 0.0
+    var sxx = 0.0
+    var sxy = 0.0
+    let m = xs.len()
+    for i in range(0, m) {
+        sx = sx + xs[i]
+        sy = sy + ys[i]
+        sxx = sxx + xs[i] * xs[i]
+        sxy = sxy + xs[i] * ys[i]
+    }
+    var slope = 0.0
+    let denom = float(m) * sxx - sx * sx
+    if f_abs(denom) > 1e-12 { slope = (float(m) * sxy - sx * sy) / denom }
+    let intercept = (sy - slope * sx) / float(m)
+    var ss = 0.0
+    for i in range(0, m) {
+        let r = ys[i] - (intercept + slope * xs[i])
+        ss = ss + r * r
+    }
+    return {"slope": slope, "intercept": intercept,
+            "rms": f_sqrt(ss / float(m))}
+}
+
+export fn fit_compare(points) {
+    let xs_poly = []
+    let xs_exp = []
+    let ys = []
+    for p in points {
+        xs_poly.push(f_log(p[0]))
+        xs_exp.push(p[0])
+        ys.push(f_log(p[1]))
+    }
+    let fp = linfit(xs_poly, ys)
+    let fe = linfit(xs_exp, ys)
+    var ratio = 1.0
+    // An exact fit has zero residual; handle it explicitly rather than
+    // dividing by zero and reporting a backwards verdict.
+    if fp["rms"] <= 1e-12 and fe["rms"] > 1e-12 { ratio = 1e-12 }
+    if fe["rms"] <= 1e-12 and fp["rms"] > 1e-12 { ratio = 1e12 }
+    if fp["rms"] > 1e-12 and fe["rms"] > 1e-12 { ratio = fp["rms"] / fe["rms"] }
+    var verdict = "UNDETERMINED"
+    if ratio > 1.5 { verdict = "EXPONENTIAL_FITS_BETTER" }
+    if ratio < 0.67 { verdict = "POLYNOMIAL_FITS_BETTER" }
+    return {"poly_rms": fp["rms"], "exp_rms": fe["rms"],
+            "poly_k": fp["slope"], "exp_delta": fe["slope"] / f_log(2.0),
+            "ratio": ratio, "verdict": verdict, "measurable": ratio > 1.5 or ratio < 0.67}
+}
+
+export fn discriminate(points) {
+    return fit_compare(points)
+}
+
+// ---------------------------------------------------------------------------
+// 4. When does a soft algorithm actually win?
+//
+// C * 2^(n^a) beats 2^(d*n) exactly when d*n - n^a - log2(C) >= 0. For a=1/2
+// and C=1 the crossing is n = 1/d^2 — the saving is paid for quadratically.
+// ---------------------------------------------------------------------------
+
+fn wins(n, delta, alpha, log2c) {
+    return delta * n - (n ** alpha) - log2c >= 0.0
+}
+
+export fn crossover(delta, alpha, c) {
+    var log2c = 0.0
+    if c > 0.0 { log2c = lg(c) }
+    // exponential search for the first power of two that wins
+    var hi = 2.0
+    var guard = 0
+    while not wins(hi, delta, alpha, log2c) and guard < 80 {
+        hi = hi * 2.0
+        guard = guard + 1
+    }
+    if not wins(hi, delta, alpha, log2c) { return -1.0 }
+    var lo = hi / 2.0
+    // bisect the crossing to the nearest integer
+    var steps = 0
+    while hi - lo > 1.0 and steps < 80 {
+        let mid = float(int((lo + hi) / 2.0))
+        if wins(mid, delta, alpha, log2c) {
+            hi = mid
+        } else {
+            lo = mid
+        }
+        steps = steps + 1
+    }
+    return hi
+}
+
+// The same crossing in closed form for alpha = 1/2, C = 1: n = 1/delta^2.
+export fn crossover_rule(delta) {
+    return 1.0 / (delta * delta)
+}
+
+// ---------------------------------------------------------------------------
+// 5. Certificates for growth claims
+//
+// The four SUTRA checks plus one more: `quantifier`. A claim about THIS
+// algorithm can be certified. A claim about ALL algorithms cannot, and saying
+// so is more useful than a fake pass.
+//
+// shape     — measured alpha must place the claimed runtime in the right world
+// number    — the formula must reproduce a value known by other means
+// dimension — a runtime is a positive count of steps
+// boundary  — finite at zero, divergent at infinity
+// quantifier — "this algorithm" is measurable, "every algorithm" is a theorem
+// ---------------------------------------------------------------------------
+
+fn ck(name, ok, detail) {
+    return {"check": name, "pass": ok, "detail": detail}
+}
+
+fn claim_brute(n) { return 2.0 ** n }
+fn claim_subexp(n) { return 2.0 ** f_sqrt(n) }
+fn claim_saving(n) { return 2.0 ** (0.99 * n) }
+fn claim_quadratic(n) { return n ** 2.0 }
+
+// The four claims made in the video, turned into checkable objects.
+export fn claims() {
+    let ns = [8.0, 16.0, 32.0, 64.0, 128.0]
+    return [
+        {"id": "brute-force", "text": "checking all 2^n assignments grows exponentially",
+         "f": claim_brute, "measured": synthetic(ns, "exponential", f_log(2.0)),
+         "shape": "exponential", "quantifier": "this",
+         "known_n": 20.0, "known_value": 1048576.0,
+         "note": "This is the puzzle in the video: each extra bit doubles the work."},
+
+        {"id": "subexponential-refutes", "text": "if 2^sqrt(n) works for every 3SAT instance, ETH is false",
+         "f": claim_subexp, "measured": synthetic(ns, "subexponential", 0.5),
+         "shape": "subexponential", "quantifier": "all",
+         "known_n": 100.0, "known_value": 1024.0,
+         "note": "Mathematically correct if proved. But the 'every' is a theorem, not a measurement."},
+
+        {"id": "one-percent", "text": "a 1% saving, 2^(0.99n), is subexponential and refutes ETH",
+         "f": claim_saving, "measured": synthetic(ns, "exponential", 0.99 * f_log(2.0)),
+         "shape": "subexponential", "quantifier": "this",
+         "known_n": 100.0, "known_value": 2.0 ** 99.0,
+         "note": "Same shape, smaller base. ETH is an asymptotic statement: this changes nothing."},
+
+        {"id": "subexp-is-polynomial", "text": "2^sqrt(n) is a polynomial-time algorithm",
+         "f": claim_subexp, "measured": synthetic(ns, "subexponential", 0.5),
+         "shape": "polynomial", "quantifier": "this",
+         "known_n": 100.0, "known_value": 1024.0,
+         "note": "Soft exponential is still superpolynomial. The two worlds are not the same."},
+
+        {"id": "quadratic-3sat", "text": "3SAT is solvable in n^2 steps",
+         "f": claim_quadratic, "measured": synthetic(ns, "polynomial", 2.0),
+         "shape": "polynomial", "quantifier": "this",
+         "known_n": 32.0, "known_value": 4294967296.0,
+         "note": "The number check compares against the 2^32 assignments that actually exist at n=32."}
+    ]
+}
+
+export fn certificate_growth(c) {
+    let checks = []
+    let g = growth(c["measured"])
+
+    // 1. shape
+    let shape_ok = g["kind"] == c["shape"]
+    checks.push(ck("shape", shape_ok,
+                   "measured " + g["kind"] + " (alpha " + sfmt(g["alpha"]) +
+                   "), claimed " + c["shape"]))
+
+    // 2. number — a value known independently of the fitted shape
+    let n = c["known_n"]
+    let got = c["f"](n)
+    let want = c["known_value"]
+    let rel = f_abs(got - want) / (1.0 + f_abs(want))
+    let num_ok = rel < 1e-6
+    checks.push(ck("number", num_ok,
+                   "f(" + num(n) + ") = " + sfmt(got) + ", known " + sfmt(want) +
+                   " (relative error " + sfmt(rel) + ")"))
+
+    // 3. dimension — every entry is a positive step count
+    var dim_ok = true
+    for p in c["measured"] {
+        if p[1] <= 0.0 { dim_ok = false }
+    }
+    checks.push(ck("dimension", dim_ok,
+                   pick(dim_ok, "all runtimes are positive step counts",
+                        "a runtime cannot be zero or negative")))
+
+    // 4. boundary — finite at small n, bigger at larger n
+    var bound_ok = true
+    var first = 0.0
+    var last = 0.0
+    if c["measured"].len() > 1 {
+        first = c["measured"][0][1]
+        last = c["measured"][c["measured"].len() - 1][1]
+    }
+    if last <= first { bound_ok = false }
+    checks.push(ck("boundary", bound_ok,
+                   "T(" + num(c["measured"][0][0]) + ") = " + fmt(first) +
+                   ", T(" + num(c["measured"][c["measured"].len() - 1][0]) +
+                   ") = " + sfmt(last) + " — finite at zero, diverges at infinity"))
+
+    // 5. quantifier
+    let q_ok = c["quantifier"] == "this"
+    checks.push(ck("quantifier", q_ok,
+                   pick(q_ok, "claim is about one algorithm and its runs",
+                        "claim is about every algorithm; only a proof can settle it")))
+
+    var passed = 0
+    var only_quantifier = true
+    for x in checks {
+        if x["pass"] { passed = passed + 1 }
+        if not x["pass"] and x["check"] != "quantifier" { only_quantifier = false }
+    }
+
+    var verdict = "REJECTED"
+    if passed == checks.len() { verdict = "CERTIFIED" }
+    if only_quantifier and passed == checks.len() - 1 { verdict = "OUT_OF_REACH" }
+
+    return {"id": c["id"], "text": c["text"], "note": c["note"],
+            "checks": checks, "passed": passed, "total": checks.len(),
+            "verdict": verdict}
+}
+
+fn pick(cond, a, b) {
+    if cond { return a }
+    return b
+}
