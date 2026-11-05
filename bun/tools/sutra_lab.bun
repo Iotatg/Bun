@@ -1,0 +1,198 @@
+// tools/sutra_lab.bun — SUTRA in one run.
+//
+//   bun tools/sutra_lab.bun
+//
+// Six sections: the charter, three black boxes being reversed, fourteen
+// certified laws, the cross-subject groups, two hard-looking questions solved
+// by shape alone, and two wrong answers being rejected on purpose.
+//
+// Nothing here is hard-coded except the laws themselves; every verdict comes
+// from certificate().
+
+import {
+    moves, SHAPES, classify, skeleton, same_skeleton, num, fmt,
+    catalog, certificate, groups, ladder, explain, curriculum,
+    dim_parse, dim_str, edge_behavior
+} from "bun:sutra"
+
+let M = ffi_load("math")
+let f_sqrt = M["sqrt"]
+let f_log = M["log"]
+let f_abs = M["fabs"]
+let f_exp = M["exp"]
+
+fn banner(title) {
+    print("")
+    print("================================================================")
+    print(title)
+    print("================================================================")
+}
+
+let t0 = now()
+
+banner("SUTRA — one subject for every subject")
+print("Thesis: a problem is hard because of vocabulary, not structure.")
+print("Strip the vocabulary and a law is only a shape. Three shapes cover")
+print("almost everything:")
+print("")
+print("  power        f(Lx)/f(x) = L^k      constant relative change")
+print("  exponential  f(x+d)/f(x) = r       constant ratio per step")
+print("  logarithmic  f(Lx)-f(x) = c        constant absolute gain")
+print("")
+print("Identify the shape and you know the units, the limits and the failure")
+print("modes before solving anything. Two problems with the same shape have")
+print("the same solution.")
+
+// ---------------------------------------------------------------------------
+banner("1. The seven moves")
+for m in moves() {
+    print("  " + str(m["id"]) + ". " + m["name"] + "  (" + m["hindi"] + ")")
+    print("     ask: " + m["ask"])
+    print("     removes: " + m["removes"])
+}
+
+// ---------------------------------------------------------------------------
+banner("2. Reversing three black boxes")
+print("Each function below is treated as unknown. classify() measures the shape")
+print("from three evaluations and reconstructs the law from that alone.")
+print("")
+
+fn box_cubic(x) { return 3.0 * x * x * x }
+fn box_growth(x) { return 5.0 * (2.0 ** (x / 7.0)) }
+fn box_log(x) { return 4.0 * f_log(x) + 1.0 }
+
+let boxes = [
+    {"name": "box A", "f": box_cubic},
+    {"name": "box B", "f": box_growth},
+    {"name": "box C", "f": box_log}
+]
+
+let held_out = 5.0
+for b in boxes {
+    let f = b["f"]
+    let c = classify(f, 3.0, 4.0)
+    let sk = skeleton(f, 3.0, 4.0)
+    // Rebuild the law from the skeleton alone and test it at a point that was
+    // never used for the fit.
+    var rebuilt = 0.0
+    if sk["shape"] == "power" {
+        rebuilt = sk["factor"] * (held_out ** sk["param"])
+    }
+    if sk["shape"] == "exponential" {
+        rebuilt = sk["factor"] * f_exp(sk["param"] * held_out)
+    }
+    if sk["shape"] == "logarithmic" {
+        rebuilt = sk["factor"] * f_log(held_out) + sk["offset"]
+    }
+    let truth = f(held_out)
+    let err = f_abs(rebuilt - truth)
+    print("  " + b["name"] + ": shape = " + c["shape"] + ", parameter = " + num(c["param"]))
+    print("            skeleton: factor = " + num(sk["factor"]) +
+          ", offset = " + num(sk["offset"]))
+    print("            held-out x = 5: rebuilt " + num(rebuilt) +
+          " vs true " + num(truth) + "  error " + num(err))
+}
+
+// ---------------------------------------------------------------------------
+banner("3. Fourteen laws, six subjects, four checks each")
+print("each law is checked four ways: shape, number, dimension, boundary")
+print("")
+let problems = catalog()
+var certified = 0
+for p in problems {
+    let c = certificate(p)
+    if c["verdict"] == "CERTIFIED" { certified = certified + 1 }
+    print("  " + c["verdict"] + "  " + p["subject"])
+    print("      " + p["id"] + "   " + p["formula"])
+    for ck in c["checks"] {
+        var mark = "FAIL"
+        if ck["pass"] { mark = "ok  " }
+        print("      [" + mark + "] " + ck["check"] + ": " + ck["detail"])
+    }
+}
+print("")
+print("certified " + str(certified) + " of " + str(problems.len()))
+
+// ---------------------------------------------------------------------------
+banner("4. The groups — six subjects collapsing into four laws")
+print("Same shape and same parameter means same solution. This is the whole")
+print("claim of the subject, made visible.")
+print("")
+for g in groups(problems) {
+    if g["members"].len() > 1 {
+        print("  " + g["shape"] + " (" + num(g["param"]) + ") — " +
+              str(g["members"].len()) + " laws from " + str(g["subjects"].len()) + " subjects")
+        for mid in g["members"] {
+            print("      " + mid)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+banner("5. Two hard-looking questions, solved by shape alone")
+print("No formula is used below — only the shape and the exponent.")
+print("")
+
+// Kepler: T ~ a^1.5, so 4x the radius gives 4^1.5 = 8x the year.
+let factor = 4.0 ** 1.5
+print("  Q1. A satellite moves to 4x its orbital radius. New period?")
+print("      shape: power, exponent 3/2  =>  4^(3/2) = " + fmt(factor) + "x")
+print("      the full Kepler formula was never needed")
+
+// Pendulum: T ~ g^-1/2, so Mars gravity changes the period by sqrt(gE/gM).
+let g_earth = 9.81
+let g_mars = 3.72
+let ratio = f_sqrt(g_earth / g_mars)
+print("")
+print("  Q2. How much slower is the same pendulum on Mars?")
+print("      shape: power, exponent -1/2  =>  sqrt(9.81/3.72) = " + fmt(ratio) + "x")
+print("      again, only the exponent mattered")
+
+// ---------------------------------------------------------------------------
+banner("6. Two wrong answers, rejected on purpose")
+print("The certificate is not decoration. Below, two plausible answers fail.")
+print("")
+
+let bad_shape = catalog()[1]
+bad_shape["param"] = 1.0
+let cs = certificate(bad_shape)
+print("  WRONG: claim the pendulum period is linear in length (T ~ L^1)")
+print("      verdict: " + cs["verdict"] + " (" + str(cs["passed"]) + "/" + str(cs["total"]) + ")")
+for ck in cs["checks"] {
+    if not ck["pass"] {
+        print("      failed " + ck["check"] + ": " + ck["detail"])
+    }
+}
+
+let bad_unit = catalog()[0]
+bad_unit["lhs_unit"] = "m"
+let cu = certificate(bad_unit)
+print("")
+print("  WRONG: claim a fall time is measured in metres")
+print("      verdict: " + cu["verdict"] + " (" + str(cu["passed"]) + "/" + str(cu["total"]) + ")")
+for ck in cu["checks"] {
+    if not ck["pass"] {
+        print("      failed " + ck["check"] + ": " + ck["detail"])
+    }
+}
+
+// ---------------------------------------------------------------------------
+banner("7. Teaching: the ladder for one law")
+print(explain(catalog()[1]))
+
+// ---------------------------------------------------------------------------
+banner("8. The course — six lessons, for a human or a model")
+print("Each lesson is one idea, one worked example, one exercise, one answer.")
+print("")
+for l in curriculum() {
+    print("  " + str(l["lesson"]) + ". " + l["title"])
+    print("      try: " + l["exercise"])
+}
+
+// ---------------------------------------------------------------------------
+banner("run summary")
+print("laws certified: " + str(certified) + "/" + str(problems.len()))
+print("shapes known:   " + str(SHAPES.len()))
+print("moves:          " + str(moves().len()))
+print("lessons:        " + str(curriculum().len()))
+print("elapsed seconds: " + num(now() - t0))

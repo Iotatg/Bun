@@ -1,0 +1,51 @@
+// examples/sutra.bun — a four-step tour of the SUTRA subject.
+//
+//   bun examples/sutra.bun
+//
+// 1. reverse an unknown law into a shape
+// 2. certify a known law with four independent checks
+// 3. show the same shape appearing in different subjects
+// 4. teach it with the five-rung ladder
+//
+// The full laboratory is `bun tools/sutra_lab.bun`.
+
+import {
+    classify, num, fmt, catalog, certificate, groups, ladder
+} from "bun:sutra"
+
+// 1. A black box. Nothing about it is known except that it is a function.
+fn mystery(x) { return 2.5 * x * x }
+
+let c = classify(mystery, 1.0, 4.0)
+print("1. reversed  : shape = " + c["shape"] + ", exponent = " + num(c["param"]))
+print("   prediction: at x = 6 the value is " + fmt(2.5 * 36.0))
+
+// 2. A law from the catalogue, checked four ways.
+let p = catalog()[0]
+let cert = certificate(p)
+print("")
+print("2. certified : " + p["id"] + " -> " + cert["verdict"] +
+      " (" + str(cert["passed"]) + "/" + str(cert["total"]) + ")")
+for ck in cert["checks"] {
+    var mark = "fail"
+    if ck["pass"] { mark = "ok" }
+    print("   [" + mark + "] " + ck["check"])
+}
+
+// 3. The point of the subject: different vocabulary, same skeleton.
+print("")
+print("3. shared laws:")
+for g in groups(catalog()) {
+    if g["members"].len() >= 3 {
+        print("   " + g["shape"] + " (" + num(g["param"]) + ") — " +
+              str(g["members"].len()) + " laws across " + str(g["subjects"].len()) + " subjects")
+        for s in g["subjects"] { print("       " + s) }
+    }
+}
+
+// 4. The ladder: from a guess to the reason.
+print("")
+print("4. teaching one law:")
+for rung in ladder(catalog()[2]) {
+    print("   " + rung)
+}

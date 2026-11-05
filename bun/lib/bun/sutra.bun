@@ -1,0 +1,778 @@
+// lib/bun/sutra.bun — SUTRA: one subject that covers every subject.
+//
+// The thesis is narrow enough to be testable:
+//
+//   A problem is hard because of vocabulary, not structure. Strip the
+//   vocabulary and what is left is a *shape* — how the answer moves when the
+//   input moves. Almost every law in every subject has one of three shapes:
+//
+//     power        f(Lx) / f(x) = L^k        (constant relative change)
+//     exponential  f(x+d) / f(x) = r         (constant ratio per step)
+//     logarithmic  f(Lx) - f(x) = c          (constant absolute gain)
+//
+//   Identify the shape and you know the behaviour, the units, the limits and
+//   the failure modes — before you solve anything. Two problems with the same
+//   shape have the same solution, so learning one teaches all of them.
+//
+// That is the whole subject. Everything else is one of seven moves that take
+// you from a question to a shape, and four checks that certify the answer.
+//
+// The library makes the moves executable and the checks real. Nothing here is
+// asserted: `classify` measures the shape numerically, `certificate` runs the
+// checks and fails loudly. A wrong answer cannot pass.
+//
+// Pure Bun. The only foreign call is ffi_load("math") for sqrt/log/exp, which
+// are primitives, not knowledge.
+
+let M = ffi_load("math")
+let f_sqrt = M["sqrt"]
+let f_log = M["log"]
+let f_exp = M["exp"]
+let f_abs = M["fabs"]
+let f_pi = M["pi"]
+
+// Bun has no `in` operator (only `for x in`), so presence is explicit.
+export fn has_key(d, k) {
+    for x in d {
+        if x == k { return true }
+    }
+    return false
+}
+
+// A number without trailing noise, for evidence output.
+export fn num(x) {
+    if f_abs(x - float(int(x))) < 1e-9 { return str(int(x)) }
+    return str(x)
+}
+
+// A number rounded to five significant digits, for teaching output.
+export fn fmt(x) {
+    let a = f_abs(x)
+    if a == 0.0 { return "0" }
+    var digits = 4
+    if a >= 1000.0 { digits = 0 }
+    if a >= 100.0 and a < 1000.0 { digits = 1 }
+    if a >= 10.0 and a < 100.0 { digits = 2 }
+    if a >= 1.0 and a < 10.0 { digits = 3 }
+    if a < 1.0 {
+        // keep four significant digits however small the number is
+        let e = (0.0 - f_log(a)) / f_log(10.0)
+        var ce = int(e)
+        if float(ce) < e { ce = ce + 1 }
+        digits = 4 + ce
+    }
+    let p = 10.0 ** digits
+    var scaled = x * p
+    if scaled >= 0.0 { scaled = float(int(scaled + 0.5)) }
+    if scaled < 0.0 { scaled = float(int(scaled - 0.5)) }
+    return num(scaled / p)
+}
+
+// ---------------------------------------------------------------------------
+// 1. The seven moves
+//
+// Each move answers one question and removes one kind of confusion. They are
+// ordered: you can stop as soon as the certificate passes.
+// ---------------------------------------------------------------------------
+
+export fn moves() {
+    return [
+        {"id": 1, "name": "name", "hindi": "नाम दो",
+         "ask": "What exactly is unknown, and in what unit?",
+         "removes": "a vague question",
+         "example": "not 'how fast?' but 'v in m/s, at t = 3 s'"},
+        {"id": 2, "name": "shrink", "hindi": "छोटा करो",
+         "ask": "What is the smallest case you can compute by hand?",
+         "removes": "the fear of the general case",
+         "example": "n = 1, one dimension, one step, one particle"},
+        {"id": 3, "name": "change", "hindi": "बदलो",
+         "ask": "Which representation makes the structure visible?",
+         "removes": "the wrong coordinate system",
+         "example": "log for products, graph for relations, complex for rotation"},
+        {"id": 4, "name": "invariant", "hindi": "जो नहीं बदलता",
+         "ask": "What cannot change, whatever else changes?",
+         "removes": "the need to track everything",
+         "example": "energy, parity, dimension, symmetry, area"},
+        {"id": 5, "name": "bound", "hindi": "बाहर से घेरो",
+         "ask": "What are the two extreme cases, and what traps the answer?",
+         "removes": "the need for an exact answer",
+         "example": "x -> 0 and x -> infinity give the shape for free"},
+        {"id": 6, "name": "compose", "hindi": "जोड़ो",
+         "ask": "How is the whole built from the small case?",
+         "removes": "the need to solve the whole at once",
+         "example": "induction, recursion, divide and conquer"},
+        {"id": 7, "name": "check", "hindi": "जाँच लो",
+         "ask": "Does the answer survive four independent checks?",
+         "removes": "the possibility of a silent error",
+         "example": "shape, number, dimension, boundary"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 2. The three shapes
+//
+// classify() is the reverse-engineering core: give it any law, from any
+// subject, as a function, and it tells you which shape it is and with what
+// parameter. No subject knowledge is used — only measurements.
+// ---------------------------------------------------------------------------
+
+export let SHAPES = ["constant", "power", "exponential", "logarithmic"]
+
+fn close(a, b, tol) {
+    return f_abs(a - b) <= tol * (1.0 + f_abs(a) + f_abs(b))
+}
+
+// Exponent of a power law measured at x0, using a factor `lam`.
+export fn power_exponent(f, x0, lam) {
+    let y0 = f(x0)
+    let y1 = f(x0 * lam)
+    if y0 == 0.0 or y1 == 0.0 { return 0.0 }
+    return f_log(y1 / y0) / f_log(lam)
+}
+
+// Growth rate per unit x of an exponential, measured at x0.
+export fn exp_rate(f, x0, step) {
+    let y0 = f(x0)
+    let y1 = f(x0 + step)
+    if y0 <= 0.0 or y1 <= 0.0 { return 0.0 }
+    return f_log(y1 / y0) / step
+}
+
+// Additive gain of a logarithm when the argument is multiplied by `lam`.
+export fn log_gain(f, x0, lam) {
+    return f(x0 * lam) - f(x0)
+}
+
+// The reverse-engineering entry point.
+//
+// Returns {"shape": ..., "param": ..., "evidence": {...}, "confident": bool}.
+// `param` means: exponent for power, rate for exponential, gain for
+// logarithmic, value for constant.
+export fn classify(f, x0, lam) {
+    let y0 = f(x0)
+    let y1 = f(x0 * lam)
+    let y2 = f(x0 * lam * lam)
+
+    // constant: the value does not move at all
+    if close(y0, y1, 1e-12) and close(y1, y2, 1e-12) {
+        return {"shape": "constant", "param": y0, "confident": true,
+                "evidence": {"y0": y0, "y1": y1, "y2": y2}}
+    }
+
+    // power: the exponent is the same on both intervals
+    var k1 = 0.0
+    var k2 = 0.0
+    if y0 != 0.0 and y1 != 0.0 and y2 != 0.0 {
+        k1 = f_log(y1 / y0) / f_log(lam)
+        k2 = f_log(y2 / y1) / f_log(lam)
+    }
+    if close(k1, k2, 1e-6) and f_abs(k1) > 1e-9 {
+        return {"shape": "power", "param": k1, "confident": true,
+                "evidence": {"k_first": k1, "k_second": k2,
+                             "y0": y0, "y1": y1, "y2": y2}}
+    }
+
+    // exponential: the rate per unit x is the same on both intervals.
+    // The intervals have different widths (x0*(lam-1) and x0*lam*(lam-1)),
+    // so each rate must be divided by its own width.
+    let step = x0 * (lam - 1.0)
+    let step2 = x0 * lam * (lam - 1.0)
+    if step > 0.0 and y0 != 0.0 {
+        var r1 = 0.0
+        var r2 = 0.0
+        if y0 > 0.0 and y1 > 0.0 and y2 > 0.0 {
+            r1 = f_log(y1 / y0) / step
+            r2 = f_log(y2 / y1) / step2
+        }
+        // A logarithm also has a slowly varying log-ratio; require real growth
+        // before calling something exponential.
+        let grew = f_abs(y2 / y0 - 1.0) > 0.5
+        if grew and close(r1, r2, 1e-6) and f_abs(r1) > 1e-12 {
+            return {"shape": "exponential", "param": r1, "confident": true,
+                    "evidence": {"rate_first": r1, "rate_second": r2,
+                                 "y0": y0, "y1": y1, "y2": y2}}
+        }
+
+        // logarithmic: the additive gain is the same on both intervals
+        let d1 = y1 - y0
+        let d2 = y2 - y1
+        if close(d1, d2, 1e-6) and f_abs(d1) > 1e-12 {
+            return {"shape": "logarithmic", "param": d1, "confident": true,
+                    "evidence": {"gain_first": d1, "gain_second": d2,
+                                 "y0": y0, "y1": y1, "y2": y2}}
+        }
+    }
+
+    return {"shape": "mixed", "param": 0.0, "confident": false,
+            "evidence": {"y0": y0, "y1": y1, "y2": y2,
+                         "k_first": k1, "k_second": k2}}
+}
+
+// A law written as data instead of code: the shape plus its parameter, with
+// the constant factor kept separate. This is what "reversing a subject" means
+// here — a formula becomes three numbers.
+export fn skeleton(f, x0, lam) {
+    let c = classify(f, x0, lam)
+    var factor = 0.0
+    var offset = 0.0
+    if c["shape"] == "power" {
+        factor = f(x0) / (x0 ** c["param"])
+    }
+    if c["shape"] == "exponential" {
+        factor = f(x0) / f_exp(c["param"] * x0)
+    }
+    if c["shape"] == "logarithmic" {
+        // f = c*ln(x) + d, with c recovered from the gain over one factor lam
+        factor = c["param"] / f_log(lam)
+        offset = f(x0) - factor * f_log(x0)
+    }
+    return {"shape": c["shape"], "param": c["param"], "factor": factor,
+            "offset": offset, "at": x0, "confident": c["confident"]}
+}
+
+// Two laws are the same law (up to a constant) when their skeletons agree.
+export fn same_skeleton(a, b, tol) {
+    if a["shape"] != b["shape"] { return false }
+    if a["shape"] == "constant" { return true }
+    // A logarithm's coefficient is just a choice of base: log2 and ln differ by
+    // the constant 1/ln(2), which is scale, not structure. So every logarithm
+    // is the same law, and only power/exponential parameters are structural.
+    if a["shape"] == "logarithmic" { return true }
+    return f_abs(a["param"] - b["param"]) <= tol * (1.0 + f_abs(a["param"]))
+}
+// ---------------------------------------------------------------------------
+// 3. Dimension algebra — the move that catches most errors for free
+//
+// A unit string is turned into a vector of base exponents. Derived units are
+// expanded, so "N" and "kg*m/s^2" compare equal. This is what makes the
+// dimension check a real check and not a decoration.
+// ---------------------------------------------------------------------------
+
+fn dim_base(sym) {
+    if sym == "m" { return {"L": 1} }
+    if sym == "s" { return {"T": 1} }
+    if sym == "kg" { return {"M": 1} }
+    if sym == "A" { return {"I": 1} }
+    if sym == "K" { return {"K": 1} }
+    if sym == "mol" { return {"N": 1} }
+    if sym == "cd" { return {"J": 1} }
+    if sym == "bit" { return {"B": 1} }
+    // derived
+    if sym == "N" { return {"M": 1, "L": 1, "T": -2} }
+    if sym == "J" { return {"M": 1, "L": 2, "T": -2} }
+    if sym == "W" { return {"M": 1, "L": 2, "T": -3} }
+    if sym == "Pa" { return {"M": 1, "L": -1, "T": -2} }
+    if sym == "C" { return {"I": 1, "T": 1} }
+    if sym == "V" { return {"M": 1, "L": 2, "T": -3, "I": -1} }
+    if sym == "ohm" { return {"M": 1, "L": 2, "T": -3, "I": -2} }
+    if sym == "Hz" { return {"T": -1} }
+    return {}
+}
+
+fn dim_add(a, b, sign) {
+    let out = {}
+    for k in a { out[k] = a[k] }
+    for k in b {
+        var v = b[k] * sign
+        if has_key(out, k) { v = out[k] + v }
+        out[k] = v
+    }
+    return out
+}
+
+// "kg*m/s^2", "m^3*kg^-1*s^-2", "W/m^2", "1" are all accepted.
+export fn dim_parse(text) {
+    let parts = split(text, "/")
+    var num = {}
+    var den = {}
+    let first = split(parts[0], "*")
+    for tok in first {
+        num = dim_add(num, dim_token(tok), 1)
+    }
+    if parts.len() > 1 {
+        let second = split(parts[1], "*")
+        for tok in second {
+            den = dim_add(den, dim_token(tok), 1)
+        }
+    }
+    return dim_add(num, den, -1)
+}
+
+fn dim_token(tok) {
+    if tok == "" or tok == "1" { return {} }
+    let bits = split(tok, "^")
+    let sym = bits[0]
+    var power = 1.0
+    if bits.len() > 1 { power = float(bits[1]) }
+    let base = dim_base(sym)
+    let out = {}
+    for k in base {
+        out[k] = base[k] * power
+    }
+    return out
+}
+
+export fn dim_mul(a, b) { return dim_add(a, b, 1) }
+export fn dim_div(a, b) { return dim_add(a, b, -1) }
+
+export fn dim_pow(a, n) {
+    let out = {}
+    for k in a { out[k] = a[k] * n }
+    return out
+}
+
+export fn dim_eq(a, b) {
+    for k in a {
+        var other = 0.0
+        if has_key(b, k) { other = b[k] }
+        if f_abs(a[k] - other) > 1e-9 { return false }
+    }
+    for k in b {
+        var other = 0.0
+        if has_key(a, k) { other = a[k] }
+        if f_abs(b[k] - other) > 1e-9 { return false }
+    }
+    return true
+}
+
+export fn dim_str(d) {
+    let keys = sorted(d.keys())
+    var out = ""
+    for k in keys {
+        let e = d[k]
+        if f_abs(e) > 1e-9 {
+            if out != "" { out = out + "*" }
+            out = out + k + "^" + num(e)
+        }
+    }
+    if out == "" { return "1" }
+    return out
+}
+
+// Dimension expressions as data, so the check is computed rather than claimed.
+//   {"op": "unit", "u": "m"}
+//   {"op": "mul"|"div", "a": <node>, "b": <node>}
+//   {"op": "pow", "a": <node>, "n": 0.5}
+export fn dim_eval(node) {
+    let op = node["op"]
+    if op == "unit" { return dim_parse(node["u"]) }
+    if op == "mul" { return dim_mul(dim_eval(node["a"]), dim_eval(node["b"])) }
+    if op == "div" { return dim_div(dim_eval(node["a"]), dim_eval(node["b"])) }
+    if op == "pow" { return dim_pow(dim_eval(node["a"]), node["n"]) }
+    return {}
+}
+
+// ---------------------------------------------------------------------------
+// 4. Boundary behaviour — the second free check
+//
+// Every law tells you what happens at the edges. If a formula disagrees with
+// its own edge behaviour, it is wrong, and you learn that without solving it.
+// ---------------------------------------------------------------------------
+
+// The thresholds are exponent-based, not absolute: a square root decays by
+// 1e-3 over six decades and must still count as "vanishes", while a constant
+// must not. `scale` keeps exponential laws inside the double range.
+export fn edge_behavior(f, x0, scale) {
+    var ref = f_abs(f(x0))
+    if ref == 0.0 { ref = 1.0 }
+    let tiny = f_abs(f(x0 / scale))
+    let huge = f_abs(f(x0 * scale))
+
+    var k_zero = 0.0
+    if tiny > 0.0 { k_zero = f_log(tiny / ref) / f_log(1.0 / scale) }
+    var k_inf = 0.0
+    if huge > 0.0 { k_inf = f_log(huge / ref) / f_log(scale) }
+
+    var at_zero = "finite"
+    if k_zero > 0.1 { at_zero = "vanishes" }
+    if k_zero < -0.1 { at_zero = "diverges" }
+
+    var at_inf = "finite"
+    if k_inf > 0.1 { at_inf = "diverges" }
+    if k_inf < -0.1 { at_inf = "vanishes" }
+
+    return {"at_zero": at_zero, "at_inf": at_inf,
+            "k_zero": k_zero, "k_inf": k_inf}
+}
+
+// ---------------------------------------------------------------------------
+// 5. The certificate
+//
+// Four independent checks. A wrong answer fails at least one of them. This is
+// the part that makes the subject safe: you do not need to be sure, you need
+// to be checkable.
+// ---------------------------------------------------------------------------
+
+fn check(name, ok, detail) {
+    return {"check": name, "pass": ok, "detail": detail}
+}
+
+export fn certificate(p) {
+    var tol = 1e-6
+    if has_key(p, "tol") { tol = p["tol"] }
+    let checks = []
+
+    // 1. shape: measured shape and parameter must match the claim
+    let c = classify(p["f"], p["probe"], 4.0)
+    var shape_ok = c["shape"] == p["shape"]
+    if shape_ok and p["shape"] != "constant" {
+        shape_ok = f_abs(c["param"] - p["param"]) <= tol * (1.0 + f_abs(p["param"]))
+    }
+    checks.push(check("shape", shape_ok,
+                      "measured " + c["shape"] + "(" + num(c["param"]) + ")" +
+                      ", claimed " + p["shape"] + "(" + num(p["param"]) + ")"))
+
+    // 2. number: the formula must hit a value known by other means
+    let v = p["f"](p["probe"])
+    let num_ok = f_abs(v - p["answer"]) <= tol * (1.0 + f_abs(p["answer"]))
+    checks.push(check("number", num_ok,
+                      "f(" + num(p["probe"]) + ") = " + num(v) +
+                      ", known " + num(p["answer"])))
+
+    // 3. dimension: the formula's unit must equal the unknown's unit
+    var dim_ok = true
+    var dim_detail = "no unit claimed"
+    if has_key(p, "lhs_unit") and has_key(p, "dim_expr") {
+        let left = dim_parse(p["lhs_unit"])
+        let right = dim_eval(p["dim_expr"])
+        dim_ok = dim_eq(left, right)
+        dim_detail = dim_str(left) + " vs " + dim_str(right)
+    }
+    checks.push(check("dimension", dim_ok, dim_detail))
+
+    // 4. boundary: edge behaviour must match the claim
+    var scale = 1e6
+    if has_key(p, "edge_scale") { scale = p["edge_scale"] }
+    let e = edge_behavior(p["f"], p["probe"], scale)
+    var edge_ok = true
+    var edge_detail = "at_zero " + e["at_zero"] + ", at_inf " + e["at_inf"]
+    if has_key(p, "at_zero") and e["at_zero"] != p["at_zero"] { edge_ok = false }
+    if has_key(p, "at_inf") and e["at_inf"] != p["at_inf"] { edge_ok = false }
+    checks.push(check("boundary", edge_ok, edge_detail))
+
+    var passed = 0
+    for ck in checks {
+        if ck["pass"] { passed = passed + 1 }
+    }
+
+    var verdict = "REJECTED"
+    if passed == checks.len() { verdict = "CERTIFIED" }
+
+    return {"id": p["id"], "subject": p["subject"], "checks": checks,
+            "passed": passed, "total": checks.len(), "verdict": verdict}
+}
+
+// 6. The catalogue — fourteen laws from six subjects
+//
+// Each entry is a real formula with a value known by other means, so the
+// number check is not circular. The `why` field is the teaching sentence: the
+// reason the shape had to be that shape.
+// ---------------------------------------------------------------------------
+
+fn p_freefall(h) { return f_sqrt(2.0 * h / 9.81) }
+fn p_pendulum(L) { return 2.0 * f_pi * f_sqrt(L / 9.81) }
+fn p_randomwalk(n) { return f_sqrt(n) }
+fn p_diffusion(t) { return f_sqrt(2.0 * 1e-9 * t) }
+fn p_gravity(r) { return 6.674e-11 * 5.972e24 * 1.0 / (r * r) }
+fn p_coulomb(r) { return 8.9875517923e9 * 1e-18 / (r * r) }
+fn p_irradiance(r) { return 100.0 / (4.0 * f_pi * r * r) }
+fn p_hooke(x) { return 200.0 * x }
+fn p_ohm(I) { return 47.0 * I }
+fn p_beer(c) { return 1.5e4 * 0.01 * c }
+fn p_kepler(a) { return 2.0 * f_pi * f_sqrt(a * a * a / (6.674e-11 * 1.989e30)) }
+fn p_binsearch(n) { return f_log(n) / f_log(2.0) }
+fn p_bacteria(t) { return 1000.0 * (2.0 ** (t / 20.0)) }
+fn p_harmonic(N) { return f_log(N) + 0.5772156649 }
+
+fn u(name) { return {"op": "unit", "u": name} }
+
+export fn catalog() {
+    return [
+        // ---- square-root family: four subjects, one shape -----------------
+        {"id": "free-fall-time", "subject": "physics",
+         "question": "How long does a dropped stone take to fall h metres?",
+         "unknown": "t", "formula": "t = sqrt(2h/g)",
+         "shape": "power", "param": 0.5, "probe": 2.0, "answer": 0.638550856814101,
+         "f": p_freefall, "moves": [1, 4, 5, 7],
+         "lhs_unit": "s",
+         "dim_expr": {"op": "pow", "n": 0.5,
+                      "a": {"op": "div", "a": u("m"), "b": u("m/s^2")}},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "Only h and g can appear, and seconds must come out: the only combination with unit s is sqrt(h/g)."},
+
+        {"id": "pendulum-period", "subject": "physics",
+         "question": "How does a pendulum's period depend on its length?",
+         "unknown": "T", "formula": "T = 2*pi*sqrt(L/g)",
+         "shape": "power", "param": 0.5, "probe": 1.0, "answer": 2.0060666807106475,
+         "f": p_pendulum, "moves": [1, 4, 5, 7],
+         "lhs_unit": "s",
+         "dim_expr": {"op": "pow", "n": 0.5,
+                      "a": {"op": "div", "a": u("m"), "b": u("m/s^2")}},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "Same unit problem as free fall, so the same shape; only the constant 2*pi differs."},
+
+        {"id": "random-walk-rms", "subject": "mathematics",
+         "question": "How far does a random walk of n steps typically get?",
+         "unknown": "rms", "formula": "rms = sqrt(n)",
+         "shape": "power", "param": 0.5, "probe": 100.0, "answer": 10.0,
+         "f": p_randomwalk, "moves": [2, 4, 6, 7],
+         "lhs_unit": "1", "dim_expr": u("1"),
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "Steps cancel in expectation but their squares add, so variance grows like n and distance like sqrt(n)."},
+
+        {"id": "diffusion-distance", "subject": "chemistry",
+         "question": "How far does a molecule diffuse in time t?",
+         "unknown": "x", "formula": "x = sqrt(2Dt)",
+         "shape": "power", "param": 0.5, "probe": 1.0, "answer": 4.4721359549995795e-05,
+         "f": p_diffusion, "moves": [1, 4, 5, 7],
+         "lhs_unit": "m",
+         "dim_expr": {"op": "pow", "n": 0.5,
+                      "a": {"op": "mul", "a": u("m^2/s"), "b": u("s")}},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "D has unit m^2/s, so sqrt(Dt) is the only length you can build; square-root spreading is forced by units alone."},
+
+        // ---- inverse-square family: three subjects, one shape -------------
+        {"id": "gravity", "subject": "physics",
+         "question": "How does weight change with distance from Earth's centre?",
+         "unknown": "F", "formula": "F = G*M*m/r^2",
+         "shape": "power", "param": -2.0, "probe": 6.371e6, "answer": 9.819532032815959,
+         "f": p_gravity, "moves": [1, 4, 5, 7],
+         "lhs_unit": "N",
+         "dim_expr": {"op": "div",
+                      "a": {"op": "mul",
+                            "a": {"op": "mul", "a": u("m^3*kg^-1*s^-2"), "b": u("kg")},
+                            "b": u("kg")},
+                      "b": u("m^2")},
+         "at_zero": "diverges", "at_inf": "vanishes",
+         "why": "Flux through a sphere spreads over 4*pi*r^2, so any conserved influence falls as 1/r^2."},
+
+        {"id": "coulomb", "subject": "physics",
+         "question": "How does the force between two charges decay with distance?",
+         "unknown": "F", "formula": "F = k*q1*q2/r^2",
+         "shape": "power", "param": -2.0, "probe": 1e-3, "answer": 0.0089875517923,
+         "f": p_coulomb, "moves": [3, 4, 7],
+         "lhs_unit": "N",
+         "dim_expr": {"op": "div",
+                      "a": {"op": "mul",
+                            "a": {"op": "mul", "a": u("N*m^2*C^-2"), "b": u("C")},
+                            "b": u("C")},
+                      "b": u("m^2")},
+         "at_zero": "diverges", "at_inf": "vanishes",
+         "why": "Identical geometry to gravity; the subject changed, the skeleton did not."},
+
+        {"id": "irradiance", "subject": "optics",
+         "question": "How bright is a lamp at distance r?",
+         "unknown": "I", "formula": "I = P/(4*pi*r^2)",
+         "shape": "power", "param": -2.0, "probe": 1.0, "answer": 7.957747154594767,
+         "f": p_irradiance, "moves": [3, 4, 5, 7],
+         "lhs_unit": "W/m^2",
+         "dim_expr": {"op": "div", "a": u("W"), "b": u("m^2")},
+         "at_zero": "diverges", "at_inf": "vanishes",
+         "why": "Same sphere argument again: power spread over area is 1/r^2, whether the carrier is light or gravity."},
+
+        // ---- linear family: three subjects, one shape ---------------------
+        {"id": "hooke", "subject": "physics",
+         "question": "How much force does a spring give at extension x?",
+         "unknown": "F", "formula": "F = k*x",
+         "shape": "power", "param": 1.0, "probe": 0.05, "answer": 10.0,
+         "f": p_hooke, "moves": [2, 3, 7],
+         "lhs_unit": "N",
+         "dim_expr": {"op": "mul", "a": u("N/m"), "b": u("m")},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "The smallest case (x = 0 gives F = 0) plus smoothness leaves only a straight line."},
+
+        {"id": "ohm", "subject": "physics",
+         "question": "What voltage drives current I through a resistor?",
+         "unknown": "V", "formula": "V = R*I",
+         "shape": "power", "param": 1.0, "probe": 0.02, "answer": 0.9400000000000001,
+         "f": p_ohm, "moves": [1, 3, 7],
+         "lhs_unit": "V",
+         "dim_expr": {"op": "mul", "a": u("V/A"), "b": u("A")},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "Ohm's law is Hooke's law with different letters: zero drive, zero response, linear in between."},
+
+        {"id": "beer-lambert", "subject": "chemistry",
+         "question": "How does absorbance grow with concentration?",
+         "unknown": "A", "formula": "A = eps*l*c",
+         "shape": "power", "param": 1.0, "probe": 1e-4, "answer": 0.015000000000000001,
+         "f": p_beer, "moves": [3, 4, 7],
+         "lhs_unit": "1", "dim_expr": u("1"),
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "Absorbance is a log of transmission, and log of an exponential is linear — the shape is a consequence of the definition."},
+
+        // ---- the one-move hard problems -----------------------------------
+        {"id": "kepler-third-law", "subject": "astronomy",
+         "question": "A satellite's orbital radius grows 4x. How does its year change?",
+         "unknown": "T", "formula": "T = 2*pi*sqrt(a^3/(G*M))",
+         "shape": "power", "param": 1.5, "probe": 1.0e11, "answer": 17245245.275897544,
+         "f": p_kepler, "moves": [1, 4, 5, 7],
+         "lhs_unit": "s",
+         "dim_expr": {"op": "pow", "n": 0.5,
+                      "a": {"op": "div", "a": u("m^3"),
+                            "b": {"op": "mul", "a": u("m^3*kg^-1*s^-2"), "b": u("kg")}}},
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "The only combination of a, G and M with unit s is sqrt(a^3/GM); the 3/2 exponent is dimensional bookkeeping, not astronomy."},
+
+        {"id": "binary-search", "subject": "computer science",
+         "question": "How many comparisons does binary search need for n items?",
+         "unknown": "C", "formula": "C = ceil(log2(n))",
+         "shape": "logarithmic", "param": 2.0, "probe": 1.0e9, "answer": 29.897352853986263,
+         "f": p_binsearch, "moves": [2, 3, 6, 7],
+         "lhs_unit": "1", "dim_expr": u("1"),
+         "at_zero": "finite", "at_inf": "finite",
+         "why": "Each step halves the space, so the count adds one per doubling: additive gain on a multiplicative input is exactly a log."},
+
+        {"id": "bacterial-growth", "subject": "biology",
+         "question": "How long until a culture of 1000 reaches a billion?",
+         "unknown": "N", "formula": "N = N0*2^(t/tau)",
+         "shape": "exponential", "param": 0.03465735902799726, "probe": 400.0,
+         "answer": 1048576000.0,
+         "f": p_bacteria, "moves": [1, 3, 6, 7], "edge_scale": 5.0,
+         "lhs_unit": "1", "dim_expr": u("1"),
+         "at_zero": "vanishes", "at_inf": "diverges",
+         "why": "A fixed ratio per fixed time is the definition of exponential; the base is arbitrary, the rate is not."},
+
+        {"id": "harmonic-sum", "subject": "mathematics",
+         "question": "How large is 1 + 1/2 + ... + 1/N for huge N?",
+         "unknown": "H", "formula": "H(N) = ln(N) + gamma",
+         "shape": "logarithmic", "param": 1.3862943611198906, "probe": 1.0e6,
+         "answer": 14.392726222864274,
+         "f": p_harmonic, "moves": [4, 5, 6, 7],
+         "lhs_unit": "1", "dim_expr": u("1"),
+         "at_inf": "finite",
+         "why": "Each doubling adds the same amount (ln 2), so the total grows like a log — the same shape as binary search."}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 7. Cross-subject grouping — the claim, made visible
+//
+// If two problems share a shape and a parameter, they share a solution. The
+// group list is the evidence: four subjects in one square-root group, three in
+// one inverse-square group, three in one linear group.
+// ---------------------------------------------------------------------------
+
+export fn groups(problems) {
+    let out = []
+    for p in problems {
+        var found = -1
+        for i in range(0, out.len()) {
+            let g = out[i]
+            if same_skeleton(g, p, 1e-6) {
+                found = i
+            }
+        }
+        if found >= 0 {
+            out[found]["members"].push(p["id"])
+            var known = false
+            for s in out[found]["subjects"] {
+                if s == p["subject"] { known = true }
+            }
+            if not known { out[found]["subjects"].push(p["subject"]) }
+        } else {
+            out.push({"shape": p["shape"], "param": p["param"],
+                      "members": [p["id"]], "subjects": [p["subject"]]})
+        }
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// 8. Teaching: the ladder and the explanation
+//
+// Five rungs, from a guess to a reason. A learner climbs only as far as they
+// need; an expert starts at rung 5.
+// ---------------------------------------------------------------------------
+
+export fn ladder(p) {
+    let k = p["param"]
+    var shape_line = ""
+    if p["shape"] == "power" {
+        shape_line = "double the input, output multiplies by " + fmt(2.0 ** k)
+    }
+    if p["shape"] == "exponential" {
+        shape_line = "every fixed step multiplies the output by " + fmt(f_exp(k))
+    }
+    if p["shape"] == "logarithmic" {
+        shape_line = "every doubling adds " + fmt(k) + " to the output"
+    }
+
+    return [
+        "1. guess    : the answer at the reference point is about " + fmt(p["answer"]) + " " + p["unknown"],
+        "2. shape    : " + p["shape"] + " (" + num(k) + ") — " + shape_line,
+        "3. small    : compute the easiest case by hand, then scale it",
+        "4. formula  : " + p["formula"],
+        "5. reason   : " + p["why"]
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 9. The course — six lessons, each with one exercise and its answer
+//
+// The same text works for a human and for a model: an idea, one worked
+// example, one thing to try, one answer to check against.
+// ---------------------------------------------------------------------------
+
+export fn curriculum() {
+    return [
+        {"lesson": 1, "title": "A law is a shape, not a formula",
+         "idea": "Two different formulas can behave identically. What matters is how the output moves when the input moves.",
+         "example": "3x^3 and 7x^3 are the same law with different constants: both triple the exponent's effect.",
+         "exercise": "Classify f(x) = 2x^5 at x0 = 1.",
+         "answer": "power(5) — the exponent is what survives, the 2 does not."},
+
+        {"lesson": 2, "title": "Three shapes cover almost everything",
+         "idea": "Power multiplies, exponential compounds, logarithm adds. Each has a one-line test.",
+         "example": "Doubling x doubles x^1, quadruples x^2, adds a constant to log x, and multiplies 2^x by 2^x.",
+         "exercise": "Is 2^x a power law with exponent x, or an exponential?",
+         "answer": "exponential. A power law has a constant exponent; here the exponent is the variable."},
+
+        {"lesson": 3, "title": "Units are a free check",
+         "idea": "If the units do not match, the formula is wrong, and you learn that without solving anything.",
+         "example": "sqrt(m / (m/s^2)) = sqrt(s^2) = s, so t = sqrt(2h/g) has the right unit for a time.",
+         "exercise": "Does F = k*x with k in N/m give a force?",
+         "answer": "yes: (N/m)*m = N."},
+
+        {"lesson": 4, "title": "Boundaries are free information",
+         "idea": "Every law tells you what happens at zero and at infinity. A formula that disagrees with its own edges is wrong.",
+         "example": "1/r^2 diverges at zero and vanishes at infinity; a straight line does neither.",
+         "exercise": "What does sqrt(x) do at zero and at infinity?",
+         "answer": "vanishes at zero, diverges at infinity."},
+
+        {"lesson": 5, "title": "Same shape, same solution",
+         "idea": "If two problems share a skeleton, solving one solves both. This is why six subjects collapse into four laws.",
+         "example": "A pendulum and free fall are both power(1/2): the constant differs, the behaviour does not.",
+         "exercise": "Which law shares the pendulum's skeleton: Hooke, diffusion, or binary search?",
+         "answer": "diffusion — both are power(1/2). Hooke is power(1), binary search is logarithmic."},
+
+        {"lesson": 6, "title": "Certify, do not trust",
+         "idea": "Four independent checks catch four kinds of error. Three out of four is a rejection, not a pass.",
+         "example": "Claiming T ~ L fails the shape check even though the formula still evaluates to a number.",
+         "exercise": "A law passes number, dimension and boundary but fails shape. Is it correct?",
+         "answer": "no. One failed check is enough; 3/4 means REJECTED."}
+    ]
+}
+
+export fn explain(p) {
+    let lines = []
+    lines.push("QUESTION  " + p["question"])
+    lines.push("SUBJECT   " + p["subject"])
+    lines.push("UNKNOWN   " + p["unknown"])
+    lines.push("")
+    lines.push("MOVES")
+    let ms = moves()
+    for m in ms {
+        for wanted in p["moves"] {
+            if m["id"] == wanted {
+                lines.push("  " + str(m["id"]) + ". " + m["name"] + " — " + m["ask"])
+            }
+        }
+    }
+    lines.push("")
+    lines.push("LADDER")
+    for rung in ladder(p) {
+        lines.push("  " + rung)
+    }
+    return join(lines, "\n")
+}
+

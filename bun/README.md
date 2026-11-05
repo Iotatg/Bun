@@ -2489,3 +2489,43 @@ notebook in about five seconds; without an argument it reads
 working directory. The reference is `docs/reference/discovery.md`; the short
 example is `examples/discovery.bun`; the tests are `tests/test_discovery.py`
 (15 tests, identical output on all four engines).
+
+## The SUTRA subject — one subject for every subject
+
+SUTRA is a claim you can test: a problem is hard because of vocabulary, not
+structure. Strip the vocabulary and every law is a **shape**, and three shapes
+cover almost everything — `power` (`f(Lx)/f(x) = L^k`), `exponential`
+(`f(x+d)/f(x) = r`) and `logarithmic` (`f(Lx)-f(x) = c`).
+
+`bun:sutra` makes the claim executable. `classify` reverses an unknown law into
+a shape from three evaluations; `certificate` then checks an answer four
+independent ways (shape, number, dimension, boundary); `groups` shows which laws
+from different subjects share a skeleton.
+
+```bun
+import { classify, num, catalog, certificate } from "bun:sutra"
+
+fn mystery(x) { return 3.0 * x * x * x }
+print(classify(mystery, 2.0, 4.0)["shape"])   // power
+
+let c = certificate(catalog()[0])
+print(c["verdict"], c["passed"], c["total"])  // CERTIFIED 4 4
+```
+
+Fourteen laws from six subjects are in the catalogue, and they collapse into
+four groups: free fall, a pendulum, a random walk and diffusion are all
+`power 1/2`; gravity, Coulomb and irradiance are all `power -2`; Hooke, Ohm and
+Beer-Lambert are all `power 1`; binary search and the harmonic sum are both
+logarithmic. Two problems with the same shape have the same solution, so
+learning one teaches all of them.
+
+`bun tools/sutra_lab.bun` runs the whole subject in under a second: the
+charter, three black boxes being reversed, fourteen certificates, the groups,
+two hard-looking questions answered by exponent alone, two deliberately wrong
+answers being rejected, and a six-lesson course with exercises and answers. The reference is `docs/reference/sutra.md`; the
+short example is `examples/sutra.bun`; the tests are `tests/test_sutra.py`
+(28 tests, identical output on all four engines).
+
+SUTRA is a filter, not a solver: it tells you the shape and rejects wrong
+answers, but the formula still has to come from somewhere. `CERTIFIED` means
+four independent checks agree, not that the law is true.
