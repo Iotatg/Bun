@@ -2643,3 +2643,55 @@ Reference: [`docs/reference/pramana.md`](docs/reference/pramana.md); lab:
 output on all four engines). ETH status is unchanged — the user's correction,
 "SUTRA analysed and tested ETH-related claims; it did not solve ETH", is
 honoured verbatim in `mystery_verdict()`.
+
+### SUTRA Level 3 — `bun:nyaya` (the verifier that challenges itself)
+
+An external code review of public commit `d43dec0` found a real error in the
+Level 2 theorem **statement**: `ETH ⟺ ∀A, liminf s(n) > 0` is strictly
+stronger than ETH, and is not the logical complement of `s(n) → 0`. ETH
+constrains the **limsup** of `s = log₂T/n`; an algorithm may be fast on a
+sparse set of input lengths without refuting it. The uniform `∃eps>0 ∀A` form
+additionally needs triangular diagonalisation, which `bun:nyaya` records as an
+explicit assumption rather than smuggling it in.
+
+`bun:nyaya` encodes each statement as a quantifier prefix over `(eps, N, n≥N)`
+and computes De Morgan negation by flipping quantifiers — so the Level 2 bug
+is *found by code*, not described in prose. It also verifies asymptotic bounds
+with six witness sequences (the `sparse-dips` counterexample breaks the
+`liminf` rule while the `limsup` rule survives), checks seven properties of
+each reduction (sparsification VALID; BBBV→3SAT INVALID on model restriction),
+records the formal-proof ↔ natural-language gap table, and adjudicates 11
+certificates — **rejecting 10 false positives including two issued by Level 2
+and one by nyaya itself**.
+
+```bun
+import { complement_check, challenge_rules, false_positive_scan,
+         self_challenge, audit, nyaya_verdict } from "bun:nyaya"
+
+print(complement_check("liminf-positive", "s-to-zero")["verdict"])
+print(challenge_rules()["breaking_witness"])
+print(false_positive_scan()["verdict"])
+print(self_challenge()["verdict"])
+print(audit()["verdict"], audit()["passed"])
+print(nyaya_verdict()["eth"])
+```
+
+```
+NOT_COMPLEMENTARY
+sparse-dips
+ALL_FALSE_POSITIVES_CAUGHT
+SELF_CHALLENGE_PASSED
+CERTIFIED 13
+UNRESOLVED
+```
+
+`audit()` is `CERTIFIED 13/13` — thirteen **module self-checks**, not a proof
+of ETH. `execution_receipt()["self_verifiable"]` is `false`: tests written in a
+diff and tests actually executed are different things, so the delivered
+`NYAYA_LAB_OUTPUT.txt` appends the real external pytest output.
+
+Reference: [`docs/reference/nyaya.md`](docs/reference/nyaya.md); lab:
+`bun tools/nyaya_lab.bun` (345-line record); example: `examples/nyaya.bun`;
+tests: `tests/test_nyaya.py` (28 four-engine parity tests). Corrected:
+`lib/bun/eth.bun`, `docs/reference/eth.md`, `docs/reference/pramana.md`.
+ETH remains **UNRESOLVED**; what got solved is our own theorem statement.

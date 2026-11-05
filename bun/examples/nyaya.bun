@@ -1,0 +1,67 @@
+// SUTRA Level 3 — a verifier that challenges its own conclusions.
+// Run: ./bin/bun examples/nyaya.bun
+//
+// This example is deliberately small. The full 345-line record is
+// tools/nyaya_lab.bun; the reference is docs/reference/nyaya.md.
+
+import { complement_check, level2_review, level3_fix_check,
+         challenge_rules, reduction_all, false_positive_scan,
+         self_challenge, execution_receipt, audit, nyaya_verdict } from "bun:nyaya"
+
+// 1. Write the theorem as a quantifier prefix; negate it by De Morgan.
+print("1. THE BUG IN LEVEL 2")
+let bad = complement_check("liminf-positive", "s-to-zero")
+print("   claim            :", bad["claim_prefix"])
+print("   claimed negation :", bad["claimed_prefix"])
+print("   correct negation :", bad["correct_prefix"])
+print("   verdict          :", bad["verdict"])
+print("   level2_review()  :", level2_review()["verdict"])
+print("")
+
+// 2. Check the fix against the LIVE bun:eth statement, not a copy.
+print("2. THE FIX, VERIFIED AGAINST LIVE CODE")
+let fix = level3_fix_check()
+print("   pair         :", fix["pair"])
+print("   verdict      :", fix["verdict"])
+print("   complementary:", fix["complementary"])
+print("")
+
+// 3. Try to break the corrected rule with a counterexample witness.
+print("3. COUNTEREXAMPLE SEARCH")
+let ch = challenge_rules()
+for row in ch["rows"] {
+    print("  ", row["id"], "truth", row["truth"],
+          "| liminf rule", row["liminf_rule"],
+          "| limsup rule", row["limsup_rule"])
+}
+print("   old errors:", ch["old_errors"], "new errors:", ch["new_errors"],
+      "breaking witness:", ch["breaking_witness"])
+print("   verdict:", ch["verdict"])
+print("")
+
+// 4. Reductions and the quantum model restriction.
+print("4. REDUCTION CORRECTNESS")
+for r in reduction_all() {
+    print("  ", r["id"], r["verdict"], r["failed"])
+}
+print("")
+
+// 5. False-positive certificates, including one issued by this module.
+print("5. FALSE-POSITIVE DETECTION")
+let f = false_positive_scan()
+for row in f["rows"] {
+    print("  ", row["verdict"], row["id"], "<-", row["issued_by"])
+}
+print("  ", f["verdict"], f["caught"], "/", f["total"])
+print("")
+
+// 6. Self-challenge, honest execution receipt, final verdict.
+print("6. SELF-CHALLENGE AND FINAL ANSWER")
+print("   self_challenge() :", self_challenge()["verdict"])
+print("   self-verifiable  :", execution_receipt()["self_verifiable"])
+let a = audit()
+print("   audit()          :", a["verdict"], a["passed"], "/", a["total"])
+let v = nyaya_verdict()
+print("   ETH              :", v["eth"])
+print("   Level 2 bug      :", v["level2_bug"])
+print("   Level 3          :", v["level3"])

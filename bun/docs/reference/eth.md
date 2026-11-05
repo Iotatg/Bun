@@ -175,7 +175,8 @@ The right invariant is the **exponent density**
 
 ```
 s(n) = log₂ T(n) / n
-ETH true  ⟺  liminf s(n) > 0 for every correct 3SAT algorithm
+ETH true  ⟺  limsup s(n) > 0 for every correct 3SAT algorithm
+                (equivalently, s(n) does NOT tend to 0)
 ETH false ⟺  some algorithm has s(n) → 0, i.e. T = 2^o(n)
 ```
 
@@ -209,3 +210,30 @@ The value `0.9295174545228192` agrees to the last printed digit.
 `alpha`, not ETH. For the full evidence layer — six pramanas, the 2026 claim
 ledger, quantum/BBBV, barriers and the final `UNRESOLVED` verdict — see
 [`bun:pramana`](pramana.md) and `bun tools/eth_mystery_lab.bun`.
+
+## Correction (2026-11-05): `liminf` → `limsup`
+
+An external code review of commit `d43dec0` found that the first version of
+this document stated
+
+```
+ETH true  ⟺  liminf s(n) > 0 for every correct algorithm      [WRONG]
+```
+
+That is **strictly stronger than ETH**. ETH (Impagliazzo–Paturi: `s_3 > 0`,
+equivalently no correct algorithm decides 3SAT in `2^o(n)` worst-case time)
+constrains the **limsup** of the exponent density, not its liminf: an
+algorithm may be fast on a sparse set of input lengths and slow on infinitely
+many others without refuting ETH. It also made the two halves of
+`eth_statement()` logically inconsistent — the negation of `liminf s > 0` is
+`liminf s = 0`, not `s(n) → 0`.
+
+`bun:nyaya` (Level 3) verifies this mechanically: it encodes each statement
+as a quantifier prefix over `(eps, N, n)` and computes the De Morgan negation
+by flipping quantifiers. `level2_review()` rejects the old pair;
+`level3_fix_check()` confirms the corrected pair is complementary. The
+uniform form `∃eps>0 ∀A` also needs triangular diagonalisation over
+algorithms, which `assumptions()` records as an explicit assumption.
+
+ETH remains **UNRESOLVED**; this correction changes a theorem *statement*,
+not the status of the conjecture.

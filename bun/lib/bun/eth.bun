@@ -23,8 +23,20 @@
 // ETH says 3SAT needs 2^(Omega(n)); the right number is
 //
 //     s(n) = log2 T(n) / n          (exponent density)
-//     ETH true   <=>  liminf s(n) > 0 for EVERY correct algorithm
+//     ETH true   <=>  limsup s(n) > 0 for EVERY correct algorithm
+//                    (equivalently: s(n) does NOT tend to 0)
 //     ETH false  <=>  some algorithm has s(n) -> 0, i.e. T = 2^o(n)
+//
+// CORRECTION (2026-11-05, external code review). The first version of this
+// line said `liminf s(n) > 0`. That is STRICTLY STRONGER than ETH: it demands
+// hardness at every large input length, while ETH only demands hardness at
+// infinitely many lengths. An algorithm may be fast on a sparse set of sizes
+// and slow elsewhere without refuting ETH. Worse, `liminf > 0` and
+// `s(n) -> 0` are not logical complements, so the two lines of
+// eth_statement() contradicted each other. bun:nyaya proves this by De Morgan
+// negation of the quantifier prefix. The uniform form (exists eps > 0 for all
+// algorithms) additionally needs triangular diagonalisation over algorithms;
+// that is an explicit assumption, not a consequence of ETH.
 //
 // These disagree. T = exp(n / sqrt(ln n)), the runtime reported for the 2026
 // AI claims, has alpha -> 1 (so `growth()` below calls it "exponential,
@@ -73,8 +85,11 @@ export fn eth_statement() {
         "quantifier": "for every algorithm, for all instances",
         "measurable": false,
         "why_not": "a measurement is a statement about runs; ETH is a statement about all possible runs",
-        "invariant": "s = log2(T)/n; ETH true <=> liminf s > 0 for every correct algorithm",
+        "invariant": "s = log2(T)/n; ETH true <=> limsup s > 0 for every correct algorithm (s does not tend to 0)",
         "equivalent": "ETH false  <=>  some algorithm has s(n) -> 0 (T = 2^o(n)) with a proved worst-case bound",
+        "statement_pair": ["limsup-positive", "s-to-zero"],
+        "uniformity": "exists eps>0 for all A needs triangular diagonalisation (explicit assumption, see bun:nyaya)",
+        "liminf_note": "liminf s > 0 is STRONGER than ETH and is NOT the complement of s(n) -> 0; see bun:nyaya level2_review()",
         "caution": "alpha = d(log log T)/d(log n) is NOT this invariant; see alpha_blindspot()"
     }
 }
@@ -692,7 +707,7 @@ export fn alpha_blindspot() {
         "s_shape": g["eth_shape"],
         "s_says": "2^o(n) — refutes ETH if proved for every instance",
         "contradiction": g["kind"] == "exponential" and g["eth_shape"] == "suggests-2^o(n)",
-        "correct_invariant": "s = log2(T)/n; ETH true <=> liminf s > 0",
+        "correct_invariant": "s = log2(T)/n; ETH true <=> limsup s > 0 (s does not tend to 0)",
         "why_alpha_fails": "alpha = d(log k)/d(log n) loses the 1/sqrt(ln n) factor: k ~ n/sqrt(ln n) still looks linear in n",
         "log_space_note": "T overflows a float by n=2048; ln T does not",
         "source": "Jelani Nelson / TechCrunch, 2026-10-28, both AI proofs ~ exp(O(n/sqrt(log n)))"

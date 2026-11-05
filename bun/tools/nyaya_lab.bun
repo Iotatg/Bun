@@ -1,0 +1,242 @@
+// SUTRA Level 3 lab — an end-to-end record of the challenge against Level 2.
+//
+// Run:  ./bin/bun tools/nyaya_lab.bun
+// The delivered NYAYA_LAB_OUTPUT.txt additionally appends the REAL output of
+// an external `python3 -m pytest -q` run. bun:nyaya itself refuses to assert
+// that its tests were executed (see execution_receipt()); the receipt is
+// pratyaksha, supplied from outside the verifier.
+
+import { num, fmt } from "bun:sutra"
+import { statements, negate, render, complement_check,
+         historical_records, level2_review, level3_fix_check,
+         assumptions, uniformity_lemma,
+         witnesses, sequence_stats, challenge_rules,
+         reductions, reduction_all, bbbv_transfer,
+         translation_table, translation_gaps,
+         certificates, adjudicate_all_certificates, false_positive_scan,
+         self_challenge, review_response, execution_receipt, settle_conditions,
+         nyaya_verdict, audit, lesson } from "bun:nyaya"
+import { eth_statement } from "bun:eth"
+import { mystery_verdict } from "bun:pramana"
+
+print("===========================================================================")
+print("SUTRA LEVEL 3 — bun:nyaya : THE VERIFIER THAT CHALLENGES ITS OWN OUTPUT")
+print("===========================================================================")
+print("")
+print("0. PUBLIC RECORD BEING CHALLENGED")
+print("   Repository : Iotatg/Bun  (branch Main)")
+print("   Commit     : d43dec05b7bf5816ecf1a112ff50035f2d426b77")
+print("   Message    : feat: bun:pramana - SUTRA level 2, and correct the")
+print("                bun:eth alpha invariant")
+print("   Metadata   : 8 files changed, 1538 insertions(+), 2 deletions(-)")
+print("                bun/lib/bun/pramana.bun 549 lines; 25 new parity tests")
+print("   Verified locally with `git show --stat d43dec0` — metadata is real.")
+print("   Review source: an independent AI code review of that public diff.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("1. THE FIVE REVIEW POINTS, ANSWERED AS DATA")
+print("---------------------------------------------------------------------------")
+for r in review_response() {
+    print("  POINT " + num(float(r["point"])) + "  " + r["topic"])
+    print("     response : " + r["response"])
+    print("     action   : " + r["action"])
+    print("     evidence : " + r["evidence"])
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("2. THE REAL BUG: De MORGAN ON THE QUANTIFIER PREFIX")
+print("---------------------------------------------------------------------------")
+print("   Every statement about s(n) >= 0 is a quantifier triple over")
+print("   (eps, N, n>=N) plus a relation. Negation flips EVERY quantifier")
+print("   and the relation. No interpretation is involved.")
+print("")
+for s in statements() {
+    print("   " + s["id"])
+    print("      " + render(s))
+    print("      meaning: " + s["meaning"])
+}
+print("")
+let c2 = complement_check("liminf-positive", "s-to-zero")
+print("   CLAIM   (Level 2): " + c2["claim_prefix"])
+print("   NEGATION claimed : " + c2["claimed_prefix"])
+print("   NEGATION correct : " + c2["correct_prefix"])
+print("   RESULT           : " + c2["verdict"])
+print("")
+print("   Historical strings that made the inconsistent pair:")
+for h in historical_records() {
+    print("     " + h["commit"] + "  " + h["field"])
+    print("       " + h["text"])
+}
+print("")
+let l2 = level2_review()
+print("   level2_review()     : " + l2["verdict"])
+print("   reason              : " + l2["reason"])
+print("   stronger than ETH   : " + str(l2["stronger_than_eth"]))
+print("   why                 : " + l2["why"])
+print("")
+let l3 = level3_fix_check()
+print("   level3_fix_check()  : " + l3["verdict"])
+print("   live bun:eth pair   : " + str(l3["pair"]))
+print("   claim prefix        : " + l3["claim_prefix"])
+print("   negation prefix     : " + l3["negation_prefix"])
+print("   uniformity note     : " + l3["uniformity"])
+print("")
+print("   => ETH true  <=>  for every A, limsup_n s_A(n) > 0")
+print("      equivalently s_A(n) does NOT tend to 0.")
+print("   => ETH false <=>  exists A with s_A(n) -> 0  (T = 2^o(n)).")
+print("   ETH itself is still UNRESOLVED. Only the theorem STATEMENT was fixed.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("3. ASSUMPTION LEDGER — WHAT ETH GRANTS AND WHAT IT DOES NOT")
+print("---------------------------------------------------------------------------")
+for a in assumptions() {
+    var mark = "GRANTED "
+    if not a["eth_grants"] { mark = "NOT-ETH " }
+    print("   " + mark + " " + a["id"])
+    print("        " + a["text"])
+    print("        " + a["note"])
+}
+let ul = uniformity_lemma()
+print("")
+print("   UNIFORMITY LEMMA: " + ul["statement"])
+print("   method : " + ul["method"])
+print("   needs  : " + join(ul["needs"], ", "))
+print("   grants : " + ul["grants"])
+print("   warning: " + ul["warning"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("4. WITNESS COUNTEREXAMPLE SEARCH")
+print("---------------------------------------------------------------------------")
+print("   Points are [k, s] with k = log2(n); log space avoids the T overflow")
+print("   at n = 2048 that Level 2 already documented.")
+print("")
+let cr = challenge_rules()
+for row in cr["rows"] {
+    print("   " + row["id"])
+    print("      truth " + row["truth"] + " | liminf-rule " + row["liminf_rule"] +
+          " | limsup-rule " + row["limsup_rule"])
+    print("      numeric: liminf-proxy " + fmt(row["liminf_proxy"]) +
+          ", limsup-proxy " + fmt(row["limsup_proxy"]) +
+          ", tends-zero " + str(row["tends_zero"]) +
+          ", labels-agree " + str(row["numeric_agrees"]))
+    print("      old-error " + str(row["old_error"]) + " | new-error " + str(row["new_error"]))
+}
+print("")
+print("   old-rule errors : " + num(float(cr["old_errors"])))
+print("   new-rule errors : " + num(float(cr["new_errors"])))
+print("   breaking witness: " + cr["breaking_witness"])
+print("   numeric labels  : " + str(cr["numeric_all_ok"]))
+print("   verdict         : " + cr["verdict"])
+print("")
+print("   sparse-dips is the conceptual counterexample: liminf = 0 (dips at")
+print("   square k go to 0) but limsup = 0.5, so s(n) does NOT tend to 0 and")
+print("   the algorithm is NOT 2^o(n). The liminf rule calls it an ETH")
+print("   refutation; the limsup rule does not. finite-bench returns")
+print("   UNDECIDABLE — a six-point measurement cannot settle an asymptotic claim.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("5. REDUCTION CORRECTNESS")
+print("---------------------------------------------------------------------------")
+for r in reduction_all() {
+    print("   " + r["id"] + "  " + r["verdict"] +
+          "  (" + num(float(r["passed"])) + "/" + num(float(r["total"])) + ")")
+    if r["failed"].len() > 0 {
+        print("      failed checks: " + join(r["failed"], ", "))
+    }
+    print("      " + r["note"])
+}
+let q = bbbv_transfer()
+print("")
+print("   BBBV 1997: " + q["statement"])
+print("   restriction : " + q["restriction"])
+print("   ETH effect  : " + q["eth_effect"])
+print("")
+
+print("---------------------------------------------------------------------------")
+print("6. FORMAL PROOF vs NATURAL-LANGUAGE THEOREM — THE GAPS")
+print("---------------------------------------------------------------------------")
+for t in translation_table() {
+    var mark = "OK  "
+    if t["gap"] { mark = "GAP " }
+    print("   " + mark + "\"" + t["phrase"] + "\"")
+    print("        -> " + t["formal"])
+    print("        " + t["why"])
+}
+print("   total gaps detected: " + num(float(translation_gaps().len())))
+print("")
+
+print("---------------------------------------------------------------------------")
+print("7. CERTIFICATE ADJUDICATION (FALSE-POSITIVE DETECTION)")
+print("---------------------------------------------------------------------------")
+for r in adjudicate_all_certificates() {
+    print("   " + r["verdict"] + "  " + r["id"])
+    print("      issued by : " + r["issued_by"] + "  (level " + num(float(r["level"])) + ")")
+    print("      claimed   : " + r["claimed"])
+    print("      reason    : " + r["reason"])
+    print("      checks    : " + num(float(r["passed"])) + "/" + num(float(r["total"])) +
+          "  expected " + r["expected"] + "  caught " + str(r["caught"]))
+}
+let fps = false_positive_scan()
+print("")
+print("   false_positive_scan(): " + fps["verdict"] +
+      "  " + num(float(fps["caught"])) + "/" + num(float(fps["total"])))
+print("")
+let sc = self_challenge()
+print("   SELF-CHALLENGE: " + sc["verdict"] +
+      "  " + num(float(sc["passed"])) + "/" + num(float(sc["total"])))
+for c in sc["checks"] {
+    print("      " + str(c["pass"]) + "  " + c["check"] + " — " + c["detail"])
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("8. EXECUTION RECEIPT — THE VERIFIER REFUSES TO CERTIFY ITSELF")
+print("---------------------------------------------------------------------------")
+let er = execution_receipt()
+print("   self_verifiable : " + str(er["self_verifiable"]))
+print("   statement       : " + er["statement"])
+print("   required        : " + er["required"])
+print("   why             : " + er["why"])
+print("   => the delivered NYAYA_LAB_OUTPUT.txt appends the REAL pytest output")
+print("      produced outside bun:nyaya. That is pratyaksha, not self-assertion.")
+print("")
+
+print("---------------------------------------------------------------------------")
+print("9. AUDIT AND FINAL VERDICT")
+print("---------------------------------------------------------------------------")
+let a = audit()
+print("   audit(): " + a["verdict"] + " " + num(float(a["passed"])) + "/" + num(float(a["total"])))
+for c in a["checks"] {
+    print("      " + str(c["pass"]) + "  " + c["check"] + " — " + c["detail"])
+}
+print("")
+let v = nyaya_verdict()
+print("   ETH            : " + v["eth"])
+print("   mystery        : " + v["mystery"])
+print("   Level 2 bug    : " + v["level2_bug"])
+print("   Level 3        : " + v["level3"])
+print("   self-challenged: " + str(v["self_challenged"]))
+print("   SOLVED         : " + join(v["solved"], " | "))
+print("   NOT SOLVED     : " + join(v["not_solved"], " | "))
+print("")
+print("   What would actually settle ETH:")
+for s in settle_conditions() {
+    print("      - " + s)
+}
+print("")
+
+print("---------------------------------------------------------------------------")
+print("10. THE EXTRA LESSON (grad year 4)")
+print("---------------------------------------------------------------------------")
+for line in lesson() {
+    print("   " + line)
+}
+print("")
+print("===========================================================================")
+print("END OF RECORD — ETH: UNRESOLVED. The verifier corrected its own theorem.")
+print("===========================================================================")

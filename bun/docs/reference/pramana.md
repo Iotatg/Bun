@@ -65,7 +65,7 @@ ETH वास्तव में इसके बारे में है:
 
 ```
 s(n) = log₂ T(n) / n
-ETH true  ⟺  हर सही algorithm के लिए liminf s(n) > 0
+ETH true  ⟺  हर सही algorithm के लिए limsup s(n) > 0 (s(n) → 0 नहीं)
 ETH false ⟺  किसी एक algorithm का s(n) → 0, अर्थात T = 2^o(n)
 ```
 
@@ -203,3 +203,20 @@ Grover संख्या, quantum shape, ledger consistency, honesty, timeline,
 > **नोट**: S1–S4 पत्रकारिता/सामुदायिक स्रोत हैं, स्वयं peer-reviewed papers नहीं।
 > इसीलिए ledger में इनका type `social-record` है और कोई भी दावा `CERTIFIED`
 > नहीं हुआ — सिवाय उन statements के जो तर्क या स्थापित प्रमेय से सिद्ध हैं।
+
+## Correction (2026-11-05) — Level 3 ने Level 2 का theorem पकड़ा
+
+ऊपर वाली equivalence पहले `liminf s(n) > 0` लिखी थी। बाहरी code review
+(commit `d43dec0`) ने सही पकड़ा: यह ETH से **ज़्यादा मज़बूत** है। ETH
+`limsup` पर बोलता है — किसी algorithm के sparse input-lengths पर तेज़ होने से
+ETH नहीं टूटता। और `liminf > 0` का negation `s(n) → 0` नहीं, `liminf = 0`
+है, यानी Level 2 की अपनी दो पंक्तियाँ complement नहीं थीं।
+
+`bun:nyaya` इसे De Morgan quantifier-prefix से machine-check करता है:
+`level2_review()` → `REJECTED`, `level3_fix_check()` → `COMPLEMENTARY`।
+`audit()` के `CERTIFIED 10/10` का scope भी अब स्पष्ट है: वह **module के
+दस self-checks** हैं, ETH का प्रमाण नहीं (समीक्षा का point 2)।
+
+समीक्षा के point 3 (`UNDER_REVIEW` उचित) और point 4 (BBBV सिर्फ़ black-box
+model, structured 3SAT पर सीधे लागू नहीं) भी `bun:nyaya` के
+`certificates()` में explicit false-positive cases बन गए हैं।
