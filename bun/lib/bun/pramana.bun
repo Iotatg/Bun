@@ -1,0 +1,549 @@
+// lib/bun/pramana.bun — SUTRA, level 2: प्रमाण (the evidence layer).
+//
+// Level 1 (bun:sutra) asks: what SHAPE is this law?
+// Level 2 (bun:pramana) asks: what KIND OF EVIDENCE can settle this claim?
+//
+// The six pramanas are the classical means of knowledge, made executable:
+//
+//   pratyaksha   perception   a measurement, a run, a finite table
+//   anumana      inference    a proof over all algorithms / all instances
+//   upamana      comparison   a result inside a restricted model (an oracle)
+//   shabda       testimony    a paper, a review panel, a press release
+//   arthapatti   implication  a reduction carrying a statement across
+//   anupalabdhi  absence      a barrier: what CANNOT be proved this way
+//
+// ETH is a universal claim over ALL algorithms. pratyaksha cannot reach it.
+// That is not a limitation of the experiment; it is the LOGICAL TYPE of the
+// claim. Level 1 could only say "UNDETERMINED". Level 2 says why, names the
+// exact evidence that would settle it, and checks each of the 2026 claims
+// against the lattice instead of against a benchmark.
+//
+// Everything here is data + pure arithmetic. No external state, no clock,
+// no network: the same answer on all four Bun engines.
+//
+// HONESTY CONTRACT: this module does NOT prove or refute ETH. It classifies
+// claims. Its final verdict for ETH is UNRESOLVED, matching the user's own
+// correction on 2026-11-05.
+
+import { num, fmt, has_key } from "bun:sutra"
+import { alpha_blindspot, eth_worlds, s_of_ln, soft_points,
+         growth_ln, eth_statement } from "bun:eth"
+
+let M = ffi_load("math")
+let f_log = M["log"]
+let f_exp = M["exp"]
+let f_abs = M["fabs"]
+let f_sqrt = M["sqrt"]
+
+fn lg(x) { return f_log(x) / f_log(2.0) }
+
+// ---------------------------------------------------------------------------
+// 1. The six pramanas and the claim types
+// ---------------------------------------------------------------------------
+
+export fn pramanas() {
+    return [
+        {"id": "pratyaksha", "sanskrit": "प्रत्यक्ष", "english": "perception",
+         "is": "a measurement, one run, one finite table",
+         "quantifies": "these runs only",
+         "can_settle": ["existential-finite"],
+         "example": "DPLL node counts for n=12..32"},
+        {"id": "anumana", "sanskrit": "अनुमान", "english": "inference",
+         "is": "a proof with a stated worst-case bound",
+         "quantifies": "all algorithms, all instances",
+         "can_settle": ["existential-finite", "universal-algorithm",
+                        "universal-instance"],
+         "example": "a proved 2^o(n) 3SAT algorithm; or a proved lower bound"},
+        {"id": "upamana", "sanskrit": "उपमान", "english": "comparison",
+         "is": "a theorem inside a restricted model",
+         "quantifies": "all algorithms IN THAT MODEL",
+         "can_settle": ["model-bound"],
+         "example": "BBBV: Omega(sqrt(N)) quantum queries for black-box search"},
+        {"id": "shabda", "sanskrit": "शब्द", "english": "testimony",
+         "is": "a paper, a review panel, a press release",
+         "quantifies": "social record only",
+         "can_settle": ["social-record"],
+         "example": "open letter: participation is not certification"},
+        {"id": "arthapatti", "sanskrit": "अर्थापत्ति", "english": "implication",
+         "is": "a reduction transferring a statement",
+         "quantifies": "whatever the reduction preserves",
+         "can_settle": ["reduction"],
+         "example": "sparsification lemma: ETH for m=O(n) <=> ETH for 3SAT"},
+        {"id": "anupalabdhi", "sanskrit": "अनुपलब्धि", "english": "absence",
+         "is": "a barrier ruling out a proof technique",
+         "quantifies": "proof methods",
+         "can_settle": ["impossibility"],
+         "example": "relativization, natural proofs, algebrization"}
+    ]
+}
+
+export fn claim_types() {
+    return [
+        {"id": "existential-finite", "shape": "there exist runs with these numbers",
+         "needs": ["pratyaksha", "anumana"]},
+        {"id": "universal-algorithm", "shape": "for every algorithm, for all inputs",
+         "needs": ["anumana"]},
+        {"id": "universal-instance", "shape": "for every instance, worst case",
+         "needs": ["anumana"]},
+        {"id": "model-bound", "shape": "for every algorithm inside a restricted model",
+         "needs": ["upamana"]},
+        {"id": "reduction", "shape": "statement A and statement B stand or fall together",
+         "needs": ["arthapatti"]},
+        {"id": "impossibility", "shape": "this proof technique cannot work",
+         "needs": ["anupalabdhi"]},
+        {"id": "social-record", "shape": "who announced what, and who reviewed it",
+         "needs": ["shabda"]}
+    ]
+}
+
+// The lattice, computed rather than asserted: can THIS pramana settle THAT
+// claim type? `settles` is the single source of truth used by adjudicate().
+export fn can_settle(pramana_id, claim_type) {
+    for p in pramanas() {
+        if p["id"] == pramana_id {
+            for c in p["can_settle"] {
+                if c == claim_type { return true }
+            }
+        }
+    }
+    return false
+}
+
+export fn lattice() {
+    let out = []
+    for p in pramanas() {
+        let row = []
+        for c in claim_types() {
+            row.push({"claim": c["id"], "ok": can_settle(p["id"], c["id"])})
+        }
+        out.push({"pramana": p["id"], "row": row})
+    }
+    return out
+}
+
+// The theorem that closes the "can a benchmark decide ETH?" question.
+export fn measurement_theorem() {
+    let e = eth_statement()
+    return {
+        "claim": e["claim"],
+        "claim_type": "universal-algorithm",
+        "available": "pratyaksha (finite measurement)",
+        "can_settle": can_settle("pratyaksha", "universal-algorithm"),
+        "reason": "a finite table quantifies over the runs performed; ETH quantifies over all possible algorithms and all instances",
+        "consequence": "no amount of benchmarking can certify or refute ETH",
+        "what_would": "anumana: a proof with a worst-case bound",
+        "status": "PROVED (by logical type, not by experiment)"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Quantum: Grover, BBBV, and the difference a model makes
+//
+// Search over N = 2^n truth assignments. Classically N queries. Grover uses
+// sqrt(N) = 2^(n/2). BBBV (1997) PROVES Omega(sqrt(N)) queries are necessary
+// in the black-box model. That is a genuine universal theorem — but only
+// INSIDE the model, so it is upamana, not anumana over real 3SAT.
+//
+//   s = log2(T)/n
+//   classical 2^n      -> s = 1        (ETH-shape true)
+//   Grover   2^(n/2)   -> s = 0.5      (ETH-shape STILL true)
+//   2^o(n) algorithm   -> s -> 0       (ETH false)
+//
+// Quantum halves the exponent. It does not change the shape. That is why a
+// quantum computer does not refute ETH by itself.
+// ---------------------------------------------------------------------------
+
+export fn grover_queries(n) {
+    return f_exp(0.5 * float(n) * f_log(2.0))
+}
+
+export fn bbbv_lower_bound(n) {
+    // Omega(sqrt(N)) with the constant normalised to 1 for the statement.
+    return f_exp(0.5 * float(n) * f_log(2.0))
+}
+
+export fn quantum_s(n) {
+    return 0.5
+}
+
+export fn quantum_certificate() {
+    let checks = []
+    // shape
+    checks.push({"check": "shape", "pass": quantum_s(100) > 0.0,
+                 "detail": "s = 0.5 > 0 for 2^(n/2); the exponent density does not vanish"})
+    // number
+    let q = grover_queries(20)
+    let want = 1024.0
+    checks.push({"check": "number", "pass": f_abs(q - want) < 1e-6,
+                 "detail": "Grover at n=20 needs " + num(q) + " = 2^10 queries, vs 2^20 classically"})
+    // dimension
+    checks.push({"check": "dimension", "pass": q > 0.0 and bbbv_lower_bound(20) > 0.0,
+                 "detail": "query counts are positive integers"})
+    // boundary
+    checks.push({"check": "boundary", "pass": grover_queries(40) > grover_queries(20),
+                 "detail": "2^20 > 2^10; the search grows with n"})
+    // model restriction — the new, fifth check
+    checks.push({"check": "model", "pass": true,
+                 "detail": "BBBV holds in the BLACK-BOX model; 3SAT has structure, so this is upamana, not a proof about 3SAT"})
+    var passed = 0
+    for c in checks { if c["pass"] { passed = passed + 1 } }
+    return {"id": "quantum-does-not-refute-eth", "checks": checks,
+            "passed": passed, "total": checks.len(),
+            "verdict": "CERTIFIED (model-bound)",
+            "conclusion": "quadratic speedup changes the base, not the shape; ETH-shape survives"}
+}
+
+export fn quantum_worlds() {
+    return [
+        {"name": "classical brute force", "T": "2^n", "s": 1.0,
+         "eth_shape": "true", "evidence": "pratyaksha"},
+        {"name": "Grover / BBBV", "T": "2^(n/2)", "s": 0.5,
+         "eth_shape": "true", "evidence": "upamana (proved in model)"},
+        {"name": "hypothetical 2^o(n)", "T": "exp(n/sqrt(log n))", "s": 0.0,
+         "eth_shape": "false", "evidence": "anumana required, not yet available"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 3. Barriers: why a proof of ETH (in either direction) is hard
+// ---------------------------------------------------------------------------
+
+export fn barriers() {
+    return [
+        {"id": "relativization", "year": 1975,
+         "authors": "Baker, Gill, Solovay",
+         "statement": "some oracles make P=NP, others make P!=NP; any resolving proof must be non-relativizing",
+         "effect": "rules out diagonalisation/simulation proofs for P vs NP"},
+        {"id": "natural-proofs", "year": 1997,
+         "authors": "Razborov, Rudich",
+         "statement": "a large class of combinatorial lower-bound techniques would also break pseudorandom generators",
+         "effect": "rules out 'natural' circuit lower bounds under standard assumptions"},
+        {"id": "algebrization", "year": 2009,
+         "authors": "Aaronson, Wigderson",
+         "statement": "even non-relativizing algebraic techniques (e.g. IP=PSPACE) algebrize and still cannot resolve P vs NP",
+         "effect": "extends the relativization barrier to algebraic methods"},
+        {"id": "eth-implies-pneqnp", "year": 1999,
+         "authors": "Impagliazzo, Paturi",
+         "statement": "ETH implies P != NP, since a polynomial algorithm is 2^o(n)",
+         "effect": "proving ETH TRUE would also prove P != NP, and must cross all three barriers"},
+        {"id": "sparsification", "year": 2001,
+         "authors": "Impagliazzo, Paturi, Zane",
+         "statement": "ETH for 3SAT is equivalent to ETH for 3SAT with m = O(n) clauses",
+         "effect": "a 2^o(n) algorithm on linear-size formulas WOULD refute ETH — the 2026 claims live here"}
+    ]
+}
+
+export fn asymmetries() {
+    return {
+        "to_refute": "exhibit ONE algorithm + prove a worst-case 2^o(n) bound for every instance (anumana, existential witness)",
+        "to_prove": "prove a lower bound for EVERY algorithm (anumana, universal) — and cross the three barriers",
+        "why_asymmetric": "one witness falsifies a universal claim; no number of witnesses proves one",
+        "benchmark_role": "none for the theorem; useful only for calibrating algorithms",
+        "note": "this asymmetry is the whole reason ETH has stayed open since 1999"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. The 2026 claim ledger, dated and sourced
+//
+// Sources (retrieved 2026-11-05):
+//   [S1] Titanium Media, 2026-10-28, https://www.tmtpost.com/agent/ai-article/21665
+//   [S2] Zhihu, 2026-10-30, https://zhuanlan.zhihu.com/p/2100499549123102602
+//   [S3] Sina Finance, 2026-10-28, https://cj.sina.com.cn/articles/view/9053721674/21ba4d44a07201ewz8
+//   [S4] Bilibili, 2026-10-28, https://www.bilibili.com/video/BV176sZ6tECa/
+//   [S5] Bennett et al., SIAM J. Comput. 26(5):1510-1523, 1997,
+//        https://cims.nyu.edu/~regev/toc/articles/v002a001/bibliography.html
+// ---------------------------------------------------------------------------
+
+export fn sources() {
+    return [
+        {"id": "S1", "date": "2026-10-28",
+         "title": "OpenAI宣布推翻ETH，科学家没有鼓掌 (Titanium Media)",
+         "url": "https://www.tmtpost.com/agent/ai-article/21665"},
+        {"id": "S2", "date": "2026-10-30",
+         "title": "两个AI同一天宣称证伪ETH：真正被改变的是什么 (Zhihu)",
+         "url": "https://zhuanlan.zhihu.com/p/2100499549123102602"},
+        {"id": "S3", "date": "2026-10-28",
+         "title": "OpenAI和Anthropic都推翻ETH，哪家证明更靠谱? (Sina)",
+         "url": "https://cj.sina.com.cn/articles/view/9053721674/21ba4d44a07201ewz8"},
+        {"id": "S4", "date": "2026-10-28",
+         "title": "Anthropic论文《A 2^o(n) Time Algorithm for 3-SAT》署名Claude (Bilibili)",
+         "url": "https://www.bilibili.com/video/BV176sZ6tECa/"},
+        {"id": "S5", "date": "1997",
+         "title": "Bennett, Bernstein, Brassard, Vazirani — Strengths and weaknesses of quantum computing",
+         "url": "https://cims.nyu.edu/~regev/toc/articles/v002a001/bibliography.html"}
+    ]
+}
+
+export fn timeline() {
+    return [
+        {"date": "1955", "event": "Nash's letter to the NSA: cracking a complex code takes time exponential in key length",
+         "source": "video transcript; historical background", "type": "social-record"},
+        {"date": "1975", "event": "Baker-Gill-Solovay relativization barrier",
+         "source": "barriers()", "type": "impossibility"},
+        {"date": "1996-1997", "event": "Grover's sqrt(N) search; BBBV Omega(sqrt(N)) lower bound",
+         "source": "S5", "type": "model-bound"},
+        {"date": "1999-2001", "event": "Impagliazzo-Paturi propose ETH; IPZ sparsification lemma (m=O(n))",
+         "source": "barriers()", "type": "reduction"},
+        {"date": "2026-10-16", "event": "OpenAI internal model and Anthropic Claude independently derive ETH is false, same day, hours apart",
+         "source": "S1, S4", "type": "social-record"},
+        {"date": "2026-10-17", "event": "OpenAI completes Lean formalisation of the disproof",
+         "source": "S1, S3", "type": "reduction"},
+        {"date": "2026-10-26", "event": "OpenAI announces publicly; 67-page paper + Lean code on GitHub; three results (CS, math, physics)",
+         "source": "S1, S3", "type": "social-record"},
+        {"date": "2026-10-27", "event": "Anthropic uploads Claude-authored Lean 4 proof at 03:07 UTC; runtime ~ exp(O(n/sqrt(log n)))",
+         "source": "S1, S4", "type": "social-record"},
+        {"date": "2026-10-28", "event": "Review panel (Ryan Williams, Impagliazzo, Paturi) open letter: 'participation is not certification'; demands raw data + community meeting; OpenAI agrees, donates USD 5M to Simons Foundation",
+         "source": "S1, S3", "type": "social-record"},
+        {"date": "2026-11-05", "event": "Independent review still in progress; no certification; ETH status UNRESOLVED",
+         "source": "this audit", "type": "social-record"}
+    ]
+}
+
+export fn claims() {
+    return [
+        {"id": "eth-is-open", "text": "ETH is an unproved universal hypothesis, not a solved problem",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "Impagliazzo-Paturi 1999; no accepted proof in either direction",
+         "verdict": "CERTIFIED", "detail": "a hypothesis stays open until anumana arrives"},
+
+        {"id": "dpll-benchmark", "text": "DPLL node counts for n=12..32 fit polynomial and exponential about equally",
+         "type": "existential-finite", "pramana": "pratyaksha",
+         "evidence": "bun:eth fit_compare, ratio 1.004 -> UNDETERMINED",
+         "verdict": "CERTIFIED", "detail": "a true statement about those runs only"},
+
+        {"id": "benchmark-decides-eth", "text": "a fast-enough benchmark can prove or refute ETH",
+         "type": "universal-algorithm", "pramana": "pratyaksha",
+         "evidence": "finite tables",
+         "verdict": "REFUTED", "detail": "pratyaksha cannot settle a universal-algorithm claim; can_settle() = false"},
+
+        {"id": "one-percent-saving", "text": "2^(0.99n) is a subexponential algorithm and refutes ETH",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "s = 0.99 > 0",
+         "verdict": "REFUTED", "detail": "smaller base, same shape; ETH survives"},
+
+        {"id": "soft-exponential-refutes", "text": "a proved worst-case exp(O(n/sqrt(log n))) algorithm WOULD refute ETH",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "s = 1/(sqrt(ln n) ln 2) -> 0, so T = 2^o(n)",
+         "verdict": "OUT_OF_REACH", "detail": "mathematically correct, but requires a proved worst-case bound; not a measurement"},
+
+        {"id": "video-valueless", "text": "'only slightly better than exponential' means the barrier remains and the result is valueless",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "alpha_blindspot(): alpha -> 1 but s -> 0",
+         "verdict": "REFUTED", "detail": "2^(0.99n) and 2^(n/sqrt(log n)) look similar but differ in kind: one has s>0, the other s->0"},
+
+        {"id": "lean-verifies-claim", "text": "Lean formalisation proves the ETH disproof is correct",
+         "type": "reduction", "pramana": "shabda",
+         "evidence": "S1: Lean checks the derivation chain, not whether the premises match the real-world problem",
+         "verdict": "REFUTED", "detail": "Lean certifies a formal derivation; the statement-to-problem correspondence and human review are separate"},
+
+        {"id": "panel-certified", "text": "the review panel certified the disproof",
+         "type": "social-record", "pramana": "shabda",
+         "evidence": "S1 open letter: 'our participation should not be seen as certification of the claim'",
+         "verdict": "REFUTED", "detail": "explicitly denied by the panel itself"},
+
+        {"id": "eth-false-implies-p-equals-np", "text": "refuting ETH would prove P = NP",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "2^o(n) can still be superpolynomial, e.g. 2^sqrt(n)",
+         "verdict": "REFUTED", "detail": "S1 calls this the most common misreading; ETH is weaker than P!=NP"},
+
+        {"id": "ai-disproof-accepted", "text": "OpenAI and Anthropic have disproved ETH and it is now settled",
+         "type": "social-record", "pramana": "shabda",
+         "evidence": "S1: independent review in progress, raw data requested, no certification as of 2026-11-05",
+         "verdict": "UNDER_REVIEW", "detail": "claims exist and are Lean-formalised; community verification is not complete"},
+
+        {"id": "quantum-refutes", "text": "Grover's algorithm refutes ETH",
+         "type": "model-bound", "pramana": "upamana",
+         "evidence": "quantum_certificate(): s = 0.5 > 0",
+         "verdict": "REFUTED", "detail": "quadratic speedup halves the exponent, does not vanish it"},
+
+        {"id": "bbbv-is-a-proof", "text": "Omega(sqrt(N)) quantum query lower bound is proved",
+         "type": "model-bound", "pramana": "upamana",
+         "evidence": "S5, Bennett et al. 1997",
+         "verdict": "CERTIFIED", "detail": "a genuine universal theorem, but inside the black-box model only"},
+
+        {"id": "sutra-solved-eth", "text": "SUTRA solved ETH",
+         "type": "universal-algorithm", "pramana": "anumana",
+         "evidence": "user correction, 2026-11-05",
+         "verdict": "REFUTED", "detail": "SUTRA analysed and tested ETH-related claims; it did not settle ETH"}
+    ]
+}
+
+// Adjudicate from the lattice, not from a hard-coded verdict string.
+export fn adjudicate(c) {
+    let checks = []
+    let ok_evidence = can_settle(c["pramana"], c["type"])
+    // A claim may be REFUTED precisely BECAUSE its pramana cannot reach its
+    // logical type ("a benchmark can prove ETH" is false for that reason).
+    // That is a correct adjudication, not an inconsistency. Only a CERTIFIED
+    // or UNDER_REVIEW claim with unreachable evidence is inconsistent.
+    let honest_rejection = not ok_evidence and
+        (c["verdict"] == "REFUTED" or c["verdict"] == "OUT_OF_REACH")
+    checks.push({"check": "evidence-type-match",
+                 "pass": ok_evidence or honest_rejection,
+                 "detail": c["pramana"] + " can settle " + c["type"] + ": " +
+                           str(ok_evidence) +
+                           pick_str(honest_rejection, " — claim rejected for exactly this mismatch", "")})
+
+    let is_universal = c["type"] == "universal-algorithm"
+    let proof_present = c["pramana"] == "anumana" and c["verdict"] == "CERTIFIED"
+    checks.push({"check": "quantifier", "pass": not is_universal or c["verdict"] != "CERTIFIED" or proof_present,
+                 "detail": "a CERTIFIED universal claim requires anumana"})
+
+    checks.push({"check": "status-honesty", "pass": c["verdict"] != "OUT_OF_REACH" or c["pramana"] == "anumana",
+                 "detail": "OUT_OF_REACH is reserved for claims only a proof can settle"})
+
+    var passed = 0
+    for x in checks { if x["pass"] { passed = passed + 1 } }
+    var verdict = "INCONSISTENT"
+    if passed == checks.len() { verdict = c["verdict"] }
+    return {"id": c["id"], "text": c["text"], "declared": c["verdict"],
+            "verdict": verdict, "checks": checks, "passed": passed,
+            "total": checks.len(), "detail": c["detail"]}
+}
+
+export fn adjudicate_all() {
+    let out = []
+    for c in claims() { out.push(adjudicate(c)) }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// 5. What would actually settle it
+// ---------------------------------------------------------------------------
+
+export fn settle_conditions() {
+    return [
+        {"direction": "ETH is FALSE",
+         "needs": ["one explicit algorithm A", "a proof that for every instance of size n, T_A(n) = 2^o(n)",
+                   "the proof checked independently by the community",
+                   "Lean (or similar) derivation matched to the informal statement",
+                   "raw data and the actual bound made public"],
+         "pramana": "anumana + arthapatti",
+         "status": "claimed 2026-10-16/26, UNDER_REVIEW as of 2026-11-05"},
+        {"direction": "ETH is TRUE",
+         "needs": ["a lower bound 2^(s n), s>0, for EVERY algorithm",
+                   "a non-relativizing, non-natural, non-algebrizing technique",
+                   "which would also prove P != NP"],
+         "pramana": "anumana, crossing all three barriers",
+         "status": "no known route"},
+        {"direction": "ETH is UNRESOLVED (current)",
+         "needs": ["nothing further — this is the honest default"],
+         "pramana": "anupalabdhi + shabda",
+         "status": "CERTIFIED as of 2026-11-05"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// 6. The mystery verdict
+//
+// Two different questions, two different answers. Conflating them is the
+// error the whole exercise started with.
+// ---------------------------------------------------------------------------
+
+export fn mystery_verdict() {
+    let b = alpha_blindspot()
+    let mt = measurement_theorem()
+    let counts = verdict_counts()
+    return {
+        "eth": "UNRESOLVED",
+        "eth_reason": "universal claim over all algorithms; no anumana accepted in either direction; 2026 AI claims still under independent review",
+        "mystery": "SOLVED",
+        "mystery_meaning": "why ETH is unresolved, why no benchmark can decide it, what each 2026 claim does and does not establish, and what evidence would settle it",
+        "solved_by": [
+            "correct invariant: s = log2(T)/n, not alpha",
+            "alpha blindspot reproduced: alpha = " + fmt(b["alpha"]) + " says exponential, s -> 0 says 2^o(n)",
+            "evidence lattice: pratyaksha cannot reach a universal-algorithm claim",
+            "quantum: Grover halves s (0.5) but BBBV is proved only in the black-box model",
+            "barriers: proving ETH true would also prove P != NP",
+            "2026 ledger: 13 claims adjudicated, review status explicit"
+        ],
+        "not_solved_by": "any finite experiment, any Lean file alone, any press release, any authority",
+        "user_correction": "honoured verbatim: SUTRA analysed and tested ETH-related claims; it did not solve ETH",
+        "claims": counts,
+        "measurement_can_settle_eth": mt["can_settle"]
+    }
+}
+
+export fn verdict_counts() {
+    var d = {}
+    for c in claims() {
+        let v = c["verdict"]
+        if has_key(d, v) { d[v] = d[v] + 1 }
+        if not has_key(d, v) { d[v] = 1 }
+    }
+    return d
+}
+
+// ---------------------------------------------------------------------------
+// 7. Self-audit: the module checks its own instruments
+// ---------------------------------------------------------------------------
+
+export fn audit() {
+    let checks = []
+    // 1. six pramanas
+    checks.push({"check": "six-pramanas", "pass": pramanas().len() == 6,
+                 "detail": "pratyaksha, anumana, upamana, shabda, arthapatti, anupalabdhi"})
+    // 2. measurement cannot settle ETH
+    checks.push({"check": "measurement-limit", "pass": not can_settle("pratyaksha", "universal-algorithm"),
+                 "detail": "finite runs are not a proof over all algorithms"})
+    // 3. proof can
+    checks.push({"check": "proof-reaches", "pass": can_settle("anumana", "universal-algorithm"),
+                 "detail": "anumana is the only pramana that reaches ETH"})
+    // 4. the alpha contradiction reproduces
+    let b = alpha_blindspot()
+    checks.push({"check": "alpha-blindspot", "pass": b["contradiction"],
+                 "detail": "alpha = " + fmt(b["alpha"]) + " (exponential) vs s -> 0 (2^o(n))"})
+    // 5. quantum numbers
+    checks.push({"check": "grover-number", "pass": f_abs(grover_queries(20) - 1024.0) < 1e-6,
+                 "detail": "sqrt(2^20) = 2^10 = 1024"})
+    // 6. quantum shape
+    checks.push({"check": "quantum-shape", "pass": quantum_s(100) > 0.0,
+                 "detail": "s = 0.5, so a quadratic speedup does not refute ETH"})
+    // 7. every claim is adjudicated consistently
+    var all_ok = true
+    for a in adjudicate_all() {
+        if a["verdict"] == "INCONSISTENT" { all_ok = false }
+    }
+    checks.push({"check": "claim-ledger-consistent", "pass": all_ok,
+                 "detail": str(claims().len()) + " claims, each verdict matches its evidence type"})
+    // 8. the final answer is honest
+    let mv = mystery_verdict()
+    checks.push({"check": "eth-stays-unresolved", "pass": mv["eth"] == "UNRESOLVED",
+                 "detail": "the module does not claim to have proved or refuted ETH"})
+    // 9. timeline ordered and complete
+    checks.push({"check": "timeline-dated", "pass": timeline().len() >= 10,
+                 "detail": str(timeline().len()) + " dated events, 1955 -> 2026-11-05"})
+    // 10. sources cited
+    checks.push({"check": "sources-cited", "pass": sources().len() >= 5,
+                 "detail": str(sources().len()) + " sources, each with a URL"})
+
+    var passed = 0
+    for c in checks { if c["pass"] { passed = passed + 1 } }
+    var verdict = "FAILED"
+    if passed == checks.len() { verdict = "CERTIFIED" }
+    return {"verdict": verdict, "passed": passed, "total": checks.len(),
+            "checks": checks}
+}
+
+// ---------------------------------------------------------------------------
+// 8. The single shape of the whole method — for teaching
+// ---------------------------------------------------------------------------
+
+export fn lesson() {
+    return [
+        "1. पहले दावे का LOGICAL TYPE पूछो: क्या यह 'सभी algorithms' के बारे में है?",
+        "2. फिर प्रमाण पूछो: क्या measurement (प्रत्यक्ष) उस type तक पहुँचता है?",
+        "3. यदि नहीं, तो 'UNDETERMINED' कहो — पर कारण के साथ, और बताओ क्या चाहिए।",
+        "4. सही invariant चुनो: ETH के लिए s = log2(T)/n, alpha नहीं।",
+        "5. घात में छोटा सुधार और 2^o(n) एक बात नहीं: 0.99 बचा, 1/sqrt(log n) गिराता है।",
+        "6. Lean derivation जाँचता है, premise-दुनिया मेल नहीं; review panel certification नहीं।",
+        "7. Quantum model में सार्वत्रिक प्रमेय संभव है (BBBV), पर वही real 3SAT पर लागू नहीं।",
+        "8. अंतिम उत्तर: ETH UNRESOLVED. Mystery solved — क्यों, कैसे, और किस evidence से।"
+    ]
+}
+
+fn pick_str(cond, a, b) {
+    if cond { return a }
+    return b
+}

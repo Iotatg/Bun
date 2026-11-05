@@ -1,5 +1,15 @@
 # `bun:eth` — the Exponential Time Hypothesis as a shape question
 
+> **CORRECTION (2026-11-05).** The `alpha` invariant developed in sections 1–5
+> below is **not** the invariant ETH is about. ETH is decided by
+> `s(n) = log₂ T(n) / n`: `2^o(n)` ⟺ `s → 0`. For the runtime actually
+> reported in October 2026, `exp(O(n/√log n))`, `alpha → 1` (this module says
+> "exponential, ETH survives") while `s → 0` (ETH falls). See section 6 below
+> and **`bun:pramana`** for the corrected, evidence-aware layer. Sections 1–5
+> are kept because their measurements, DPLL solver and finite-data
+> discrimination result remain valid; only the interpretation of `alpha` as an
+> ETH decision rule was wrong.
+
 ETH says 3SAT cannot be solved in `2^(o(n))` time. In SUTRA's language that is
 not a claim about a number; it is a claim about a **shape**:
 
@@ -158,3 +168,44 @@ quantifier. It does not claim to have proved or disproved ETH.
 All numbers in this document come from `bun tools/eth_lab.bun`; none are
 asserted by hand. The module is pure Bun and uses `bun:sutra` only for `num`,
 `fmt` and the `classify` contract.
+
+## 7. Corrected invariant (added 2026-11-05)
+
+The right invariant is the **exponent density**
+
+```
+s(n) = log₂ T(n) / n
+ETH true  ⟺  liminf s(n) > 0 for every correct 3SAT algorithm
+ETH false ⟺  some algorithm has s(n) → 0, i.e. T = 2^o(n)
+```
+
+`alpha` collapses to 1 for both `2^(0.99n)` and `exp(n/√ln n)`, but
+`s = 0.99` in the first case and `s → 0` in the second. A smaller base keeps
+ETH; a vanishing density refutes it. These are different *kinds*, not
+different sizes — exactly the error in the video's "only slightly better than
+exponential, so the barrier remains" reasoning.
+
+| function | returns |
+|----------|---------|
+| `s_of_ln(n, ln_t)`, `soft_ln(n)`, `soft_points(ns)` | log-space `s` primitives (no overflow) |
+| `s_series(points)`, `eth_shape(ss)` | the `s` curve and a **shape** verdict (never a proof) |
+| `local_exponents_ln(points)`, `growth_ln(points)` | `alpha` from an `[n, ln T]` table |
+| `alpha_blindspot()` | machine-checked contradiction: `alpha = 0.9295` says exponential, `s → 0` says `2^o(n)` |
+| `eth_worlds()` | five worlds under the correct invariant |
+
+```bun
+import { alpha_blindspot, eth_worlds } from "bun:eth"
+
+let b = alpha_blindspot()
+print(b["contradiction"])          // true
+print(eth_worlds().len())         // 5
+```
+
+`alpha_blindspot()["contradiction"]` is independently reproduced in Python
+(`tests/test_pramana.py`, `tests/test_eth.py`) and on all four Bun engines.
+The value `0.9295174545228192` agrees to the last printed digit.
+
+`worlds()` is retained unchanged for backwards compatibility; it describes
+`alpha`, not ETH. For the full evidence layer — six pramanas, the 2026 claim
+ledger, quantum/BBBV, barriers and the final `UNRESOLVED` verdict — see
+[`bun:pramana`](pramana.md) and `bun tools/eth_mystery_lab.bun`.

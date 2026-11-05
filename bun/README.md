@@ -2567,7 +2567,11 @@ Hypothesis" and asks what shape it is. ETH says 3SAT's growth is not
 exponent** and the slope of that exponent (`alpha` — the exponent of the
 exponent): `alpha = 0` polynomial, `0 < alpha < 1` subexponential,
 `alpha = 1` exponential. Both of the first two would refute ETH; the third
-would not, no matter how small its base.
+would not, no matter how small its base. **Correction (2026-11-05):** that last
+sentence is wrong. `alpha` is not the invariant ETH is about — see the
+`bun:pramana` section below. The DPLL measurements and `UNDETERMINED` result
+in this section remain valid; only the interpretation of `alpha` as an ETH
+decision rule was mistaken.
 
 A real DPLL measurement on random 3SAT at the satisfiability threshold is
 included, plus an exhaustive-oracle correctness check (25/25). On the
@@ -2594,3 +2598,48 @@ print(certificate_growth(claims()[0])["verdict"])   // CERTIFIED
 Reference: `docs/reference/eth.md`; lab: `bun tools/eth_lab.bun`; example:
 `examples/eth.bun`; tests: `tests/test_eth.py` (16 tests, identical output on
 all four engines). The lab takes about 24 seconds because of the DPLL sweep.
+
+## SUTRA level 2: `bun:pramana` — the evidence layer
+
+> **ETH: UNRESOLVED.** Level 1 asked *what shape is this law?* Level 2 asks
+> *what kind of evidence can settle this claim?* It does not prove or refute
+> ETH; it explains exactly why no benchmark can, and what would.
+
+Six executable **pramanas** (प्रमाण) — `pratyaksha` measurement, `anumana`
+proof, `upamana` restricted-model theorem, `shabda` testimony, `arthapatti`
+reduction, `anupalabdhi` barrier — are crossed against seven claim types in
+`lattice()`. ETH is a `universal-algorithm` claim; `pratyaksha` reaches only
+the runs performed, so `can_settle("pratyaksha", "universal-algorithm")`
+returns `false`. That is a theorem about the *logical type* of the claim, not a
+complaint about small datasets.
+
+The module also **fixes a real error in `bun:eth`**. ETH is decided by
+`s = log₂(T)/n`, not by `alpha`. For the runtime reported in October 2026,
+`exp(O(n/√log n))`, `alpha = 0.9295` says "exponential, ETH survives" while
+`s → 0` says `2^o(n)`, which refutes ETH. `alpha_blindspot()` reproduces this
+contradiction in log space (building `T` itself overflows a float by `n=2048`).
+So the video's "only slightly better than exponential ⇒ the barrier remains"
+is wrong: `2^(0.99n)` has `s = 0.99` and ETH survives, but
+`2^(n/√log n)` has `s → 0` and ETH falls.
+
+A dated 2026 ledger (10 events, 5 sourced URLs, 13 adjudicated claims), a
+Grover/BBBV quantum certificate (`s = 0.5`, proved only in the black-box
+model), and the three classic barriers (relativization, natural proofs,
+algebrization) complete the record. `audit()` self-checks all ten instruments
+and returns `CERTIFIED 10/10`.
+
+```bun
+import { audit, can_settle, mystery_verdict } from "bun:pramana"
+
+print(can_settle("pratyaksha", "universal-algorithm"))  // false
+print(mystery_verdict()["eth"])                        // UNRESOLVED
+print(mystery_verdict()["mystery"])                    // SOLVED
+print(audit()["verdict"])                             // CERTIFIED
+```
+
+Reference: [`docs/reference/pramana.md`](docs/reference/pramana.md); lab:
+`bun tools/eth_mystery_lab.bun` (305-line end-to-end record); example:
+`examples/pramana.bun`; tests: `tests/test_pramana.py` (25 tests, identical
+output on all four engines). ETH status is unchanged — the user's correction,
+"SUTRA analysed and tested ETH-related claims; it did not solve ETH", is
+honoured verbatim in `mystery_verdict()`.

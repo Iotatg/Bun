@@ -1,0 +1,218 @@
+// tools/eth_mystery_lab.bun — the complete, dated, end-to-end ETH record.
+//
+// Run: ./bin/bun tools/eth_mystery_lab.bun
+//
+// This is a LAB NOTEBOOK, not a proof. Every number here is reproducible from
+// the modules it imports. Every external fact carries a source id. The final
+// line says UNRESOLVED on purpose: that is the correct answer for ETH, and
+// the "mystery" that IS solved is why it must stay that way.
+
+import { audit, pramanas, claim_types, lattice, can_settle,
+         measurement_theorem, quantum_certificate, quantum_worlds,
+         barriers, asymmetries, sources, timeline, claims,
+         adjudicate_all, verdict_counts, settle_conditions,
+         mystery_verdict, lesson } from "bun:pramana"
+import { alpha_blindspot, eth_worlds, growth_ln, s_series,
+         soft_points, eth_statement } from "bun:eth"
+
+let LN = "------------------------------------------------------------"
+
+fn hr() { print(LN) }
+
+print("ETH MYSTERY — END-TO-END RECORD")
+print("recorded 2026-11-05 | subject: SUTRA level 2 (bun:pramana)")
+hr()
+
+// ---------------------------------------------------------------------------
+print("0. THE QUESTION, SPLIT IN TWO")
+hr()
+print("Q1  kya ETH siddh ya khandit hua?              -> " + mystery_verdict()["eth"])
+print("Q2  kya is uljhan ka poora hisaab mil gaya?    -> " + mystery_verdict()["mystery"])
+print("")
+print("Ye do alag sawaal hain. User ki sahih baat:")
+print("  'SUTRA ne ETH se jude daavon ka vishleshan aur parikshan kiya hai,")
+print("   ETH ko solve karne ka nahi.'")
+print("Is record me Q1 ka jawaab badalta NAHI hai. Q2 ka jawaab poora hota hai.")
+hr()
+
+// ---------------------------------------------------------------------------
+print("1. EVIDENCE SOURCES (internet, retrieved 2026-11-05)")
+hr()
+for s in sources() {
+    print("  [" + s["id"] + "] " + s["date"] + "  " + s["title"])
+    print("       " + s["url"])
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("2. DATED TIMELINE — 1955 se 2026 tak")
+hr()
+for t in timeline() {
+    print("  " + t["date"] + "  [" + t["type"] + "]")
+    print("      " + t["event"])
+    print("      source: " + t["source"])
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("3. MY OWN ERROR, FOUND AND FIXED")
+hr()
+let b = alpha_blindspot()
+print("  Purana bun:eth invariant : alpha = d(log k)/d(log n)  ('ghaat ki ghaat')")
+print("  Sahih ETH invariant      : " + b["correct_invariant"])
+print("")
+print("  2026 ka vaastavik runtime : " + b["runtime"])
+print("  source                    : " + b["source"])
+print("")
+print("  alpha  = " + str(b["alpha"]) + "  -> growth() kahega: " + b["alpha_verdict"])
+print("           isliye purana code bolega: " + b["alpha_says"])
+let ns = [16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0]
+let ss = s_series(soft_points(ns))
+for p in ss {
+    print("     n=" + str(int(p["n"])) + "  s=" + str(p["s"]))
+}
+print("  s: " + str(b["s_first"]) + " -> " + str(b["s_last"]) + " -> 0   (" + b["s_shape"] + ")")
+print("  s ka matlab: " + b["s_says"])
+print("")
+print("  CONTRADICTION = " + str(b["contradiction"]))
+print("  karan: " + b["why_alpha_fails"])
+print("  " + b["log_space_note"])
+print("")
+print("  Videowala bhi yahi galti karta hai: 'sirf thoda behetar than exponential")
+print("  => baadha bani rahegi, result valueless'. Galat. 2^(0.99n) me s=0.99 > 0")
+print("  (ETH bacha), par 2^(n/sqrt(log n)) me s->0 (ETH gira). Chhota dikhta")
+print("  antar, alag kism ka antar hai.")
+hr()
+
+// ---------------------------------------------------------------------------
+print("4. PAANCH WORLDS, SAHIH INVARIANT KE SAATH")
+hr()
+for w in eth_worlds() {
+    print("  " + w["name"] + "  T=" + w["example"] + "  s=" + w["s"] +
+          "  ETH=" + w["eth"])
+    print("       " + w["note"])
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("5. CHHAH PRAMANA — kaun kya siddh kar sakta hai")
+hr()
+for p in pramanas() {
+    print("  " + p["id"] + " " + p["sanskrit"] + " (" + p["english"] + ")")
+    print("      hai       : " + p["is"])
+    print("      quantifies: " + p["quantifies"])
+    print("      example   : " + p["example"])
+}
+print("")
+print("  LATTICE (pramana x claim-type):")
+var header = "    columns: "
+for c in claim_types() { header = header + c["id"] + "  " }
+print(header)
+for row in lattice() {
+    var line = "    " + row["pramana"] + "  "
+    for c in row["row"] {
+        var mark = "."
+        if c["ok"] { mark = "Y" }
+        line = line + mark + " "
+    }
+    print(line)
+}
+let mt = measurement_theorem()
+print("")
+print("  THEOREM: '" + mt["claim"] + "'")
+print("  available pramana : " + mt["available"])
+print("  can_settle        : " + str(mt["can_settle"]))
+print("  reason            : " + mt["reason"])
+print("  consequence       : " + mt["consequence"])
+print("  status            : " + mt["status"])
+hr()
+
+// ---------------------------------------------------------------------------
+print("6. QUANTUM — Grover, BBBV, aur model ka antar")
+hr()
+let q = quantum_certificate()
+print("  " + q["verdict"] + "  " + str(q["passed"]) + "/" + str(q["total"]))
+for c in q["checks"] {
+    print("    " + str(c["pass"]) + "  " + c["check"] + ": " + c["detail"])
+}
+print("")
+print("  " + q["conclusion"])
+for w in quantum_worlds() {
+    print("    " + w["name"] + "  T=" + w["T"] + "  s=" + str(w["s"]) +
+          "  ETH-shape=" + w["eth_shape"] + "  [" + w["evidence"] + "]")
+}
+print("  BBBV (S5) ek sachcha saarvatrik prameya hai — par SIRF black-box model me.")
+print("  3SAT structured hai, isliye wah pramana real 3SAT tak nahi pahunchta (upamana).")
+hr()
+
+// ---------------------------------------------------------------------------
+print("7. BARRIERS — ETH ko siddh karna itna mushkil kyun hai")
+hr()
+for x in barriers() {
+    print("  " + str(x["year"]) + "  " + x["id"] + "  (" + x["authors"] + ")")
+    print("      " + x["statement"])
+    print("      -> " + x["effect"])
+}
+let asym = asymmetries()
+print("")
+print("  ASYMMETRY")
+print("    refute karne ke liye : " + asym["to_refute"])
+print("    prove karne ke liye  : " + asym["to_prove"])
+print("    kyun                 : " + asym["why_asymmetric"])
+print("    benchmark ki bhumika : " + asym["benchmark_role"])
+hr()
+
+// ---------------------------------------------------------------------------
+print("8. TERAH DAAVE, EK-EK KA FAISLA")
+hr()
+for r in adjudicate_all() {
+    print("  " + r["verdict"] + "  " + r["id"])
+    print("      daava : " + r["text"])
+    print("      karan : " + r["detail"])
+    print("      checks: " + str(r["passed"]) + "/" + str(r["total"]))
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("9. ETH KO SETTLE KARNE KE LIYE THIK-THIK KYA CHAHIYE")
+hr()
+for s in settle_conditions() {
+    print("  " + s["direction"] + "  [" + s["status"] + "]")
+    print("      pramana: " + s["pramana"])
+    for need in s["needs"] { print("        - " + need) }
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("10. SELF-AUDIT")
+hr()
+let a = audit()
+print("  " + a["verdict"] + "  " + str(a["passed"]) + "/" + str(a["total"]))
+for c in a["checks"] {
+    print("    " + str(c["pass"]) + "  " + c["check"] + ": " + c["detail"])
+}
+hr()
+
+// ---------------------------------------------------------------------------
+print("11. ANTIM NISHKARSH")
+hr()
+let mv = mystery_verdict()
+print("  ETH       : " + mv["eth"])
+print("  karan     : " + mv["eth_reason"])
+print("  MYSTERY   : " + mv["mystery"])
+print("  arth      : " + mv["mystery_meaning"])
+print("")
+print("  SOLVED (evidence ke saath):")
+for x in mv["solved_by"] { print("    + " + x) }
+print("")
+print("  NOT solved by: " + mv["not_solved_by"])
+print("  measurement ETH ko settle kar sakta hai? " + str(mv["measurement_can_settle_eth"]))
+print("  " + mv["user_correction"])
+hr()
+
+// ---------------------------------------------------------------------------
+print("12. SUTRA KA NAYA PAATH (aath kadam)")
+hr()
+for x in lesson() { print("  " + x) }
+hr()
+print("END OF RECORD — koi bhi daava is file se aage proof nahi maanga gaya.")

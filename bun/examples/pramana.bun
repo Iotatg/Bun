@@ -1,0 +1,59 @@
+// examples/pramana.bun — SUTRA level 2 in one page.
+// Run: ./bin/bun examples/pramana.bun
+
+import { audit, pramanas, can_settle, measurement_theorem,
+         quantum_certificate, adjudicate_all, settle_conditions,
+         mystery_verdict } from "bun:pramana"
+import { alpha_blindspot, eth_worlds } from "bun:eth"
+
+print("SUTRA level 2 — प्रमाण (the evidence layer)")
+print("")
+
+// 1. Kaun kya siddh kar sakta hai.
+for p in pramanas() {
+    print("  " + p["id"] + " " + p["sanskrit"] + " — " + p["is"])
+}
+
+// 2. ETH ek universal claim hai; measurement us tak nahi pahunchta.
+let m = measurement_theorem()
+print("")
+print("ETH: " + m["claim"])
+print("pratyaksha se settle hoga? " + str(m["can_settle"]))
+print("karan: " + m["reason"])
+print("chahiye: " + m["what_would"])
+
+// 3. Apni hi galti: alpha sahi invariant nahi hai.
+let b = alpha_blindspot()
+print("")
+print("2026 runtime: " + b["runtime"])
+print("alpha = " + str(b["alpha"]) + " -> " + b["alpha_verdict"] +
+      " -> purana code bolega '" + b["alpha_says"] + "'")
+print("s: " + str(b["s_first"]) + " -> " + str(b["s_last"]) +
+      " -> 0 -> '" + b["s_says"] + "'")
+print("virodh = " + str(b["contradiction"]) + "  |  sahih: " + b["correct_invariant"])
+
+// 4. Quantum: quadratic speedup shape nahi badalta.
+let q = quantum_certificate()
+print("")
+print("Quantum: " + q["verdict"] + " — " + q["conclusion"])
+
+// 5. Terah daavon ka faisla.
+print("")
+for r in adjudicate_all() {
+    print("  " + r["verdict"] + "  " + r["id"])
+}
+
+// 6. Settle hone ki shartein.
+print("")
+for s in settle_conditions() {
+    print("  " + s["direction"] + " [" + s["status"] + "]")
+}
+
+// 7. Antim nishkarsh.
+let v = mystery_verdict()
+let a = audit()
+print("")
+print("self-audit: " + a["verdict"] + " " + str(a["passed"]) + "/" + str(a["total"]))
+print("ETH      : " + v["eth"])
+print("MYSTERY  : " + v["mystery"])
+print(v["user_correction"])
