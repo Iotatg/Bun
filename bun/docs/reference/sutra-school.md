@@ -16,7 +16,7 @@ print(path())
 let a = audit()
 print(a["verdict"], a["passed"], a["total"])   // CERTIFIED 7 7
 print(teach(1))
-print(place(8, 12)["stage"])                  // class 9
+print(place(8, 12)["stage"])                  // class 11
 ```
 
 The full run is `bun tools/sutra_school_lab.bun`; the short tour is

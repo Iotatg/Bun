@@ -2552,7 +2552,7 @@ import { audit, path, teach, place } from "bun:sutra_school"
 print(path())
 print(audit()["verdict"])          // CERTIFIED
 print(teach(1))                    // the first day of class 1
-print(place(8, 12)["stage"])       // class 9
+print(place(8, 12)["stage"])       // class 11
 ```
 
 Reference: `docs/reference/sutra-school.md`; lab: `bun tools/sutra_school_lab.bun`;
