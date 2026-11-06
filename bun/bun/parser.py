@@ -409,21 +409,27 @@ class Parser:
 
     def _import_stmt(self):
         kw = self._advance()
-        # A namespace import binds every export of the module under one
-        # name, so that a module with many exports does not force every
-        # one of them to be renamed by hand at the call site.
-        if self._match(TokenType.STAR):
+        # Bun's own whole-module form: `import "path" as name`.
+        # The path comes first because a module path is always a string
+        # that names a file; the local name follows it. Only `import` and
+        # `as` appear, and both are already translated by every language
+        # pack, so this form is writable in all 118 human languages.
+        if self._check(TokenType.STRING):
+            path = self._advance()
             self._expect(TokenType.AS,
-                         "expected 'as' after '*' in a namespace import")
+                         "expected 'as' after the module path")
             alias = self._expect(
                 TokenType.IDENT,
                 "expected a namespace name after 'as'").value
-            self._expect(TokenType.FROM,
-                         "expected 'from' after the namespace name")
-            path = self._expect(TokenType.STRING,
-                                "expected module path string")
             return ast.ImportStmt([], path.value, kw.line, kw.col, alias)
-        self._expect(TokenType.LBRACE, "expected '{' after 'import'")
+        if self._check(TokenType.STAR):
+            tok = self._peek()
+            raise ParseError(
+                "'import * as ns from ...' is not Bun syntax; bind a whole "
+                "module with import \"path\" as ns",
+                tok.line, tok.col)
+        self._expect(TokenType.LBRACE,
+                     "expected '{' or a module path after 'import'")
         names = []
         if not self._check(TokenType.RBRACE):
             names.append(self._expect(TokenType.IDENT, "expected imported name").value)

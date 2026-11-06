@@ -205,7 +205,7 @@ def _refuse_namespace_imports(node):
     if isinstance(node, ast.ImportStmt) and node.alias is not None:
         raise CBackendError(
             "the C backend does not support namespace imports "
-            "('import * as ns from ...')", node.line, node.col)
+            "('import \"path\" as ns')", node.line, node.col)
     for child in _children(node):
         _refuse_namespace_imports(child)
 
@@ -1507,7 +1507,7 @@ class CEmitter:
             if alias is not None:
                 raise CBackendError(
                     "the C backend does not support namespace imports "
-                    "('import * as ns from ...')",
+                    "('import \"path\" as ns')",
                     *self.position_of(code, position))
             number = self.module_number(path, code)
             lines = ["    {",

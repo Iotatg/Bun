@@ -1,0 +1,84 @@
+// tools/identity_lab.bun — the identity ledger, executed in Bun.
+//
+//   bun tools/identity_lab.bun
+//
+// Nothing here is asserted by the lab itself: every line is read from
+// bun:identity, whose audit() runs 15 falsifiable checks on the ledger.
+// The lab is deliberately plain so that the tree, vm, register,
+// register+tier and self-hosted front ends print byte-identical output.
+
+import { verdict, audit, rules, families, forms, canonical_forms, rejected_forms, keywords } from "bun:identity"
+
+fn banner(title) {
+    print("")
+    print("================================================================")
+    print(title)
+    print("================================================================")
+}
+
+banner("BUN — apni bhasha / its own language")
+
+let v = verdict()
+print("verdict          : " + v["verdict"])
+print("ledger checks    : " + v["checks"])
+print("families         : " + str(v["families"]))
+print("  bun original   : " + str(v["bun_families"]))
+print("  borrowed       : " + str(v["borrowed_families"]))
+print("  shared         : " + str(v["shared_families"]))
+print("keywords         : " + str(v["keywords"]))
+print("forms            : " + str(v["forms"]))
+print("  canonical      : " + str(v["canonical_forms"]))
+print("  rejected       : " + str(v["rejected_forms"]))
+print("claim            : " + v["claim"])
+
+banner("RULES — what a construct must satisfy")
+
+for r in rules() {
+    print(r["id"] + " " + r["name"])
+    print("   " + r["text"])
+    print("   source: " + r["source"])
+}
+
+banner("ORIGIN LEDGER — families")
+
+for f in families() {
+    print(f["name"] + "  [" + f["origin"] + "]  " + f["status"] + "  -> " + f["bun_rule"])
+    if f["from"] != "" {
+        print("   from   : " + f["from"])
+    }
+    print("   reason : " + f["reason"])
+}
+
+banner("ORIGIN LEDGER — forms")
+
+for f in forms() {
+    print(f["name"])
+    print("   [" + f["origin"] + "] " + f["status"] + "  -> " + f["bun_rule"])
+    if f["from"] != "" {
+        print("   from   : " + f["from"])
+    }
+    print("   reason : " + f["reason"])
+}
+
+banner("CANONICAL / REJECTED")
+
+print("canonical:")
+for n in canonical_forms() { print("   " + n) }
+print("rejected:")
+for n in rejected_forms() { print("   " + n) }
+
+banner("AUDIT")
+
+let a = audit()
+for c in a["checks"] {
+    var mark = "FAIL"
+    if c["ok"] { mark = "PASS" }
+    print(mark + "  " + c["name"])
+}
+
+print("")
+print("audit            : " + a["verdict"] + " " + str(a["passed"]) + " / " + str(a["total"]))
+print("")
+print("Bun did not invent everything. A borrowed construct is named here,")
+print("given a reason, and held to a Bun rule. The parser refuses the")
+print("ECMAScript module spelling and teaches the Bun form instead.")

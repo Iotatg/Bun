@@ -1,0 +1,12 @@
+#lang: hi
+// Bun apni bhasha me — keywords Hindi me, builtin naam universal.
+// Poora ledger Bun me likha hai; yah program kisi Python helper ko nahi bulata.
+
+आयात "bun:identity" जैसे पहचान
+
+मानी उत्तर = पहचान.verdict()
+print(उत्तर["verdict"])
+print(उत्तर["checks"])
+print(उत्तर["families"])
+print(उत्तर["keywords"])
+print(उत्तर["claim"])

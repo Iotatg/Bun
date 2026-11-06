@@ -494,16 +494,19 @@ fn type_param_list(st) {
 
 fn import_stmt(st) {
     let kw = advance(st)
-    // `import * as ns from "p"` binds every export under one name. The
-    // alias is null for a plain import, so the two forms share one node.
-    if match_token(st, ["STAR"]) != null {
-        expect(st, "AS", "expected 'as' after '*' in a namespace import")
+    // Bun's own whole-module form: `import "path" as name`. The path is
+    // first because a module path is always a string naming a file; the
+    // local name follows. Both words are translated by every language pack.
+    if check(st, "STRING") {
+        let path = advance(st)
+        expect(st, "AS", "expected 'as' after the module path")
         let alias = expect(st, "IDENT", "expected a namespace name after 'as'")
-        expect(st, "FROM", "expected 'from' after the namespace name")
-        let path = expect(st, "STRING", "expected module path string")
         return {"kind": "ImportStmt", "names": [], "alias": alias["value"], "path": path["value"], "line": kw["line"], "col": kw["col"]}
     }
-    expect(st, "LBRACE", "expected '{' after 'import'")
+    if check(st, "STAR") {
+        throw "'import * as ns from ...' is not Bun syntax; bind a whole module with import \"path\" as ns"
+    }
+    expect(st, "LBRACE", "expected '{' or a module path after 'import'")
     let names = []
     if !check(st, "RBRACE") {
         names.push(expect(st, "IDENT", "expected imported name")["value"])

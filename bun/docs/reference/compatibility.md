@@ -200,18 +200,25 @@ carries the same hint in `data.hint` of the error.
 
 | Python | Bun |
 |--------|-----|
-| `import os` | `import * as fs from "./fs.bun"` |
+| `import os` | `import "./fs.bun" as fs` |
 | `from x import y` | `import { y } from "./x.bun"` |
 | `__all__` | `export` |
 
 An import names what it takes. `import { a, b } from "path"` binds the
-named exports, and `import * as ns from "path"` binds one namespace whose
+named exports, and `import "path" as ns` binds one namespace whose
 exports are reached as `ns.a` and `ns.b`. There is no `import x` that only
 runs the module, because a module without an import statement is a
 statement that has no effect.
 
+The table above is a bridge for a reader arriving from Python, not a
+definition of Bun. Bun's own form is `import "path" as ns`: the path is a
+string that names a file, and it comes first. The ECMAScript spelling
+`import * as ns from "path"` is deliberately not accepted. The rules that
+decide which constructs Bun takes from other languages are in
+`docs/reference/bun-identity.md`.
+
 ```bun
-import * as m from "./math.bun"
+import "./math.bun" as m
 print(m.add(2, 3))
 print(m.pi)
 ```

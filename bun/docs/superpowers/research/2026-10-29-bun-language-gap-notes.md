@@ -16,14 +16,22 @@ records:
 
 > **Update (namespace imports):** the table below is kept as the historical
 > record of 2026-10-29, but item 4 of section 7 is now implemented.
-> `import * as ns from "path"` works on the tree, vm, register (both tiers)
-> and self-hosted front ends, with static checking of namespace fields and
+> Whole-module import works on the tree, vm, register (both tiers) and
+> self-hosted front ends, with static checking of namespace fields and
 > methods. The C backend refuses it by name rather than miscompiling it.
 > See `README.md` → Modules, `docs/reference/compatibility.md` → §9, and
 > `tests/test_namespace_import.py`. Several other syntax rows in section 1
 > are also stale: `+=`/`++`/`--`/`??`/match-expression landed in Phase 26 and
 > `map`/`filter`/`reduce`/`find`/`items()`/`len(dict)` in Phase 27 (see the
 > README roadmap). No claim in this report was silently changed.
+>
+> **Update 2 (the form is Bun's own):** the first implementation used the
+> ECMAScript spelling `import * as ns from "path"`. That was a copy, not a
+> Bun construct, so it was replaced before release by `import "path" as ns`
+> — path first, name after, using only keywords every language pack already
+> translates. The parser now refuses the ECMAScript spelling with a message
+> naming the Bun form. The historical wording in sections 1 and 7 below is
+> left as written; `docs/reference/bun-identity.md` is the current record.
 
 The report is kept as it was written, in the language it was written in.
 

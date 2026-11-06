@@ -1,0 +1,402 @@
+// lib/bun/identity.bun — what makes Bun Bun.
+//
+// This is the executable form of docs/reference/bun-identity.md. It is
+// written in Bun, it runs on every engine, and it holds four tables:
+//
+//   rules()      the rules that decide whether a construct belongs in Bun
+//   families()   where each family of syntax came from, and why
+//   keywords()   every keyword of the lexer -> its family
+//   forms()      sentence shapes, including the ones Bun refuses
+//
+// The point is NOT to claim Bun invented everything. It did not. The point
+// is that a borrowed construct must be attributed, must have a reason, and
+// must be held to a named Bun rule. tests/test_bun_identity.py derives the
+// real keyword set from bun/lexer.py and fails when a keyword has no origin,
+// so a new construct cannot slip into the language unexamined.
+//
+// Honest scope: a ledger is not a proof of originality. A family marked
+// "borrowed" stays borrowed no matter how many rules it satisfies.
+
+fn has_key(d, k) {
+    for x in d {
+        if x == k { return true }
+    }
+    return false
+}
+
+fn in_list(xs, x) {
+    for v in xs {
+        if v == x { return true }
+    }
+    return false
+}
+
+fn complete(d) {
+    let keys = ["name", "origin", "reason", "bun_rule", "status"]
+    for k in keys {
+        if not has_key(d, k) { return false }
+        if d[k] == "" { return false }
+    }
+    if not has_key(d, "from") { return false }
+    return true
+}
+
+let ORIGINS = ["bun", "borrowed", "shared", "rejected"]
+let STATUSES = ["canonical", "compatibility", "rejected", "planned"]
+
+// ---------------------------------------------------------------- rules
+
+export fn rules() {
+    return [
+        {"id": "R1", "name": "one_rule_per_concept",
+         "text": "Every concept has exactly one semantics, stated once; the manual has no unnamed exceptions.",
+         "source": "advanced design I1"},
+        {"id": "R2", "name": "refuse_dont_guess",
+         "text": "A construct the checker or a backend cannot hold is refused by name, never quietly converted.",
+         "source": "everyday design section 2"},
+        {"id": "R3", "name": "static_before_run",
+         "text": "Anything refusable before the run is refused before the run, with line, column, reason and hint.",
+         "source": "advanced design I2, I3"},
+        {"id": "R4", "name": "one_program_all_engines",
+         "text": "One program must behave identically on tree, vm, register, register+tier and both front ends; the C backend either agrees or refuses the construct by name.",
+         "source": "everyday design section 2, I10"},
+        {"id": "R5", "name": "own_grammar_not_a_copy",
+         "text": "A construct of another language is taken only when it fits Bun's grammar, checker and errors, and only when Bun would be poorer without it.",
+         "source": "everyday design section 1"},
+        {"id": "R6", "name": "one_obvious_way",
+         "text": "One way to say a thing; a borrowed spelling is compatibility, never the definition of the language.",
+         "source": "advanced design I9, coherence rule 1"},
+        {"id": "R7", "name": "writable_in_any_language",
+         "text": "A new keyword form uses words the language packs can already translate, or ships translations with it.",
+         "source": "docs/reference/languages.md"},
+        {"id": "R8", "name": "runtime_is_the_spec",
+         "text": "The golden corpus and front-end parity define the language; a disagreement is a bug.",
+         "source": "advanced design I5"}
+    ]
+}
+
+// ---------------------------------------------------------------- families
+
+export fn families() {
+    return [
+        {"name": "bindings", "origin": "borrowed", "from": "Rust, JavaScript",
+         "reason": "Bun keeps the familiar pair but gives it one Bun rule: let is immutable, var is mutable, and assignment needs a declared target.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "functions", "origin": "borrowed", "from": "Rust, Go, Python",
+         "reason": "fn and return are the common small spelling; Bun adds first-class closures and anonymous functions without a second syntax.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "control_flow", "origin": "borrowed", "from": "Python",
+         "reason": "Word-driven blocks read without an operator-precedence puzzle, and Bun states one truthiness rule for all of them.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "literals", "origin": "bun", "from": "",
+         "reason": "There is one absent value, null, and one true/false pair; Bun deliberately has no undefined and no second null.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "operators", "origin": "shared", "from": "universal arithmetic",
+         "reason": "Arithmetic and comparison signs are the shared alphabet of mathematics; the logical words and/or/not are Bun's readable choice.",
+         "bun_rule": "R6", "status": "canonical"},
+
+        {"name": "modules", "origin": "borrowed", "from": "ECMAScript, Python",
+         "reason": "The named-import spelling is entrenched in existing programs. It is retained and attributed, but it is not extended; Bun's own whole-module form is the one that grows.",
+         "bun_rule": "R6", "status": "compatibility"},
+
+        {"name": "data_types", "origin": "borrowed", "from": "Rust, Swift",
+         "reason": "struct, enum, impl and protocol give the checker a spine without classes or inheritance, which Bun refuses.",
+         "bun_rule": "R2", "status": "canonical"},
+
+        {"name": "patterns", "origin": "borrowed", "from": "Rust, Scala",
+         "reason": "match is borrowed but is a soft keyword: it is a keyword only where it has meaning, which is Bun's own rule I6.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "errors", "origin": "bun", "from": "",
+         "reason": "Two separated error channels, hints on every diagnostic and a JSON form are Bun's own answer to a dynamic runtime; try can never swallow a static error.",
+         "bun_rule": "R3", "status": "canonical"},
+
+        {"name": "resources", "origin": "borrowed", "from": "Python",
+         "reason": "with, as, del and yield are familiar words held to Bun's one-rule-per-concept test; no context-dependent second meaning is added.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "concurrency", "origin": "bun", "from": "",
+         "reason": "scope and spawn are Bun's structured-concurrency pair, introduced as soft keywords so no existing identifier breaks.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "language_packs", "origin": "bun", "from": "",
+         "reason": "The keywords of the language can be written in 118 human languages while builtin names stay universal. This is Bun's own idea and the reason R7 exists.",
+         "bun_rule": "R7", "status": "canonical"},
+
+        {"name": "engines", "origin": "bun", "from": "",
+         "reason": "Four bytecode/interpreter engines, a C backend and a Bun-written front end are a differential oracle, not a set of dialects.",
+         "bun_rule": "R4", "status": "canonical"},
+
+        {"name": "diagnostics", "origin": "bun", "from": "",
+         "reason": "The language is queryable: check --json, doc, api --json. An assistant or editor reads the same surface a human reads.",
+         "bun_rule": "R3", "status": "canonical"}
+    ]
+}
+
+// ---------------------------------------------------------------- keywords
+
+// Every hard keyword in bun/lexer.py and every soft keyword in
+// bun/langpacks.py appears here. The Python guard test compares this table
+// to the real lexer tables, so an unattributed keyword fails the suite.
+export fn keywords() {
+    return {
+        "let": "bindings", "var": "bindings",
+
+        "fn": "functions", "return": "functions", "yield": "functions",
+
+        "if": "control_flow", "else": "control_flow",
+        "while": "control_flow", "for": "control_flow", "in": "control_flow",
+        "break": "control_flow", "continue": "control_flow",
+
+        "true": "literals", "false": "literals", "null": "literals",
+
+        "and": "operators", "or": "operators", "not": "operators",
+
+        "import": "modules", "from": "modules",
+        "export": "modules", "as": "modules",
+
+        "struct": "data_types", "enum": "data_types",
+        "impl": "data_types", "protocol": "data_types",
+
+        "match": "patterns",
+
+        "try": "errors", "catch": "errors", "finally": "errors",
+        "throw": "errors", "assert": "errors",
+
+        "with": "resources", "del": "resources",
+
+        "scope": "concurrency", "spawn": "concurrency", "to": "concurrency"
+    }
+}
+
+// ---------------------------------------------------------------- forms
+
+export fn forms() {
+    return [
+        {"name": "import \"path\" as ns", "origin": "bun", "from": "",
+         "reason": "The path is a string naming a file, so it comes first; the local name follows. Only import and as are used, and every language pack already translates both.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "import { a, b } from \"path\"", "origin": "borrowed", "from": "ECMAScript, Python",
+         "reason": "Hundreds of existing programs use it. Kept as an attributed compatibility spelling; no new module syntax is modelled on it.",
+         "bun_rule": "R6", "status": "compatibility"},
+
+        {"name": "import * as ns from \"path\"", "origin": "borrowed", "from": "ECMAScript",
+         "reason": "Verbatim ECMAScript. It was shipped once, then replaced before release; the parser now refuses it and names the Bun form in the error.",
+         "bun_rule": "R5", "status": "rejected"},
+
+        {"name": "export fn / export let / export var", "origin": "borrowed", "from": "ECMAScript",
+         "reason": "The word is borrowed, but Bun keeps only one export mark on the three declarations that may carry it: no export list, no default export, no re-export.",
+         "bun_rule": "R6", "status": "canonical"},
+
+        {"name": "#lang: hi and --lang hi", "origin": "bun", "from": "",
+         "reason": "A program states the human language of its own keywords on its first line; builtin names stay English so every Bun reader can still read it.",
+         "bun_rule": "R7", "status": "canonical"},
+
+        {"name": "bun:math native modules", "origin": "bun", "from": "",
+         "reason": "One prefix for one standard library written in Bun; there is no ambient registry and no lockfile download.",
+         "bun_rule": "R6", "status": "canonical"},
+
+        {"name": "bun check --json", "origin": "bun", "from": "",
+         "reason": "The diagnostic is a value with keys, so an editor or an assistant consumes the same error a human sees.",
+         "bun_rule": "R3", "status": "canonical"},
+
+        {"name": "scope { ... } and spawn", "origin": "bun", "from": "",
+         "reason": "Structured concurrency with soft keywords; no async/await colouring of functions.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "try / catch / finally", "origin": "borrowed", "from": "Python, Java",
+         "reason": "Familiar words, but only runtime errors are catchable; a static error is not a runtime event.",
+         "bun_rule": "R3", "status": "canonical"},
+
+        {"name": "class / None / undefined / unsafe", "origin": "borrowed", "from": "Python, ECMAScript, Rust",
+         "reason": "Deliberately refused. Bun has struct/impl/protocol, one null, and a capability-bounded ffi_load allowlist instead.",
+         "bun_rule": "R2", "status": "rejected"}
+    ]
+}
+
+// ---------------------------------------------------------------- views
+
+export fn canonical_forms() {
+    var out = []
+    for f in forms() {
+        if f["status"] == "canonical" { out.push(f["name"]) }
+    }
+    return out
+}
+
+export fn rejected_forms() {
+    var out = []
+    for f in forms() {
+        if f["status"] == "rejected" { out.push(f["name"]) }
+    }
+    return out
+}
+
+export fn family_names() {
+    var out = []
+    for f in families() { out.push(f["name"]) }
+    return out
+}
+
+export fn rule_ids() {
+    var out = []
+    for r in rules() { out.push(r["id"]) }
+    return out
+}
+
+// ---------------------------------------------------------------- audit
+
+export fn audit() {
+    var checks = []
+    let fams = families()
+    let kws = keywords()
+    let fms = forms()
+    let rs = rules()
+    let fam_names = family_names()
+    let rule_ids_list = rule_ids()
+    var ok = true
+
+    ok = true
+    for f in fams {
+        if not complete(f) { ok = false }
+    }
+    checks.push({"name": "C01 families_fully_attributed", "ok": ok})
+
+    ok = true
+    var seen = []
+    for n in fam_names {
+        if in_list(seen, n) { ok = false }
+        seen.push(n)
+    }
+    checks.push({"name": "C02 family_names_unique", "ok": ok})
+
+    ok = true
+    for f in fams {
+        if not in_list(ORIGINS, f["origin"]) { ok = false }
+    }
+    checks.push({"name": "C03 family_origins_valid", "ok": ok})
+
+    ok = true
+    for f in fams {
+        if f["origin"] == "borrowed" {
+            if f["from"] == "" { ok = false }
+        }
+    }
+    checks.push({"name": "C04 borrowed_families_name_their_source", "ok": ok})
+
+    ok = true
+    for f in fams {
+        if f["origin"] == "bun" {
+            if f["from"] != "" { ok = false }
+        }
+    }
+    checks.push({"name": "C05 bun_families_claim_no_source", "ok": ok})
+
+    ok = true
+    for f in fams {
+        if not in_list(rule_ids_list, f["bun_rule"]) { ok = false }
+    }
+    checks.push({"name": "C06 family_rules_exist", "ok": ok})
+
+    ok = true
+    for k in kws {
+        if not in_list(fam_names, kws[k]) { ok = false }
+    }
+    checks.push({"name": "C07 every_keyword_has_a_known_family", "ok": ok})
+
+    ok = true
+    for f in fms {
+        if not complete(f) { ok = false }
+    }
+    checks.push({"name": "C08 forms_fully_attributed", "ok": ok})
+
+    ok = true
+    for f in fms {
+        if not in_list(ORIGINS, f["origin"]) { ok = false }
+        if not in_list(STATUSES, f["status"]) { ok = false }
+    }
+    checks.push({"name": "C09 form_origins_and_statuses_valid", "ok": ok})
+
+    ok = true
+    for f in fms {
+        if f["origin"] == "bun" {
+            if f["status"] != "canonical" { ok = false }
+        }
+    }
+    checks.push({"name": "C10 bun_forms_are_canonical", "ok": ok})
+
+    ok = true
+    for f in fms {
+        if f["origin"] == "borrowed" {
+            if f["from"] == "" { ok = false }
+        }
+    }
+    checks.push({"name": "C11 borrowed_forms_name_their_source", "ok": ok})
+
+    ok = true
+    for f in fms {
+        if not in_list(rule_ids_list, f["bun_rule"]) { ok = false }
+    }
+    checks.push({"name": "C12 form_rules_exist", "ok": ok})
+
+    ok = in_list(canonical_forms(), "import \"path\" as ns")
+    checks.push({"name": "C13 bun_module_form_is_canonical", "ok": ok})
+
+    ok = in_list(rejected_forms(), "import * as ns from \"path\"")
+    checks.push({"name": "C14 copied_module_form_is_rejected", "ok": ok})
+
+    ok = true
+    var rseen = []
+    for r in rs {
+        if not has_key(r, "id") { ok = false }
+        if not has_key(r, "name") { ok = false }
+        if not has_key(r, "text") { ok = false }
+        if not has_key(r, "source") { ok = false }
+        if has_key(r, "id") {
+            if in_list(rseen, r["id"]) { ok = false }
+            rseen.push(r["id"])
+        }
+    }
+    if rs.len() < 8 { ok = false }
+    checks.push({"name": "C15 rules_complete_and_unique", "ok": ok})
+
+    var passed = 0
+    for c in checks {
+        if c["ok"] { passed = passed + 1 }
+    }
+    let total = checks.len()
+    var verdict = "IDENTITY_LEDGER_INCOMPLETE"
+    if passed == total { verdict = "IDENTITY_LEDGER_CERTIFIED" }
+    return {"checks": checks, "passed": passed, "total": total,
+            "ok": passed == total, "verdict": verdict}
+}
+
+export fn verdict() {
+    let a = audit()
+    var bun_count = 0
+    var borrowed_count = 0
+    var shared_count = 0
+    for f in families() {
+        if f["origin"] == "bun" { bun_count = bun_count + 1 }
+        if f["origin"] == "borrowed" { borrowed_count = borrowed_count + 1 }
+        if f["origin"] == "shared" { shared_count = shared_count + 1 }
+    }
+    return {
+        "verdict": a["verdict"],
+        "checks": str(a["passed"]) + " / " + str(a["total"]),
+        "families": families().len(),
+        "bun_families": bun_count,
+        "borrowed_families": borrowed_count,
+        "shared_families": shared_count,
+        "keywords": keywords().len(),
+        "forms": forms().len(),
+        "canonical_forms": canonical_forms().len(),
+        "rejected_forms": rejected_forms().len(),
+        "claim": "an attributed ledger, NOT a claim that Bun invented everything"
+    }
+}

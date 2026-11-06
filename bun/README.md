@@ -1,9 +1,33 @@
 # Bun
 
-Bun is an original, dynamically-typed programming language with Rust/Go/Python-inspired
-syntax. This repository contains the v0.1 implementation, written in Python: a bytecode
-compiler and stack VM execute programs by default, with the tree-walking interpreter
-retained as the differential oracle.
+Bun is a dynamically-typed programming language with its own grammar and its
+own rules. Its keywords can be written in 118 human languages, its front end
+is also written in Bun, and its engines are checked against one golden
+corpus. Some surface forms are familiar from other languages; they are
+recorded with attribution in `docs/reference/bun-identity.md`, and they are
+not the definition of the language.
+
+This repository contains the v0.1 implementation, written in Python: a
+bytecode compiler and stack VM execute programs by default, with the
+tree-walking interpreter retained as the differential oracle.
+
+## The language is its own
+
+`bun:identity` is the executable record of what Bun took from other
+languages, what it built itself, and what it deliberately refuses. It is
+written in Bun and runs on every engine:
+
+```bash
+bun tools/identity_lab.bun
+bun examples/identity_hi.bun     # the same program in Hindi keywords
+```
+
+The rule, the origin ledger and the checklist for adding a construct are in
+[`docs/reference/bun-identity.md`](docs/reference/bun-identity.md). The
+guard test derives the real keyword set from `bun/lexer.py`, so a new
+keyword without an attributed origin fails the suite. Bun did not invent
+everything; the ledger says exactly which seven of fourteen families are
+borrowed.
 
 ## Requirements
 
@@ -170,7 +194,7 @@ then reached through the namespace, and nothing is flattened into the
 importing scope:
 
 ```bun
-import * as greet from "./greeting"
+import "./greeting" as greet
 
 print(greet.hello("Bun") + greet.punctuation)
 print(greet.punctuation)
@@ -182,9 +206,14 @@ Rules:
 - Module paths are relative to the importing file (`./` or `../`); the `.bun`
   suffix is optional.
 - `import { a, b } from "path"` binds the named exports directly;
-  `import * as ns from "path"` binds one namespace instead, so exports are
+  `import "path" as ns` binds one namespace instead, so exports are
   read as `ns.name` and called as `ns.name(...)`. Both forms work with a
   relative path and with a `bun:` module.
+- `import "path" as ns` is Bun's own form: the path comes first because a
+  path is always a string naming a file, and only `import` and `as` are
+  used, so every language pack can write it. `import * as ns from "path"`
+  (ECMAScript's form) is refused by the parser with a message that points
+  at the Bun form; see `docs/reference/bun-identity.md`.
 - Namespaces keep exports separate: two modules that export the same name
   can be imported under two aliases without colliding, and the exports are
   not added to the importing scope.
@@ -1920,7 +1949,7 @@ than silently miscompiled:
 
 ```bash
 $ bun --engine c program.bun
-error: the C backend does not support namespace imports ('import * as ns from ...')
+error: the C backend does not support namespace imports ('import "path" as ns')
 ```
 
 The `match` of the language is a pattern of the backend too. A case is a
