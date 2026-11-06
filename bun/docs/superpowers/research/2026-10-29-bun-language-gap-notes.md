@@ -32,6 +32,19 @@ records:
 > translates. The parser now refuses the ECMAScript spelling with a message
 > naming the Bun form. The historical wording in sections 1 and 7 below is
 > left as written; `docs/reference/bun-identity.md` is the current record.
+>
+> **Update 3 (the Bun front end reads the packs):** the historical table
+> below is unchanged, but a gap it never listed is now closed. A program
+> with a `#lang:` directive used to fail on `--front-end bun` with
+> `undefined variable 'आयात'`, because the lexer written in Bun only knew
+> English keywords. `selfhost/lexer.bun` now resolves hard and soft
+> aliases and peels glued keywords off names in spaceless scripts; the
+> host hands it the very table the Python lexer built
+> (`Lexer.lang_aliases()`). Both front ends now agree on tokens, AST,
+> bytecode, static errors and execution. See
+> `tests/test_selfhost_langpacks.py` and
+> `docs/reference/bun-identity.md` §4.1. The pack dictionaries remain in
+> `bun/langpacks.py`; this is not a claim that the packs are self-hosted.
 
 The report is kept as it was written, in the language it was written in.
 

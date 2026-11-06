@@ -307,6 +307,8 @@ python3 -m bun --front-end bun program.bun
 
 `--front-end bun` requires `--engine vm`. Type errors come from `selfhost/checker.bun` and match the Python checker message-for-message. Imported modules are still compiled by the Python compiler; self-hosting covers the entry program and module type checking.
 
+Language packs work here too: a `#lang: hi` program is tokenized by `selfhost/lexer.bun` with the same keyword table the Python lexer used, including keywords glued to names in scripts that do not write spaces. The CLI `--lang` flag reaches this front end as well. The Bun lexer owns the word-splitting logic; the host supplies only the pack dictionary, the same way it supplies module resolution (see `docs/reference/bun-identity.md` §4.1). An imported module carrying its own directive is not yet covered by this front end — the boundary is recorded there, not hidden. `tests/test_selfhost_langpacks.py` compares tokens, AST, bytecode, static errors and execution on both front ends.
+
 ## Pythonic surface (Phase 6)
 
 Phase 6 closes the gap between Bun and the surface language of Python.

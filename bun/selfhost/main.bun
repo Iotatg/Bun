@@ -1,4 +1,4 @@
-import { tokenize } from "./lexer"
+import { tokenize_lang } from "./lexer"
 import { parse } from "./parser"
 import { compile_program } from "./compiler"
 import { check_program } from "./checker"
@@ -18,7 +18,15 @@ if mode == "docs" {
     print(dump(DOCS))
 } else {
 let source = read_file(path)
-let tokens = tokenize(source)
+// The host hands the Bun lexer the same localized-keyword table the
+// Python lexer used for this file (see selfhost.py). Without a `#lang:`
+// directive the table is empty and the grammar is plain English.
+let alias_json = argv_get(argv, 4)
+var lang_data: any = null
+if alias_json != "" {
+    lang_data = json_parse(alias_json)
+}
+let tokens = tokenize_lang(source, lang_data)
 if mode == "lex" {
     print(dump(tokens))
 } else {

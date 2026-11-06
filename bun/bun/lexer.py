@@ -121,6 +121,23 @@ class Lexer:
         self._split_keys = sorted(set(self._hard) | set(self._soft),
                                   key=len, reverse=True)
 
+    def lang_aliases(self):
+        """The localized-keyword table, for the Bun-written front end.
+
+        Both front ends must see one grammar. The host owns the language
+        pack data (like module resolution), while the Bun lexer owns the
+        word-splitting logic; this hands it the exact table this lexer
+        built, so the two cannot drift apart.
+        """
+        hard = {word: kind for word, kind in self._hard.items()
+                if word not in KEYWORDS}
+        return {
+            "code": self.lang,
+            "hard": hard,
+            "soft": dict(self._soft),
+            "split": list(self._split_keys),
+        }
+
     def tokenize(self):
         while self.pos < len(self.source):
             ch = self._peek()

@@ -108,6 +108,49 @@ would be a breaking migration and is not done here.
 See `README.md` → Modules and `compatibility.md` §9 for the user-facing
 description; `tests/test_namespace_import.py` for the refusal test.
 
+### 4.1 The front end reads its own language
+
+R7 says a new form must be writable in the reader's own language. That is
+only half true if the front end written in Bun cannot read those programs.
+Until this change, `--front-end bun` treated `#lang: hi` as a comment and
+then reported `undefined variable 'आयात'` for the Hindi word for `import`.
+A Bun front end that cannot read Bun's own language packs is a copy-shaped
+gap in the self-hosting claim, so it is now closed.
+
+`selfhost/lexer.bun` owns the whole word logic: hard aliases keep their own
+spelling in the token value but take the English keyword's type, soft
+keywords become an `IDENT` carrying the English name, and a keyword glued
+to a name in a script without spaces (Chinese, Japanese, Thai and friends)
+is peeled off longest-first. Without a `#lang:` directive no word is ever
+split, so a CJK identifier stays one name. `selfhost/main.bun` passes the
+pack to `tokenize_lang()`; the older `tokenize()` remains the plain-English
+entry point used by the parser and checker for source fragments.
+
+**Where the data comes from.** `bun/lexer.py` → `Lexer.lang_aliases()` hands
+the Bun lexer the exact hard/soft/split tables that the Python lexer built
+for that file. This is one source of truth, so the two front ends cannot
+drift. It is also a real boundary: the host still owns the language-pack
+data, just as it owns module resolution (`module_path`, `read_module`).
+The grammar and the splitting rules are Bun code; the dictionary is not.
+Self-hosting here means *both front ends read one grammar*, not that the
+language packs have been reimplemented in Bun.
+
+**Known boundary, recorded rather than hidden.** The directive (or the
+CLI `--lang` flag, which now reaches both front ends) selects a pack for
+the program being run. A *module* that carries its own `#lang:` directive
+is still read as plain English by the Bun-written checker's module pass
+(`selfhost/checker.bun` tokenizes imported sources with `tokenize()`),
+while the Python checker's `modules.load_module_source()` detects it.
+So the two front ends agree on the entry program, not yet on a per-module
+pack. That is a separate gap and is not claimed as closed here.
+
+`tests/test_selfhost_langpacks.py` holds the contract: twelve programs
+(Hindi with a soft keyword, Chinese glued and spaced, Japanese, Thai,
+French, Hinglish, plain English, no directive, unknown directive) each
+compared for tokens, AST, bytecode, static errors and actual execution on
+both front ends. `examples/identity_hi.bun` is also in the shared corpus,
+so the general parity suite guards it too.
+
 ## 5. Adding a construct
 
 A change that adds a keyword, a statement shape or an operator must:
@@ -148,3 +191,9 @@ arriving from Python. It is not the definition of Bun, and it says so.
 - It does not change the semantics of any existing program except the
   module-binding spelling described in section 4, which was one commit old
   when it was corrected.
+- It does not claim the language packs are self-hosted. The Bun front end
+  reads them using tables supplied by the host (section 4.1); the pack
+  dictionaries themselves still live in `bun/langpacks.py`.
+- It does not claim per-module language packs work on the Bun front end.
+  Only the entry program's directive or `--lang` flag is honoured there
+  (section 4.1).

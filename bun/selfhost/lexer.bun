@@ -135,8 +135,9 @@ fn exponent_ahead(st) {
     return is_digit(peek_at(st, offset))
 }
 
-fn make_lexer(source) {
-    return {"source": source, "pos": 0, "line": 1, "col": 1, "tokens": []}
+fn make_lexer(source, lang) {
+    return {"source": source, "pos": 0, "line": 1, "col": 1,
+            "tokens": [], "lang": lang}
 }
 
 fn peek_at(st, offset) {
@@ -338,6 +339,109 @@ fn fstring_token(st) {
     add_token(st, "FSTRING", body, line, col)
 }
 
+// A localized keyword in a script that writes words without spaces may
+// be glued to the name after it. These are the same code point ranges the
+// Python front end uses, in decimal because Bun keeps its numbers plain.
+fn is_spaceless(text) {
+    var i = 0
+    while i < text.len() {
+        let code = ord(text.slice(i, i + 1))
+        if (code >= 11904 and code <= 40959) or
+           (code >= 43360 and code <= 43391) or
+           (code >= 44032 and code <= 55295) or
+           (code >= 3584 and code <= 3711) or
+           (code >= 6016 and code <= 6143) or
+           (code >= 4096 and code <= 4255) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Peel localized keywords off the front of a glued word. The host sends
+// keys longest-first, so a longer keyword always wins. This mirrors the
+// Python front end and deliberately does not call emit_word back: the
+// keys are all hard aliases, soft aliases or English keywords, so the
+// three tables below cover every one of them.
+fn split_word(st, text, line, col) {
+    let lang = st["lang"]
+    let keys = lang["split"]
+    var index = 0
+    var plain = ""
+    while index < text.len() {
+        var matched = false
+        var ki = 0
+        while ki < keys.len() {
+            let key = keys[ki]
+            if key.len() > 0 and text.slice(index, index + key.len()) == key {
+                if plain.len() > 0 {
+                    add_token(st, "IDENT", plain, line,
+                              col + index - plain.len())
+                    plain = ""
+                }
+                if lang["soft"].has(key) {
+                    add_token(st, "IDENT", lang["soft"].get(key), line,
+                              col + index)
+                } else {
+                    if lang["hard"].has(key) {
+                        add_token(st, lang["hard"].get(key), key, line,
+                                  col + index)
+                    } else {
+                        if KEYWORDS.has(key) {
+                            add_token(st, KEYWORDS.get(key), key, line,
+                                      col + index)
+                        } else {
+                            add_token(st, "IDENT", key, line, col + index)
+                        }
+                    }
+                }
+                index = index + key.len()
+                matched = true
+                break
+            }
+            ki = ki + 1
+        }
+        if not matched {
+            plain = plain + text.slice(index, index + 1)
+            index = index + 1
+        }
+    }
+    if plain.len() > 0 {
+        add_token(st, "IDENT", plain, line, col + index - plain.len())
+    }
+}
+
+// One identifier word. With a language pack the localized word keeps its
+// own spelling in the token value but takes the English keyword's type;
+// a soft keyword becomes an IDENT carrying its English name. Without a
+// pack the word is never split, even in a spaceless script.
+fn emit_word(st, text, line, col) {
+    if text.len() == 0 {
+        return
+    }
+    let lang = st["lang"]
+    if lang != null and lang["code"] != null {
+        if lang["soft"].has(text) {
+            add_token(st, "IDENT", lang["soft"].get(text), line, col)
+            return
+        }
+        if lang["hard"].has(text) {
+            add_token(st, lang["hard"].get(text), text, line, col)
+            return
+        }
+        if is_spaceless(text) {
+            split_word(st, text, line, col)
+            return
+        }
+    }
+    if KEYWORDS.has(text) {
+        add_token(st, KEYWORDS.get(text), text, line, col)
+    } else {
+        add_token(st, "IDENT", text, line, col)
+    }
+}
+
 fn identifier(st) {
     let line = st["line"]
     let col = st["col"]
@@ -346,11 +450,7 @@ fn identifier(st) {
         advance(st)
     }
     let text = st["source"].slice(start, st["pos"])
-    if KEYWORDS.has(text) {
-        add_token(st, KEYWORDS.get(text), text, line, col)
-    } else {
-        add_token(st, "IDENT", text, line, col)
-    }
+    emit_word(st, text, line, col)
 }
 
 fn operator(st) {
@@ -377,8 +477,17 @@ fn operator(st) {
     throw "unexpected character '" + ch + "' at " + str(line) + ":" + str(col)
 }
 
+// Plain English entry point. Kept for the parser and checker, which
+// tokenize source fragments that carry no language pack of their own.
 export fn tokenize(source) {
-    let st = make_lexer(source)
+    return tokenize_lang(source, null)
+}
+
+// The driver uses this one. `lang` is the host-provided localized-keyword
+// table for this very file, or null when it has no `#lang:` directive.
+// The word logic lives here in Bun; the host only supplies the data.
+export fn tokenize_lang(source, lang) {
+    let st = make_lexer(source, lang)
     while st["pos"] < st["source"].len() {
         let ch = peek_at(st, 0)
         if ch == " " or ch == "\t" or ch == "\n" {

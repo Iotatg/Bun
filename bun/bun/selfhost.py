@@ -1,3 +1,4 @@
+import json
 import os
 
 from . import modules
@@ -166,17 +167,26 @@ def _read_module(args):
             "cannot read module '%s': not valid UTF-8" % path)
 
 
-def run_front_end(path, mode="run", check=True):
+def run_front_end(path, mode="run", check=True, lang=None):
     with open(path, "r") as handle:
         source = handle.read()
+    if lang == "auto":
+        from . import langpacks
+        lang = langpacks.detect_auto(source)
     base_dir = os.path.dirname(os.path.abspath(path))
+    lexer = Lexer(source, lang=lang)
     if check or mode in ("run", "check"):
-        Parser(Lexer(source).tokenize()).parse()
+        Parser(lexer.tokenize()).parse()
+    # The Bun-written lexer receives the very same localized-keyword table
+    # this Python Lexer built, so a `#lang:` program reads identically on
+    # both front ends. Host hands over data; Bun owns the word logic.
+    alias_json = json.dumps(lexer.lang_aliases(), ensure_ascii=False,
+                            sort_keys=True)
     vm = VM()
     vm.globals.define(
         "args",
         Builtin("args", lambda args: [path, mode, "1" if check else "0",
-                                      base_dir]),
+                                      base_dir, alias_json]),
         False)
     vm.globals.define("run_code", _make_run_code(path), False)
     vm.globals.define("type_error", Builtin("type_error", _type_error), False)

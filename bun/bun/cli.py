@@ -130,7 +130,7 @@ def run_file(path, check=True, engine="vm", front_end="python",
         return 1
     try:
         if front_end == "bun":
-            run_front_end(path, "run", check=check)
+            run_front_end(path, "run", check=check, lang=lang)
         else:
             run_source(source, filename=path, check=check, engine=engine,
                        program_args=program_args, tier=tier, lang=lang)
