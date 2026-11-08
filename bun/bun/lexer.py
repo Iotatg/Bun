@@ -143,15 +143,22 @@ class Lexer:
             ch = self._peek()
             if ch in " \t\r\n":
                 self._advance()
+            elif ch == ";":
+                # An optional statement terminator.  Bun's grammar already
+                # ends a statement when its expression ends, so the mark is
+                # decorative: skipping it lets one line hold several
+                # statements without changing the grammar.
+                self._advance()
             elif ch == "#" or (ch == "/" and self._peek(1) == "/"):
                 while self.pos < len(self.source) and self._peek() != "\n":
                     self._advance()
             elif ch.isdigit():
                 self._number()
-            elif ch == '"':
-                self._string('"')
-            elif ch == "'":
-                self._string("'")
+            elif ch == '"' or ch == "'":
+                if self.source[self.pos:self.pos + 3] == ch * 3:
+                    self._triple_string(ch)
+                else:
+                    self._string(ch)
             elif ch == "f" and self._peek(1) in ('"', "'"):
                 self._fstring()
             elif ch.isalpha() or ch == "_":
@@ -276,32 +283,63 @@ class Lexer:
                 break
             if ch == "\\":
                 esc_line, esc_col = self.line, self.col
-                nxt = self._advance()
-                mapping = {"n": "\n", "t": "\t", "r": "\r", "b": "\b",
-                           "f": "\f", "v": "\v", "0": "\0", '"': '"',
-                           "'": "'", "\\": "\\"}
-                if nxt in ("x", "u", "U"):
-                    # \xHH, \uHHHH and \UHHHHHHHH name a Unicode code
-                    # point by its hexadecimal value, the way a language
-                    # that owns its own strings should.
-                    count = {"x": 2, "u": 4, "U": 8}[nxt]
-                    digits = ""
-                    for _ in range(count):
-                        if self.pos >= len(self.source):
-                            raise LexError("incomplete unicode escape",
-                                           esc_line, esc_col)
-                        digits += self._advance()
-                    try:
-                        value = int(digits, 16)
-                        chars.append(chr(value))
-                    except (ValueError, OverflowError):
-                        raise LexError(
-                            "invalid unicode escape '\\%s%s'" % (nxt, digits),
-                            esc_line, esc_col)
-                    continue
-                if nxt not in mapping:
-                    raise LexError("invalid escape '\\%s'" % nxt, esc_line, esc_col)
-                chars.append(mapping[nxt])
+                chars.append(self._read_escape(esc_line, esc_col))
+            else:
+                chars.append(ch)
+        self._add(TokenType.STRING, "".join(chars), line, col)
+
+    def _read_escape(self, esc_line, esc_col):
+        """Read the character after a backslash and answer its value."""
+        nxt = self._advance()
+        mapping = {"n": "\n", "t": "\t", "r": "\r", "b": "\b",
+                   "f": "\f", "v": "\v", "0": "\0", '"': '"',
+                   "'": "'", "\\": "\\"}
+        if nxt in ("x", "u", "U"):
+            # \xHH, \uHHHH and \UHHHHHHHH name a Unicode code point by
+            # its hexadecimal value, the way a language that owns its own
+            # strings should.
+            count = {"x": 2, "u": 4, "U": 8}[nxt]
+            digits = ""
+            for _ in range(count):
+                if self.pos >= len(self.source):
+                    raise LexError("incomplete unicode escape",
+                                   esc_line, esc_col)
+                digits += self._advance()
+            try:
+                return chr(int(digits, 16))
+            except (ValueError, OverflowError):
+                raise LexError(
+                    "invalid unicode escape '\\%s%s'" % (nxt, digits),
+                    esc_line, esc_col)
+        if nxt not in mapping:
+            raise LexError("invalid escape '\\%s'" % nxt, esc_line, esc_col)
+        return mapping[nxt]
+
+    def _triple_string(self, quote):
+        """Lex a multiline string delimited by three matching quotes.
+
+        Newlines and single quotes inside the body are ordinary characters;
+        only three quotes in a row end it.  Escapes use the very same table
+        as a single-line string, so the two forms cannot drift apart.
+        """
+        line, col = self.line, self.col
+        self._advance()
+        self._advance()
+        self._advance()
+        chars = []
+        while True:
+            if self.pos >= len(self.source):
+                raise LexError("unterminated multiline string", line, col)
+            if (self._peek() == quote and self._peek(1) == quote
+                    and self._peek(2) == quote):
+                self._advance()
+                self._advance()
+                self._advance()
+                break
+            ch = self._advance()
+            if ch == "\\":
+                esc_line, esc_col = self.line, self.col
+                chars.append(self._read_escape(esc_line, esc_col))
             else:
                 chars.append(ch)
         self._add(TokenType.STRING, "".join(chars), line, col)

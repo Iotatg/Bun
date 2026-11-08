@@ -1104,6 +1104,26 @@ DOCS = {
         "signature": "blake2b_hex(arg0: any) -> string",
         "summary": "Return the hex BLAKE2b digest of some bytes.",
     },
+    "bytes_concat": {
+        "signature": "bytes_concat(arg0: bytes, arg1: bytes) -> bytes",
+        "summary": "Join two native bytes values into a new one.",
+        "example": "print(bytes_len(bytes_concat(bytes_from_list([1]), bytes_from_list([2, 3]))))\n",
+    },
+    "bytes_from_list": {
+        "signature": "bytes_from_list(arg0: list) -> bytes",
+        "summary": "Build a native bytes value from a list of byte values.",
+        "example": "print(type_of(bytes_from_list([1, 2, 3])))\n",
+    },
+    "bytes_len": {
+        "signature": "bytes_len(arg0: bytes) -> int",
+        "summary": "Return the number of bytes in a native bytes value.",
+        "example": "print(bytes_len(bytes_from_list([1, 2, 3])))\n",
+    },
+    "bytes_to_list": {
+        "signature": "bytes_to_list(arg0: bytes) -> list",
+        "summary": "Read the byte values of a native bytes value as a list.",
+        "example": "print(bytes_to_list(bytes_from_list([1, 2, 3])))\n",
+    },
     "center": {
         "signature": "center(arg0: string, arg1: int, arg2: string) -> string",
         "summary": "Centre a string within a width.",
@@ -1117,6 +1137,26 @@ DOCS = {
         "signature": "decimal_add(arg0: string, arg1: string) -> string",
         "summary": "Add two decimal strings exactly, without float error.",
         "example": "print(decimal_add(\"0.1\", \"0.2\"))\n",
+    },
+    "error_code": {
+        "signature": "error_code(arg0: error) -> string",
+        "summary": "Return the code of a typed error value.",
+        "example": "print(error_code(fail_with(\"E_NOPE\")))\n",
+    },
+    "error_message": {
+        "signature": "error_message(arg0: error) -> string",
+        "summary": "Return the message of a typed error value.",
+        "example": "print(error_message(fail_with_message(\"E_X\", \"bad input\")))\n",
+    },
+    "fail_with": {
+        "signature": "fail_with(arg0: string) -> error",
+        "summary": "Build a typed error value with a code; `throw` raises it.",
+        "example": "print(error_code(fail_with(\"E_NOPE\")))\n",
+    },
+    "fail_with_message": {
+        "signature": "fail_with_message(arg0: string, arg1: string) -> error",
+        "summary": "Build a typed error value with a code and a message.",
+        "example": "print(error_message(fail_with_message(\"E_X\", \"bad input\")))\n",
     },
     "format": {
         "signature": "format(arg0: string, arg1: dict) -> string",
@@ -1149,6 +1189,11 @@ DOCS = {
     "hmac_sha512_hex": {
         "signature": "hmac_sha512_hex(arg0: string, arg1: string) -> string",
         "summary": "Return the hex HMAC-SHA512 of a message under a key.",
+    },
+    "is_error": {
+        "signature": "is_error(arg0: any) -> bool",
+        "summary": "Report whether a value is a typed error value.",
+        "example": "print(is_error(fail_with(\"E_NOPE\")))\n",
     },
     "json_equal": {
         "signature": "json_equal(arg0: any, arg1: any) -> bool",

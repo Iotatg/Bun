@@ -1,9 +1,11 @@
-"""Tests of the 0.2.0 maturity wave.
+"""Tests of the 0.2.0 and 0.3.0 maturity waves.
 
 These tests check the things a checklist cannot: that the six registries
 really agree, that the runtime really carries every builtin, that both
-front ends really understand the new escapes, that the toolchain commands
-really do their work, and that the external probe really runs.
+front ends really understand the new escapes and the 0.3.0 syntax, that the
+native bytes / typed-error values really execute, that the toolchain commands
+really do their work, and that the external probe really runs (and that no
+capability is measured by a broken placeholder).
 """
 
 import json
@@ -154,13 +156,111 @@ def test_standard_library_programs(source, expected):
 
 
 # ---------------------------------------------------------------------------
+# The 0.3.0 wave — native bytes, typed errors, and Bun-original syntax
+# ---------------------------------------------------------------------------
+
+def test_the_registry_owns_64_builtins():
+    # 55 from 0.2.0 plus 9 native-value builtins added in 0.3.0.
+    assert len(maturity.SIGNATURES) == 64
+
+
+V030_CASES = [
+    # a native bytes value type, not a list of integers
+    ('print(type_of(bytes_from_list([1, 2, 3])))', "bytes"),
+    ('print(bytes_to_list(bytes_from_list([9, 8, 7])))', "[9, 8, 7]"),
+    ('print(bytes_len(bytes_concat(bytes_from_list([1]), '
+     'bytes_from_list([2, 3]))))', "3"),
+    ('print(bytes_to_list(bytes_from_list([1, 2]) + '
+     'bytes_from_list([3])))', "[1, 2, 3]"),
+    ('print(bytes_from_list([1, 2]) == bytes_from_list([1, 2]))', "true"),
+    ('print(bytes_from_list([1, 2]) == bytes_from_list([1, 3]))', "false"),
+    ('print(bytes_to_list(bytes_slice(bytes_from_list([1, 2, 3]), '
+     '1, 3)))', "[2, 3]"),
+    # a typed error value that a program can hold and inspect
+    ('print(type_of(fail_with("X")))', "error"),
+    ('print(error_code(fail_with("E_NOPE")))', "E_NOPE"),
+    ('print(error_message(fail_with_message("E_BAD", "went wrong")))',
+     "went wrong"),
+    ('print(error_code(fail_with_message("E_BAD", "went wrong")))', "E_BAD"),
+    ('print(is_error(fail_with("X")))', "true"),
+    ('print(is_error(3))', "false"),
+    # string repeat, both operand orders
+    ('print("ab" * 3)', "ababab"),
+    ('print(3 * "xy")', "xyxyxy"),
+    # optional semicolons are decorative statement separators
+    ('var x = 6; x &= 3; print(x)', "2"),
+    # `div` — Bun's own word operator for floor division
+    ('print(7 div 2)', "3"),
+    ('print(7.0 div 2.0)', "3.0"),
+    ('print(2 + 12 div 2)', "8"),
+    # triple-quoted multiline strings, both quote styles
+    ('print("""a\nb""")', "a\nb"),
+    ("print('''x\ny''')", "x\ny"),
+]
+
+
+@pytest.mark.parametrize("source,expected", V030_CASES)
+def test_v030_features_in_the_python_front_end(source, expected):
+    result = program(source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+def test_v030_syntax_parity_across_front_ends_and_engines(tmp_path):
+    source = ('var x = 6; x &= 3; print(x)\n'
+              'print(7 div 2)\n'
+              'print("ab" * 3)\n'
+              'print("""a\nb""")')
+    path = tmp_path / "v030.bun"
+    path.write_text(source + "\n", encoding="utf-8")
+    expected = "2\n3\nababab\na\nb"
+    outputs = []
+    for engine in ("tree", "vm", "register"):
+        result = cli("--engine", engine, str(path))
+        assert result.returncode == 0, result.stderr
+        outputs.append(result.stdout.strip())
+    bun_front = cli("--front-end", "bun", "--engine", "vm", str(path))
+    assert bun_front.returncode == 0, bun_front.stderr
+    outputs.append(bun_front.stdout.strip())
+    assert all(out == expected for out in outputs), outputs
+
+
+def test_the_c_backend_refuses_div_by_name():
+    result = program('print(7 div 2)', "--engine", "c")
+    assert result.returncode != 0
+    assert "does not support the 'div' floor-division operator" in result.stderr
+
+
+def test_floordiv_is_a_real_register_opcode():
+    from bun import regcode, regvm
+    assert regcode.FLOORDIV == "FLOORDIV"
+    assert regcode.BINARY_OPCODES["//"] == regcode.FLOORDIV
+    assert regcode.FLOORDIV in regcode.OPERANDS
+    assert hasattr(regvm.RegisterVM, "_op_floordiv")
+
+
+def test_native_value_classes_are_zero_copy_and_compare_by_content():
+    from bun.values import BunBytes, BunErrorValue, values_equal
+    buf = BunBytes(bytes([1, 2, 3, 4]))
+    assert isinstance(buf.data, memoryview)
+    part = BunBytes(buf.data[1:3])
+    assert bytes(part.data) == b"\x02\x03"
+    # A slice is a view onto the same payload, not a copy or a list.
+    assert part.data.obj is buf.data.obj
+    assert values_equal(BunBytes([1, 2]), BunBytes([1, 2]))
+    assert not values_equal(BunBytes([1, 2]), BunBytes([1, 3]))
+    assert values_equal(BunErrorValue("E", "m"), BunErrorValue("E", "m"))
+    assert not values_equal(BunErrorValue("E", "m"), BunErrorValue("F", "m"))
+
+
+# ---------------------------------------------------------------------------
 # The toolchain
 # ---------------------------------------------------------------------------
 
 def test_version_matches_the_version_file_and_package():
     version_file = open(os.path.join(ROOT, "VERSION"),
                         encoding="utf-8").read().strip()
-    assert __version__ == version_file == "0.2.0"
+    assert __version__ == version_file == "0.3.0"
     assert cli("version", "--short").stdout.strip() == __version__
     assert "Bun %s" % __version__ in cli("version").stdout
 
@@ -242,6 +342,7 @@ def test_engineering_commands_do_real_work():
     assert "coverage:" in cli("coverage").stdout
     assert "pytest" in cli("ci").stdout
     assert "release: dry-run OK" in cli("release", "--dry-run").stdout
+    assert "## 0.3.0" in cli("changelog").stdout
     assert "## 0.2.0" in cli("changelog").stdout
     assert "doctor: ok" in cli("doctor").stdout
     assert "MATURITY:" in cli("maturity").stdout
@@ -250,6 +351,32 @@ def test_engineering_commands_do_real_work():
 # ---------------------------------------------------------------------------
 # The external, falsifiable probe
 # ---------------------------------------------------------------------------
+
+def test_no_capability_probe_is_an_undefined_helper_call():
+    # A capability must be measured by a real program, never by a call to an
+    # undefined `*_probe()` helper (the "tests written != tests executed"
+    # trap that made part of the 0.2.0 D area a false negative).
+    source = open(os.path.join(ROOT, "tools", "maturity_probe.py"),
+                  encoding="utf-8").read()
+    for helper in ("match_pattern_probe()", "nested_generic_probe()",
+                   "fn_type_arg_probe()", "labelled_break_probe()",
+                   "multiline_probe()"):
+        assert helper not in source, "broken placeholder probe: " + helper
+
+
+def test_the_remaining_failures_are_the_documented_gaps():
+    # The six open items are genuine, honestly-measured gaps, not broken
+    # instruments.  Lock this in so a future wave cannot silently "pass"
+    # them by editing the ledger into something easier to satisfy.
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "tools", "maturity_probe.py"),
+         "--json"], cwd=ROOT, capture_output=True, text=True, timeout=600)
+    data = json.loads(result.stdout)
+    failed = {item["id"] for item in data["results"]
+              if not item["passed"]}
+    assert failed == {"D02", "D04", "D05", "D06", "E06", "E07"}, failed
+    assert data["passed"] == 94, data["passed"]
+
 
 def test_the_maturity_probe_reports_a_real_score():
     result = subprocess.run(

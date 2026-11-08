@@ -36,6 +36,7 @@ TYPES = {
     "null": "NULL", "any": "ANY", "list": "LIST", "dict": "DICT",
     "fn": "FN", "secret": "SECRET", "set": "SET", "struct": "STRUCT",
     "enum": "ENUM", "result": "RESULT", "option": "OPTION",
+    "bytes": "BYTES", "error": "ERROR",
 }
 
 

@@ -1113,9 +1113,22 @@ class Parser:
 
     def _factor(self):
         expr = self._unary()
-        while self._peek().type in (TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
-            op = self._advance()
-            expr = ast.Binary(expr, op.value, self._unary(), op.line, op.col)
+        while True:
+            tok = self._peek()
+            if tok.type in (TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
+                op = self._advance()
+                expr = ast.Binary(expr, op.value, self._unary(), op.line, op.col)
+                continue
+            # `div` is a soft word operator, like `match` and `scope`: it
+            # means floor division only where an operator belongs, on the
+            # same line as its left operand.  `//` stays the comment mark,
+            # so a floor division says its name instead of borrowing it.
+            if (tok.type == TokenType.IDENT and tok.value == "div"
+                    and tok.line == self._prev_line()):
+                self._advance()
+                expr = ast.Binary(expr, "//", self._unary(), tok.line, tok.col)
+                continue
+            break
         return expr
 
     def _unary(self):

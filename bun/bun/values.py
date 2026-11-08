@@ -62,6 +62,47 @@ class BunSecret:
         self.value = value
 
 
+class BunBytes:
+    """A native byte buffer, not a list of integers.
+
+    The buffer is a ``memoryview`` over an immutable ``bytes`` object.  A
+    slice hands out another view onto the same memory, so slicing a byte
+    buffer never builds a list and never copies the payload.  Bun programs
+    reach the bytes through the ``bytes_*`` builtins; ``type_of`` calls this
+    value ``bytes``.
+    """
+
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        if isinstance(data, memoryview):
+            self.data = data
+        elif isinstance(data, (bytes, bytearray)):
+            self.data = memoryview(bytes(data))
+        elif isinstance(data, list):
+            self.data = memoryview(bytes(data))
+        else:
+            raise TypeError("BunBytes expects bytes, a bytearray or a list")
+
+    def __len__(self):
+        return len(self.data)
+
+
+class BunErrorValue:
+    """A typed error that a program can hold and inspect.
+
+    Throwing is a separate act: ``fail_with`` builds the value and ``throw``
+    raises it.  Keeping the error as a value lets a ``catch`` clause read its
+    code instead of pattern matching on a message string.
+    """
+
+    __slots__ = ("code", "message")
+
+    def __init__(self, code, message=""):
+        self.code = code
+        self.message = message
+
+
 class ReturnSignal(Exception):
     def __init__(self, value, line=0, col=0):
         super().__init__(value)
@@ -100,6 +141,8 @@ def is_truthy(value):
         return len(value) > 0
     if isinstance(value, list):
         return len(value) > 0
+    if isinstance(value, BunBytes):
+        return len(value.data) > 0
     return True
 
 
@@ -118,6 +161,10 @@ def _stringify(value, seen):
         return value
     if isinstance(value, BunSecret):
         return SECRET_MASK
+    if isinstance(value, BunBytes):
+        return "bytes[" + ", ".join(str(b) for b in value.data) + "]"
+    if isinstance(value, BunErrorValue):
+        return "error(%s)" % value.code
     if isinstance(value, list):
         if id(value) in seen:
             return "[...]"
@@ -165,6 +212,16 @@ def values_equal(a, b):
         return a == b
     if isinstance(a, str) and isinstance(b, str):
         return a == b
+    if isinstance(a, BunBytes) or isinstance(b, BunBytes):
+        # Byte buffers compare by their content, not by identity: two
+        # buffers holding the same bytes are the same value.
+        if not isinstance(a, BunBytes) or not isinstance(b, BunBytes):
+            return False
+        return bytes(a.data) == bytes(b.data)
+    if isinstance(a, BunErrorValue) or isinstance(b, BunErrorValue):
+        if not isinstance(a, BunErrorValue) or not isinstance(b, BunErrorValue):
+            return False
+        return a.code == b.code and a.message == b.message
     if isinstance(a, list) and isinstance(b, list):
         return len(a) == len(b) and all(values_equal(x, y) for x, y in zip(a, b))
     if isinstance(a, BunDict) and isinstance(b, BunDict):
@@ -218,6 +275,10 @@ def repr_value(value):
         return quote_string(value)
     if isinstance(value, BunSecret):
         return SECRET_MASK
+    if isinstance(value, BunBytes):
+        return "bytes[" + ", ".join(str(b) for b in value.data) + "]"
+    if isinstance(value, BunErrorValue):
+        return "error(%s, %s)" % (value.code, quote_string(value.message))
     if isinstance(value, list):
         return "[" + ", ".join(repr_value(item) for item in value) + "]"
     if isinstance(value, BunDict):
@@ -441,6 +502,10 @@ def canonical_dump(value):
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(canonical_dump(item) for item in value) + "]"
+    if isinstance(value, BunBytes):
+        return "[" + ", ".join(str(b) for b in value.data) + "]"
+    if isinstance(value, BunErrorValue):
+        return "{" + quote_string("code") + ": " + quote_string(value.code) + "}"
     if isinstance(value, BunSecret):
         return quote_string(SECRET_MASK)
     if isinstance(value, BunSet):

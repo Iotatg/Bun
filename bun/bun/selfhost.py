@@ -8,7 +8,9 @@ from .errors import BunRuntimeError, BunTypeError
 from .lexer import Lexer
 from .records import fields as record_fields, is_record
 from .parser import Parser
-from .values import Builtin, BunFunction, canonical_dump
+from .values import (
+    Builtin, BunBytes, BunErrorValue, BunFunction, canonical_dump,
+)
 from .vm import VM
 
 SELFHOST_DIR = os.path.join(
@@ -141,6 +143,10 @@ def _type_of(args):
         return "float"
     if isinstance(value, str):
         return "string"
+    if isinstance(value, BunBytes):
+        return "bytes"
+    if isinstance(value, BunErrorValue):
+        return "error"
     if isinstance(value, BunFunction):
         return "fn"
     return "any"

@@ -398,6 +398,20 @@ class RegisterVM:
             frame.set_slot(a, ops.binary_op("/", left, right))
         frame.sp = a + 1
 
+    def _op_floordiv(self, frame, a, b, c):
+        # `div` is explicit floor division.  Two integers take the fast
+        # path; every other pair goes to the shared operator table so the
+        # register engine agrees with the tree and stack engines.
+        left = frame.slot(b)
+        right = frame.slot(c)
+        if type(left) is int and type(right) is int:
+            if right == 0:
+                raise BunRuntimeError("division by zero")
+            frame.set_slot(a, ops.check_int(left // right))
+        else:
+            frame.set_slot(a, ops.binary_op("//", left, right))
+        frame.sp = a + 1
+
     def _op_pow(self, frame, a, b, c):
         left = frame.slot(b)
         right = frame.slot(c)
@@ -969,6 +983,7 @@ _DISPATCH = {
     regcode.SUB: RegisterVM._op_sub,
     regcode.MUL: RegisterVM._op_mul,
     regcode.DIV: RegisterVM._op_div,
+    regcode.FLOORDIV: RegisterVM._op_floordiv,
     regcode.MOD: RegisterVM._op_mod,
     regcode.POW: RegisterVM._op_pow,
     regcode.EQ: RegisterVM._op_eq,

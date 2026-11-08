@@ -5,8 +5,8 @@ from .ints import check as check_int
 from .methods import LIST_METHODS, SECRET_METHODS, STRING_METHODS
 from .set import BunSet, SET_METHODS
 from .values import (
-    Builtin, BunFunction, BunSecret, BunStruct, copy_value, is_number,
-    is_truthy, stringify, values_equal,
+    Builtin, BunBytes, BunErrorValue, BunFunction, BunSecret, BunStruct,
+    copy_value, is_number, is_truthy, stringify, values_equal,
 )
 
 STRUCT_METHODS = {}
@@ -181,6 +181,8 @@ def binary_op(op, left, right):
             return left + right
         if isinstance(left, list) and isinstance(right, list):
             return left + right
+        if isinstance(left, BunBytes) and isinstance(right, BunBytes):
+            return BunBytes(bytes(left.data) + bytes(right.data))
         if is_number(left) and is_number(right):
             if type(left) is int and type(right) is int:
                 return check_int(left + right)
@@ -192,6 +194,18 @@ def binary_op(op, left, right):
         if isinstance(left, BunSet) and isinstance(right, BunSet):
             if op == "-":
                 return left.difference(right)
+        if op == "*":
+            # A string repeated by a count is its own operation, not a
+            # multiplication of two numbers.  Either operand order works;
+            # a negative or non-integral count is not a repetition.
+            if isinstance(left, str) and type(right) is int:
+                if right < 0:
+                    raise BunRuntimeError("string repeat count is negative")
+                return left * right
+            if isinstance(right, str) and type(left) is int:
+                if left < 0:
+                    raise BunRuntimeError("string repeat count is negative")
+                return right * left
         if not (is_number(left) and is_number(right)):
             raise BunRuntimeError("unsupported operands for '%s'" % op)
         if op == "%":
@@ -209,6 +223,15 @@ def binary_op(op, left, right):
         if isinstance(left, int) and isinstance(right, int):
             return check_int(left // right)
         return left / right
+    if op == "//":
+        # The word operator `div`: explicit floor division.  `/` already
+        # floors two integers, but `div` says the intent out loud and also
+        # works when one operand is a float.
+        if not (is_number(left) and is_number(right)):
+            raise BunRuntimeError("unsupported operands for 'div'")
+        if right == 0:
+            raise BunRuntimeError("division by zero")
+        return left // right
     if op == "**":
         return power(left, right)
     if op in ("&", "|", "^", "<<", ">>"):
@@ -292,12 +315,12 @@ def power(left, right):
 
 
 def index_value(obj, index):
-    if isinstance(obj, (list, str)):
+    if isinstance(obj, (list, str, BunBytes)):
         if not isinstance(index, int) or isinstance(index, bool):
             raise BunRuntimeError("index must be an integer")
         if index < 0 or index >= len(obj):
             raise BunRuntimeError("index %d out of range" % index)
-        return obj[index]
+        return obj[index] if not isinstance(obj, BunBytes) else obj.data[index]
     if isinstance(obj, BunDict):
         try:
             return obj.get(index)
@@ -436,6 +459,10 @@ def type_name(value):
         return "set"
     if isinstance(value, BunSecret):
         return "secret"
+    if isinstance(value, BunBytes):
+        return "bytes"
+    if isinstance(value, BunErrorValue):
+        return "error"
     if isinstance(value, BunStruct):
         return value.type_name
     return type(value).__name__

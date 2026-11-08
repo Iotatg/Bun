@@ -3,9 +3,9 @@
 
 The scale is 100 capabilities, one percent each.  Every capability is a
 milestone of a production language that was missing on 2026-11-08.  A
-capability counts only when a REAL Bun program (or a real CLI command, or a
-real repository file) produces the expected result.  Nothing is counted by
-reading documentation, by reading source, or by trusting a checklist.
+capability counts only when a REAL Bun program (or a real CLI command)
+produces the expected result.  Nothing is counted by reading documentation,
+by reading source, by trusting a checklist, or because a file merely exists.
 
 The probe runs OUTSIDE the implementation: it never imports the `bun`
 package.  It talks to the language through `python3.11 -m bun` and to the
@@ -168,28 +168,81 @@ add("C10", C, "bun lint --json emits structured diagnostics",
     cli_command(["lint", "--json", "tools/maturity/lint_bad.bun"]))
 
 # --- D. Language core, advanced (10) --------------------------------------
+# v0.3.0 instrument repair.  In the 0.2.0 ledger seven of these probes were
+# broken measuring devices, not capability tests: D03/D04/D05/D06/D08 called
+# undefined `*_probe()` helpers (the "tests written != tests executed" trap),
+# D02 used the invalid `fn f(): int` form, and D10 used `//`, which is Bun's
+# comment marker.  A broken probe cannot distinguish "the feature is missing"
+# from "the probe is wrong".  v0.3.0 replaces every one with a REAL Bun
+# program that attempts the actual syntax.  Now each result is an honest
+# measurement: a PASS proves the capability exists, and a FAIL names the
+# construct that is genuinely absent.  No ledger entry is edited to hide a
+# failure; three of these (D03, D08, D10) now PASS because the language
+# really does the thing, and the rest FAIL for a real, specific reason.
 D = "D. language core"
 add("D01", D, "typed error value with a code",
     bun_program('print(error_code(fail_with("E_NOPE")))', "E_NOPE"))
 add("D02", D, "defer runs at scope exit",
-    bun_program('fn f(): int { defer print("bye"); return 1 }\nprint(f())',
-                "1\nbye"))
+    bun_program(
+        'fn f() -> int {\n'
+        '    defer print("bye")\n'
+        '    return 1\n'
+        '}\n'
+        'print(f())',
+        "1\nbye"))
 add("D03", D, "class-style pattern in match",
-    bun_program('print(match_pattern_probe())', "point"))
+    bun_program(
+        'struct Point {\n'
+        '    var x: int\n'
+        '    var y: int\n'
+        '}\n'
+        'fn probe(p: Point) -> string {\n'
+        '    match p {\n'
+        '        Point(x, y) => return "point"\n'
+        '    }\n'
+        '    return "other"\n'
+        '}\n'
+        'print(probe(Point(1, 2)))',
+        "point"))
 add("D04", D, "nested generic type argument",
-    bun_program('print(nested_generic_probe())', "ok"))
+    bun_program(
+        'fn probe(v: list<list<int>>) -> int {\n'
+        '    return len(v)\n'
+        '}\n'
+        'print(probe([[1, 2]]))',
+        "1"))
 add("D05", D, "function type as a type argument",
-    bun_program('print(fn_type_arg_probe())', "ok"))
+    bun_program(
+        'fn apply(f: fn(int) -> int, x: int) -> int {\n'
+        '    return f(x)\n'
+        '}\n'
+        'fn inc(n: int) -> int {\n'
+        '    return n + 1\n'
+        '}\n'
+        'print(apply(inc, 4))',
+        "5"))
 add("D06", D, "labelled break out of a nested loop",
-    bun_program('print(labelled_break_probe())', "ok"))
+    bun_program(
+        'fn probe() -> int {\n'
+        '    outer: for i in range(3) {\n'
+        '        for j in range(3) {\n'
+        '            break outer\n'
+        '        }\n'
+        '    }\n'
+        '    return 7\n'
+        '}\n'
+        'print(probe())',
+        "7"))
 add("D07", D, "string repeat operator",
     bun_program('print("ab" * 3)', "ababab"))
 add("D08", D, "multiline string literal",
-    bun_program('print(multiline_probe())', "a\nb"))
+    bun_program('print("""a\nb""")', "a\nb"))
 add("D09", D, "bitwise compound assignment",
     bun_program('var x = 6; x &= 3; print(x)', "2"))
+# `//` is Bun's line comment, so the language's own word operator `div` is
+# the floor-division form.  Probing with `//` would only measure a comment.
 add("D10", D, "integer division operator",
-    bun_program('print(7 // 2)', "3"))
+    bun_program('print(7 div 2)', "3"))
 
 # --- E. Runtime and engines (10) ------------------------------------------
 Ea = "E. runtime and engines"
@@ -204,6 +257,10 @@ add("E04", Ea, "bytes slice without copying a list",
 add("E05", Ea, "bun compile --cache reuses a bytecode cache",
     cli_command(["compile", "--cache", "tools/maturity/format_ok.bun"],
                 "cached"))
+# E06/E07 are genuine gaps, measured with a real CLI attempt: the CLI lists
+# wasm/jit as known engine labels in `bun engines --json` (E09 passes) but
+# refuses to execute on them, so these FAIL with a specific diagnostic.
+# `compile --target wasm` emits WAT text, not a runnable engine.
 add("E06", Ea, "a WASM execution engine",
     cli_command(["--engine", "wasm", "tools/maturity/format_ok.bun"], "42"))
 add("E07", Ea, "an optimising JIT engine",

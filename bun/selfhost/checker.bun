@@ -240,6 +240,15 @@ let BUILTIN_SIGNATURES = {
     "ulid": [[[], "string"]],
     "semver_compare": [[["string", "string"], "int"]],
     "semver_satisfies": [[["string", "string"], "bool"]],
+    "bytes_from_list": [[["list"], "bytes"]],
+    "bytes_to_list": [[["bytes"], "list"]],
+    "bytes_len": [[["bytes"], "int"]],
+    "bytes_concat": [[["bytes", "bytes"], "bytes"]],
+    "fail_with": [[["string"], "error"]],
+    "fail_with_message": [[["string", "string"], "error"]],
+    "error_code": [[["error"], "string"]],
+    "error_message": [[["error"], "string"]],
+    "is_error": [[["any"], "bool"]],
     // END GENERATED MATURITY WAVE 1
 
 }

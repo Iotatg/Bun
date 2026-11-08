@@ -1,5 +1,5 @@
 {
-  "generated_by": "bun pkg lock 0.2.0",
+  "generated_by": "bun pkg lock 0.3.0",
   "manifest": "bun.toml",
   "packages": [
     "ai",
@@ -23,5 +23,5 @@
     "tensor",
     "web"
   ],
-  "sha256": "c5c88c5751ae25f421f7555f9c5b2eeb227a195b667bc5382373268a779f1043"
+  "sha256": "b674178b04535d0971d458618c9e90723281d95e092f6f4e62195749fa8d61ff"
 }

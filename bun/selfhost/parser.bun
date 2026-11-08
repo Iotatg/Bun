@@ -1278,9 +1278,21 @@ fn term(st) {
 
 fn factor(st) {
     var expr = unary(st)
-    while in_types(["STAR", "SLASH", "PERCENT"], peek(st)["type"]) {
-        let op = advance(st)
-        expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": unary(st), "line": op["line"], "col": op["col"]}
+    while true {
+        let tok = peek(st)
+        if in_types(["STAR", "SLASH", "PERCENT"], tok["type"]) {
+            let op = advance(st)
+            expr = {"kind": "Binary", "left": expr, "op": op["value"], "right": unary(st), "line": op["line"], "col": op["col"]}
+        } else {
+            // `div` is a soft word operator: floor division only where an
+            // operator belongs, on the same line as its left operand.
+            if tok["type"] == "IDENT" and tok["value"] == "div" and tok["line"] == prev_line(st) {
+                let op = advance(st)
+                expr = {"kind": "Binary", "left": expr, "op": "//", "right": unary(st), "line": op["line"], "col": op["col"]}
+            } else {
+                break
+            }
+        }
     }
     return expr
 }

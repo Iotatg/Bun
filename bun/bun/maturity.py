@@ -7,8 +7,9 @@ registry, the Bun-written docs mirror, and the C backend's name list), so
 the registries cannot drift apart.
 
 The naming rule: a builtin returns what Bun can hold — a string, an int, a
-float, a bool, a list, or a BunDict.  Byte strings are lists of integers,
-the same representation the crypto builtins already use.
+float, a bool, a list, or a BunDict.  The 0.3.0 wave adds two native value
+types on top of that: `BunBytes` (a byte buffer that slices without copying)
+and `BunErrorValue` (an error with a code that a program can inspect).
 """
 
 import base64
@@ -30,6 +31,7 @@ import zlib
 
 from .dict import BunDict
 from .errors import BunRuntimeError
+from .values import BunBytes, BunErrorValue
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +668,86 @@ def _semver_satisfies(args):
 
 
 # ---------------------------------------------------------------------------
+# Wave 2: native bytes values and typed error values.
+#
+# A byte buffer is NOT a list of integers.  It owns a memoryview, so a slice
+# hands out a second view on the same bytes: no list is built and no payload
+# is copied.  An error is likewise a first-class value with a code; `throw`
+# raises it, but the value can be held, compared and inspected first.
+# ---------------------------------------------------------------------------
+
+def _as_bun_bytes(value, name):
+    if not isinstance(value, BunBytes):
+        raise BunRuntimeError("%s() expects a bytes value" % name)
+    return value
+
+
+def _bytes_from_list(args):
+    _arity("bytes_from_list", args, 1)
+    values = args[0]
+    if not isinstance(values, list):
+        raise BunRuntimeError("bytes_from_list() expects a list of byte values")
+    out = bytearray()
+    for item in values:
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise BunRuntimeError("bytes_from_list() expects integers 0..255")
+        if item < 0 or item > 255:
+            raise BunRuntimeError("bytes_from_list() expects integers 0..255")
+        out.append(item)
+    return BunBytes(bytes(out))
+
+
+def _bytes_to_list(args):
+    _arity("bytes_to_list", args, 1)
+    data = _as_bun_bytes(args[0], "bytes_to_list")
+    return [int(byte) for byte in data.data]
+
+
+def _bytes_len(args):
+    _arity("bytes_len", args, 1)
+    return len(_as_bun_bytes(args[0], "bytes_len").data)
+
+
+def _bytes_concat(args):
+    _arity("bytes_concat", args, 2)
+    left = _as_bun_bytes(args[0], "bytes_concat")
+    right = _as_bun_bytes(args[1], "bytes_concat")
+    return BunBytes(bytes(left.data) + bytes(right.data))
+
+
+def _fail_with(args):
+    """Build a typed error value.  Raising it is a separate act (`throw`)."""
+    _arity("fail_with", args, 1)
+    return BunErrorValue(_text("fail_with", args[0]))
+
+
+def _fail_with_message(args):
+    _arity("fail_with_message", args, 2)
+    return BunErrorValue(_text("fail_with_message", args[0]),
+                         _text("fail_with_message", args[1]))
+
+
+def _as_error(args, name):
+    _arity(name, args, 1)
+    if not isinstance(args[0], BunErrorValue):
+        raise BunRuntimeError("%s() expects an error value" % name)
+    return args[0]
+
+
+def _error_code(args):
+    return _as_error(args, "error_code").code
+
+
+def _error_message(args):
+    return _as_error(args, "error_message").message
+
+
+def _is_error(args):
+    _arity("is_error", args, 1)
+    return isinstance(args[0], BunErrorValue)
+
+
+# ---------------------------------------------------------------------------
 # The registry.  One entry per capability; `sync_maturity.py` mirrors it.
 # ---------------------------------------------------------------------------
 
@@ -730,6 +812,16 @@ SIGNATURES = {
     "ulid": (((), "string"),),
     "semver_compare": ((("string", "string"), "int"),),
     "semver_satisfies": ((("string", "string"), "bool"),),
+
+    "bytes_from_list": ((("list",), "bytes"),),
+    "bytes_to_list": ((("bytes",), "list"),),
+    "bytes_len": ((("bytes",), "int"),),
+    "bytes_concat": ((("bytes", "bytes"), "bytes"),),
+    "fail_with": ((("string",), "error"),),
+    "fail_with_message": ((("string", "string"), "error"),),
+    "error_code": ((("error",), "string"),),
+    "error_message": ((("error",), "string"),),
+    "is_error": ((("any",), "bool"),),
 }
 
 IMPLEMENTATIONS = {
@@ -792,6 +884,16 @@ IMPLEMENTATIONS = {
     "ulid": _ulid,
     "semver_compare": _semver_compare,
     "semver_satisfies": _semver_satisfies,
+
+    "bytes_from_list": _bytes_from_list,
+    "bytes_to_list": _bytes_to_list,
+    "bytes_len": _bytes_len,
+    "bytes_concat": _bytes_concat,
+    "fail_with": _fail_with,
+    "fail_with_message": _fail_with_message,
+    "error_code": _error_code,
+    "error_message": _error_message,
+    "is_error": _is_error,
 }
 
 SUMMARIES = {
@@ -854,6 +956,15 @@ SUMMARIES = {
     "ulid": "Generate a sortable 26-character ULID.",
     "semver_compare": "Compare two semantic versions, returning -1, 0 or 1.",
     "semver_satisfies": "Check a version against a ^, ~, >=, >, <=, < or = range.",
+    "bytes_from_list": "Build a native bytes value from a list of byte values.",
+    "bytes_to_list": "Read the byte values of a native bytes value as a list.",
+    "bytes_len": "Return the number of bytes in a native bytes value.",
+    "bytes_concat": "Join two native bytes values into a new one.",
+    "fail_with": "Build a typed error value with a code; `throw` raises it.",
+    "fail_with_message": "Build a typed error value with a code and a message.",
+    "error_code": "Return the code of a typed error value.",
+    "error_message": "Return the message of a typed error value.",
+    "is_error": "Report whether a value is a typed error value.",
 }
 
 # Every probe in tools/maturity_probe.py that this batch satisfies, used by
@@ -884,6 +995,15 @@ EXAMPLES = {
     "ulid": 'print(len(ulid()))',
     "semver_compare": 'print(semver_compare("1.10.0", "1.2.0"))',
     "semver_satisfies": 'print(semver_satisfies("1.2.3", "^1.0.0"))',
+    "bytes_from_list": 'print(type_of(bytes_from_list([1, 2, 3])))',
+    "bytes_to_list": 'print(bytes_to_list(bytes_from_list([1, 2, 3])))',
+    "bytes_len": 'print(bytes_len(bytes_from_list([1, 2, 3])))',
+    "bytes_concat": 'print(bytes_len(bytes_concat(bytes_from_list([1]), bytes_from_list([2, 3]))))',
+    "fail_with": 'print(error_code(fail_with("E_NOPE")))',
+    "fail_with_message": 'print(error_message(fail_with_message("E_X", "bad input")))',
+    "error_code": 'print(error_code(fail_with("E_NOPE")))',
+    "error_message": 'print(error_message(fail_with_message("E_X", "bad input")))',
+    "is_error": 'print(is_error(fail_with("E_NOPE")))',
 }
 
 

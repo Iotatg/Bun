@@ -124,15 +124,16 @@ LANGUAGE_BUILTINS = frozenset([
     "run_language", "installed_languages",
     # BEGIN GENERATED MATURITY WAVE 1
     "base64url_decode", "base64url_encode", "bitset_get", "bitset_new", "bitset_set", "blake2b_hex",
-    "center", "cookie_parse", "decimal_add", "format", "gzip_compress", "header_parse",
-    "hex_decode", "hex_encode", "hmac_sha256_hex", "hmac_sha512_hex", "json_equal", "json_pointer",
-    "levenshtein", "mime_from_path", "ordered_dict_keys", "ordered_dict_new", "pad_left", "pad_right",
-    "percent_encode", "query_build", "query_parse", "semver_compare", "semver_satisfies", "sha512_hex",
-    "status_class", "status_text", "struct_pack", "struct_unpack", "swap_case", "time_add",
-    "time_days_in_month", "time_diff", "time_epoch_ms", "time_format", "time_is_leap", "time_iso",
-    "time_parse_iso", "time_parts", "time_weekday", "timing_safe_equal", "title_case", "toml_parse",
-    "truncate", "ulid", "unicode_normalize", "url_build", "url_parse", "uuid_v4",
-    "word_wrap",
+    "bytes_concat", "bytes_from_list", "bytes_len", "bytes_to_list", "center", "cookie_parse",
+    "decimal_add", "error_code", "error_message", "fail_with", "fail_with_message", "format",
+    "gzip_compress", "header_parse", "hex_decode", "hex_encode", "hmac_sha256_hex", "hmac_sha512_hex",
+    "is_error", "json_equal", "json_pointer", "levenshtein", "mime_from_path", "ordered_dict_keys",
+    "ordered_dict_new", "pad_left", "pad_right", "percent_encode", "query_build", "query_parse",
+    "semver_compare", "semver_satisfies", "sha512_hex", "status_class", "status_text", "struct_pack",
+    "struct_unpack", "swap_case", "time_add", "time_days_in_month", "time_diff", "time_epoch_ms",
+    "time_format", "time_is_leap", "time_iso", "time_parse_iso", "time_parts", "time_weekday",
+    "timing_safe_equal", "title_case", "toml_parse", "truncate", "ulid", "unicode_normalize",
+    "url_build", "url_parse", "uuid_v4", "word_wrap",
     # END GENERATED MATURITY WAVE 1
 ])
 
@@ -246,6 +247,7 @@ def check_builtins(program):
 # of the refusal.
 REFUSED = {
     regcode.YIELD: "the yield statement",
+    regcode.FLOORDIV: "the 'div' floor-division operator",
 }
 
 # The kinds of a plan of a pattern, as the runtime knows them.

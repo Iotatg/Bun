@@ -13,6 +13,8 @@ STRUCT = "struct"
 ENUM = "enum"
 RESULT = "result"
 OPTION = "option"
+BYTES = "bytes"
+ERROR = "error"
 
 # The names that are another name.  A `number` is a `float` and a `text` is
 # a `string`: the alias is kept in the message of an error, so a program
@@ -22,7 +24,7 @@ TEXT = "text"
 
 TYPE_NAMES = frozenset(
     {INT, FLOAT, STRING, BOOL, NULL, ANY, LIST, DICT, FN, SECRET, SET,
-     STRUCT, ENUM, RESULT, OPTION, NUMBER, TEXT})
+     STRUCT, ENUM, RESULT, OPTION, BYTES, ERROR, NUMBER, TEXT})
 
 # The type every alias stands for.
 ALIASES = {NUMBER: FLOAT, TEXT: STRING}
@@ -56,7 +58,7 @@ BUILTIN_SIGNATURES = {
     "http_post_multipart": [((STRING, DICT, LIST, ANY), DICT)],
     "write_bytes": [((STRING, LIST), INT)],
     "read_bytes": [((STRING,), LIST)],
-    "bytes_slice": [((ANY, INT, INT), LIST)],
+    "bytes_slice": [((BYTES, INT, INT), BYTES), ((ANY, INT, INT), LIST)],
     "bytes_append": [((ANY, ANY), INT)],
     "exec": [((LIST,), DICT), ((LIST, INT), DICT), ((LIST, FLOAT), DICT)],
     "eval": [((STRING,), ANY)],
@@ -259,6 +261,15 @@ BUILTIN_SIGNATURES = {
     "ulid": [((), STRING)],
     "semver_compare": [((STRING, STRING), INT)],
     "semver_satisfies": [((STRING, STRING), BOOL)],
+    "bytes_from_list": [((LIST,), BYTES)],
+    "bytes_to_list": [((BYTES,), LIST)],
+    "bytes_len": [((BYTES,), INT)],
+    "bytes_concat": [((BYTES, BYTES), BYTES)],
+    "fail_with": [((STRING,), ERROR)],
+    "fail_with_message": [((STRING, STRING), ERROR)],
+    "error_code": [((ERROR,), STRING)],
+    "error_message": [((ERROR,), STRING)],
+    "is_error": [((ANY,), BOOL)],
     # END GENERATED MATURITY WAVE 1
 
 }

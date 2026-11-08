@@ -10,7 +10,8 @@ import time
 from .dict import BunDict
 from .set import BunSet
 from .values import (
-    Builtin, BunFunction, BunSecret, canonical_dump, is_truthy, stringify,
+    Builtin, BunBytes, BunErrorValue, BunFunction, BunSecret,
+    canonical_dump, is_truthy, stringify,
 )
 from .errors import BunRuntimeError
 from .generators import is_generator
@@ -439,10 +440,15 @@ def _bytes_append(args):
 
 
 def _bytes_slice(args):
-    """Take a part of a list of byte values."""
+    """Take a part of a byte buffer or of a list of byte values.
+
+    A native `BunBytes` value answers with another view onto the same
+    memory: no list of integers is built and the payload is not copied.
+    The older list form is kept so existing programs keep working.
+    """
     _three("bytes_slice", args)
-    if not isinstance(args[0], list):
-        raise BunRuntimeError("bytes_slice() expects a list of bytes")
+    if not isinstance(args[0], (list, BunBytes)):
+        raise BunRuntimeError("bytes_slice() expects bytes or a list of bytes")
     if not isinstance(args[1], int) or isinstance(args[1], bool):
         raise BunRuntimeError("bytes_slice() expects an integer start")
     if not isinstance(args[2], int) or isinstance(args[2], bool):
@@ -454,6 +460,8 @@ def _bytes_slice(args):
         raise BunRuntimeError("bytes_slice() expects a start before the end")
     if end > len(data):
         end = len(data)
+    if isinstance(data, BunBytes):
+        return BunBytes(data.data[start:end])
     return data[start:end]
 
 
@@ -1697,6 +1705,10 @@ def _type_of(args):
         return "dict"
     if isinstance(value, BunSecret):
         return "secret"
+    if isinstance(value, BunBytes):
+        return "bytes"
+    if isinstance(value, BunErrorValue):
+        return "error"
     if isinstance(value, BunFunction):
         return "fn"
     return "any"
@@ -2342,4 +2354,13 @@ def register_builtins(env, program_args=None):
     env.define("ulid", Builtin("ulid", _maturity.IMPLEMENTATIONS["ulid"]), False)
     env.define("semver_compare", Builtin("semver_compare", _maturity.IMPLEMENTATIONS["semver_compare"]), False)
     env.define("semver_satisfies", Builtin("semver_satisfies", _maturity.IMPLEMENTATIONS["semver_satisfies"]), False)
+    env.define("bytes_from_list", Builtin("bytes_from_list", _maturity.IMPLEMENTATIONS["bytes_from_list"]), False)
+    env.define("bytes_to_list", Builtin("bytes_to_list", _maturity.IMPLEMENTATIONS["bytes_to_list"]), False)
+    env.define("bytes_len", Builtin("bytes_len", _maturity.IMPLEMENTATIONS["bytes_len"]), False)
+    env.define("bytes_concat", Builtin("bytes_concat", _maturity.IMPLEMENTATIONS["bytes_concat"]), False)
+    env.define("fail_with", Builtin("fail_with", _maturity.IMPLEMENTATIONS["fail_with"]), False)
+    env.define("fail_with_message", Builtin("fail_with_message", _maturity.IMPLEMENTATIONS["fail_with_message"]), False)
+    env.define("error_code", Builtin("error_code", _maturity.IMPLEMENTATIONS["error_code"]), False)
+    env.define("error_message", Builtin("error_message", _maturity.IMPLEMENTATIONS["error_message"]), False)
+    env.define("is_error", Builtin("is_error", _maturity.IMPLEMENTATIONS["is_error"]), False)
     # END GENERATED MATURITY WAVE 1

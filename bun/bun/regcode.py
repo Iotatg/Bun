@@ -48,6 +48,7 @@ ADD = "ADD"
 SUB = "SUB"
 MUL = "MUL"
 DIV = "DIV"
+FLOORDIV = "FLOORDIV"
 MOD = "MOD"
 POW = "POW"
 EQ = "EQ"
@@ -71,6 +72,7 @@ BINARY_OPCODES = {
     "-": SUB,
     "*": MUL,
     "/": DIV,
+    "//": FLOORDIV,
     "%": MOD,
     "**": POW,
     "==": EQ,
@@ -241,6 +243,7 @@ OPERANDS = {
     SUB: ("slot", "slot", "slot"),
     MUL: ("slot", "slot", "slot"),
     DIV: ("slot", "slot", "slot"),
+    FLOORDIV: ("slot", "slot", "slot"),
     MOD: ("slot", "slot", "slot"),
     POW: ("slot", "slot", "slot"),
     EQ: ("slot", "slot", "slot"),

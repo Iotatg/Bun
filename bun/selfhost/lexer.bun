@@ -293,6 +293,50 @@ fn string_token(st, quote) {
     add_token(st, "STRING", chars.join(""), line, col)
 }
 
+// A multiline string delimited by three matching quotes.  Newlines and
+// single quotes inside the body are ordinary characters; only three
+// quotes in a row close it.  Escapes use the same helpers as a normal
+// string, so the two front ends cannot disagree about a literal.
+fn triple_string_token(st, quote) {
+    let line = st["line"]
+    let col = st["col"]
+    advance(st)
+    advance(st)
+    advance(st)
+    let chars = []
+    while true {
+        if st["pos"] >= st["source"].len() {
+            throw "unterminated multiline string at " + str(line) + ":" + str(col)
+        }
+        if peek_at(st, 0) == quote and peek_at(st, 1) == quote and peek_at(st, 2) == quote {
+            advance(st)
+            advance(st)
+            advance(st)
+            break
+        }
+        let ch = advance(st)
+        if ch == "\\" {
+            let esc_line = st["line"]
+            let esc_col = st["col"]
+            let nxt = advance(st)
+            if nxt == "x" {
+                chars.push(unicode_escape(st, 2))
+            } else if nxt == "u" {
+                chars.push(unicode_escape(st, 4))
+            } else if nxt == "U" {
+                chars.push(unicode_escape(st, 8))
+            } else if !ESCAPES.has(nxt) {
+                throw "invalid escape at " + str(esc_line) + ":" + str(esc_col)
+            } else {
+                chars.push(ESCAPES.get(nxt))
+            }
+        } else {
+            chars.push(ch)
+        }
+    }
+    add_token(st, "STRING", chars.join(""), line, col)
+}
+
 // Skip a nested string literal that appears inside an interpolated
 // f-string expression.
 fn skip_nested_string(st, quote, line, col) {
@@ -520,7 +564,9 @@ export fn tokenize_lang(source, lang) {
     let st = make_lexer(source, lang)
     while st["pos"] < st["source"].len() {
         let ch = peek_at(st, 0)
-        if ch == " " or ch == "\t" or ch == "\n" {
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r" or ch == ";" {
+            // A semicolon is an optional statement terminator; the grammar
+            // already ends a statement when its expression ends.
             advance(st)
         } else {
             if ch == "#" or (ch == "/" and peek_at(st, 1) == "/") {
@@ -532,7 +578,11 @@ export fn tokenize_lang(source, lang) {
                     number(st)
                 } else {
                     if ch == "\"" or ch == "'" {
-                        string_token(st, ch)
+                        if peek_at(st, 0) == ch and peek_at(st, 1) == ch and peek_at(st, 2) == ch {
+                            triple_string_token(st, ch)
+                        } else {
+                            string_token(st, ch)
+                        }
                     } else {
                         if ch == "f" and (peek_at(st, 1) == "\"" or peek_at(st, 1) == "'") {
                             fstring_token(st)
