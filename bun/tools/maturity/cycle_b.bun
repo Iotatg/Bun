@@ -1,0 +1,4 @@
+// The other half of the cycle.  `bun check --cycles` must find a -> b -> a.
+import "./cycle_a.bun" as a
+
+print("b")

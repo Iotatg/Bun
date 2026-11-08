@@ -1,0 +1,5 @@
+// Deliberately misindented.  `bun fmt` must rewrite a copy of this file.
+fn messy() -> int {
+      return 42
+  }
+print(messy())

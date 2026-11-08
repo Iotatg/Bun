@@ -91,6 +91,29 @@ let ONE_CHAR = {
 
 let ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0", "\"": "\"", "'": "'", "\\": "\\"}
 
+// \xHH, \uHHHH and \UHHHHHHHH name a code point by its hexadecimal value.
+fn hex_value(ch) -> int {
+    let i = index_of("0123456789abcdef", lower(ch))
+    if i == -1 {
+        throw "invalid hex digit '" + ch + "'"
+    }
+    return i
+}
+
+fn unicode_escape(st, count) -> string {
+    var value = 0
+    var i = 0
+    while i < count {
+        if st["pos"] >= st["source"].len() {
+            throw "incomplete unicode escape"
+        }
+        let ch = advance(st)
+        value = value * 16 + hex_value(ch)
+        i = i + 1
+    }
+    return chr(value)
+}
+
 fn is_digit(ch) {
     return ch >= "0" and ch <= "9"
 }
@@ -251,10 +274,17 @@ fn string_token(st, quote) {
                 let esc_line = st["line"]
                 let esc_col = st["col"]
                 let nxt = advance(st)
-                if !ESCAPES.has(nxt) {
+                if nxt == "x" {
+                    chars.push(unicode_escape(st, 2))
+                } else if nxt == "u" {
+                    chars.push(unicode_escape(st, 4))
+                } else if nxt == "U" {
+                    chars.push(unicode_escape(st, 8))
+                } else if !ESCAPES.has(nxt) {
                     throw "invalid escape at " + str(esc_line) + ":" + str(esc_col)
+                } else {
+                    chars.push(ESCAPES.get(nxt))
                 }
-                chars.push(ESCAPES.get(nxt))
             } else {
                 chars.push(ch)
             }

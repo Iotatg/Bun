@@ -1,0 +1,8 @@
+// This program declares a binding it never reads.
+fn main() -> int {
+    let unused = 7
+    let used = 35
+    return used
+}
+
+print(main())

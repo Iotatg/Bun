@@ -1,0 +1,27 @@
+{
+  "generated_by": "bun pkg lock 0.2.0",
+  "manifest": "bun.toml",
+  "packages": [
+    "ai",
+    "discovery",
+    "eth",
+    "game",
+    "identity",
+    "math",
+    "maturity_demo",
+    "nyaya",
+    "physics",
+    "polyglot",
+    "pramana",
+    "quantum",
+    "rea",
+    "science",
+    "sec",
+    "sutra",
+    "sutra_sarva",
+    "sutra_school",
+    "tensor",
+    "web"
+  ],
+  "sha256": "c5c88c5751ae25f421f7555f9c5b2eeb227a195b667bc5382373268a779f1043"
+}

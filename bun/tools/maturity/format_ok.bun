@@ -1,0 +1,6 @@
+// Already formatted.  `bun fmt --check` must accept this file unchanged.
+fn answer() -> int {
+    return 42
+}
+
+print(answer())

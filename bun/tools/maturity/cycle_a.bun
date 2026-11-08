@@ -1,0 +1,4 @@
+// One half of a deliberately cyclic import graph.
+import "./cycle_b.bun" as b
+
+print("a")

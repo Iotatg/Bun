@@ -1495,6 +1495,20 @@ class Parser:
                 if index >= len(text):
                     raise ParseError("invalid escape in f-string", line, col)
                 nxt = text[index]
+                if nxt in ("x", "u", "U"):
+                    count = {"x": 2, "u": 4, "U": 8}[nxt]
+                    digits = text[index + 1:index + 1 + count]
+                    if len(digits) != count:
+                        raise ParseError("incomplete unicode escape in f-string",
+                                         line, col)
+                    try:
+                        out.append(chr(int(digits, 16)))
+                    except (ValueError, OverflowError):
+                        raise ParseError(
+                            "invalid unicode escape '\\%s%s' in f-string"
+                            % (nxt, digits), line, col)
+                    index += 1 + count
+                    continue
                 if nxt not in self._FSTRING_ESCAPES:
                     raise ParseError(
                         "invalid escape '\\%s' in f-string" % nxt, line, col)

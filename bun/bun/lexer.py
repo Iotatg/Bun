@@ -280,6 +280,25 @@ class Lexer:
                 mapping = {"n": "\n", "t": "\t", "r": "\r", "b": "\b",
                            "f": "\f", "v": "\v", "0": "\0", '"': '"',
                            "'": "'", "\\": "\\"}
+                if nxt in ("x", "u", "U"):
+                    # \xHH, \uHHHH and \UHHHHHHHH name a Unicode code
+                    # point by its hexadecimal value, the way a language
+                    # that owns its own strings should.
+                    count = {"x": 2, "u": 4, "U": 8}[nxt]
+                    digits = ""
+                    for _ in range(count):
+                        if self.pos >= len(self.source):
+                            raise LexError("incomplete unicode escape",
+                                           esc_line, esc_col)
+                        digits += self._advance()
+                    try:
+                        value = int(digits, 16)
+                        chars.append(chr(value))
+                    except (ValueError, OverflowError):
+                        raise LexError(
+                            "invalid unicode escape '\\%s%s'" % (nxt, digits),
+                            esc_line, esc_col)
+                    continue
                 if nxt not in mapping:
                     raise LexError("invalid escape '\\%s'" % nxt, esc_line, esc_col)
                 chars.append(mapping[nxt])

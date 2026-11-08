@@ -1562,6 +1562,28 @@ export fn parse(tokens) {
 
 let FSTRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0", "\"": "\"", "'": "'", "\\": "\\"}
 
+fn fstring_hex_value(ch) -> int {
+    let i = index_of("0123456789abcdef", lower(ch))
+    if i == -1 {
+        throw "invalid hex digit in f-string"
+    }
+    return i
+}
+
+fn fstring_unicode_escape(text, index, count) -> string {
+    var value = 0
+    var i = 0
+    while i < count {
+        if index + 1 + i >= text.len() {
+            throw "incomplete unicode escape in f-string"
+        }
+        let ch = text[index + 1 + i]
+        value = value * 16 + fstring_hex_value(ch)
+        i = i + 1
+    }
+    return chr(value)
+}
+
 fn is_space(ch) {
     return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
 }
@@ -1776,11 +1798,22 @@ fn unescape(text, line, col) {
                 throw "invalid escape in f-string"
             }
             let nxt = text[index]
-            if !FSTRING_ESCAPES.has(nxt) {
+            if nxt == "x" or nxt == "u" or nxt == "U" {
+                var count = 2
+                if nxt == "u" {
+                    count = 4
+                }
+                if nxt == "U" {
+                    count = 8
+                }
+                out = out + fstring_unicode_escape(text, index, count)
+                index = index + 1 + count
+            } else if !FSTRING_ESCAPES.has(nxt) {
                 throw "invalid escape '\\" + nxt + "' in f-string"
+            } else {
+                out = out + FSTRING_ESCAPES.get(nxt)
+                index = index + 1
             }
-            out = out + FSTRING_ESCAPES.get(nxt)
-            index = index + 1
         } else {
             out = out + ch
             index = index + 1

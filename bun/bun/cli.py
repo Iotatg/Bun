@@ -35,6 +35,17 @@ Usage:
   bun test --doc [<symbol>]       run the documentation examples
   bun check [--json] <file.bun>   type check a file without running it
   bun compile [--profile] <file>  show the bytecode, or profile the run
+  bun version [--short]           print the semantic version
+  bun fmt [--check] <file.bun>    format a file, or check its formatting
+  bun lint [--json] <file.bun>    report unused bindings
+  bun pkg init|list|lock|verify|search|install   local package manager
+  bun doc --html <out.html>       write a browsable API page
+  bun doc <module> --exports      list the exports of a module
+  bun compile --cache <file>      cache compiled bytecode
+  bun check --cycles <file>       find cyclic imports
+  bun startup | engines | parallel   measure the runtime
+  bun changelog | ci | release | coverage | fuzz | bench | audit | doctor
+  bun maturity [--run]            the 100-capability maturity probe
   bun                             start the interactive REPL
   bun -h | --help                 show this help
 """
@@ -582,6 +593,9 @@ def main(argv=None):
     if args[0] in ("-h", "--help"):
         print(USAGE)
         return 0
+    from . import toolchain
+    if toolchain.wants_toolchain(args[0], args[1:]):
+        return toolchain.dispatch(args[0], args[1:])
     if args[0] == "repl":
         return cmd_repl(args[1:])
     if args[0] == "langs":
@@ -598,7 +612,5 @@ def main(argv=None):
         return cmd_compile(args[1:])
     if args[0] == "test":
         return cmd_test(args[1:])
-        rest = [arg for arg in args[1:] if arg != "--doc"]
-        return cmd_test_doc(rest)
     return run_file(args[0], check=check, engine=engine, front_end=front_end,
                     program_args=args[1:], tier=tier, lang=lang)
