@@ -249,10 +249,14 @@ class Interpreter:
             while is_truthy(self.evaluate(node.condition, env)):
                 try:
                     self.execute(node.body, env)
-                except BreakSignal:
+                except BreakSignal as signal:
+                    if signal.label not in (None, node.label):
+                        raise
                     broke = True
                     break
-                except ContinueSignal:
+                except ContinueSignal as signal:
+                    if signal.label not in (None, node.label):
+                        raise
                     continue
             if not broke and node.orelse is not None:
                 # The else of a loop runs when the loop ends without a
@@ -266,10 +270,14 @@ class Interpreter:
                 self._bind_loop_targets(loop_env, node.targets, item)
                 try:
                     self.execute(node.body, loop_env)
-                except BreakSignal:
+                except BreakSignal as signal:
+                    if signal.label not in (None, node.label):
+                        raise
                     broke = True
                     break
-                except ContinueSignal:
+                except ContinueSignal as signal:
+                    if signal.label not in (None, node.label):
+                        raise
                     continue
             if not broke and node.orelse is not None:
                 # The else of a loop runs when the loop ends without a
@@ -321,9 +329,9 @@ class Interpreter:
             raise BunRuntimeError(stringify(self.evaluate(node.value, env)),
                                   node.line, node.col, cause=cause)
         elif isinstance(node, ast.BreakStmt):
-            raise BreakSignal(node.line, node.col)
+            raise BreakSignal(node.line, node.col, node.label)
         elif isinstance(node, ast.ContinueStmt):
-            raise ContinueSignal(node.line, node.col)
+            raise ContinueSignal(node.line, node.col, node.label)
         elif isinstance(node, ast.AssertStmt):
             if not is_truthy(self.evaluate(node.condition, env)):
                 if node.message is not None:

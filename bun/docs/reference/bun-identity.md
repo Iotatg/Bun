@@ -55,7 +55,7 @@ not a score to be proud of:
 
 `bun:identity` → `keywords()` maps **all 37 keywords** (33 hard keywords
 from `bun/lexer.py` plus the 4 soft keywords from `bun/langpacks.py`) to one
-of those families. `forms()` records 10 sentence shapes with an origin, a
+of those families. `forms()` records 14 sentence shapes with an origin, a
 reason, a rule and a status (`canonical`, `compatibility`, `rejected`).
 
 `audit()` runs 15 falsifiable checks over these tables: complete
@@ -150,6 +150,27 @@ French, Hinglish, plain English, no directive, unknown directive) each
 compared for tokens, AST, bytecode, static errors and actual execution on
 both front ends. `examples/identity_hi.bun` is also in the shared corpus,
 so the general parity suite guards it too.
+
+### 4.2 The four language-core forms of 0.4.0
+
+The 0.4.0 wave had to close four capabilities that the maturity ledger
+measured: a scope-exit action, nested type arguments, a function type as a
+parameter, and a labelled `break`.  A capability is not a spelling, so each
+one was written in Bun's own grammar rather than imported with its
+neighbouring language's punctuation:
+
+| Capability | Bun form | Origin | Why it is Bun's |
+|---|---|---|---|
+| scope-exit action | `on leave { ... }` | bun | A soft keyword pair; lowered to the `try`/`finally` the language already has, so all engines share one semantics and no opcode was added. |
+| nested type argument | `list of list of int`, `dict of string to int` | bun | The type reads as the sentence it describes; `of` and `to` are only type words, so they stay ordinary names in expressions. |
+| function type | `fn(int) -> int` | borrowed (Rust, TypeScript) | The arrow is the common spelling; Bun keeps its own `fn` and checks the whole signature, including the types inside it, before the run. |
+| named loop | `for i in range(3) as outer { ... }` | bun | The name lives in the loop header and uses `as`, a word every pack already translates. `outer: for` remains as compatibility. |
+
+`bun originality` prints the lexical audit behind this table: the keywords
+Bun shares with Python, JavaScript, Go, Rust, C and Java, the one keyword no
+compared language has (`protocol`), and the constructs Bun spells in its own
+way.  The command states its own limit in the output: a keyword is a word,
+not a grammar, so the overlap can neither prove nor disprove a copy.
 
 ## 5. Adding a construct
 

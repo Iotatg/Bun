@@ -911,6 +911,48 @@ for track in tracks {
 A loop has a scope of its own, so the name of the loop is gone when the
 `else` runs.
 
+### A named loop
+
+A loop may carry a name in its header. `break` and `continue` may name it,
+so a nested loop can leave more than the nearest loop.
+
+```bun
+for row in grid as rows {
+    for cell in row {
+        if cell == blocked {
+            continue rows
+        }
+        visit(cell)
+    }
+}
+```
+
+The name uses the word `as`, which every language pack already translates.
+The older prefix form `rows: for row in grid { ... }` is still accepted and
+builds the same tree.
+
+### Leaving a block: `on leave`
+
+`on leave { ... }` runs a block when control leaves the enclosing block: at
+the normal end, on a `return`, on a `break`, or on a `throw`. Handlers run in
+the reverse order of their registration, so the last thing registered is the
+first thing cleaned up.
+
+```bun
+fn read(path: string) -> string {
+    let text = read_file(path)
+    on leave { print("finished " + path) }
+    return text
+}
+```
+
+The block is where a resource is released; it runs even when the `return`
+is taken.
+
+The parser lowers the form to `try`/`finally`, so every engine runs the same
+semantics and no new instruction exists. The block is for effect: it is not
+a second place to return a value.
+
 ### `assert`
 
 ```bun
@@ -1440,9 +1482,11 @@ The rules of the language:
   for every type and the phase adds no opcode.
 - A type parameter outside a function is an unknown type: `let x: T = 1` is an
   error.
-- Only one level of type arguments is written: `list<T>`. A function type as a
-  type argument (`fn(T) -> U`) and the nested generics (`list<list<T>>`) are
-  deferred to a later phase.
+- A type argument may itself be a type with arguments: `list<list<int>>`, or
+  in Bun's word form `list of list of int`. A function type is a type too, so
+  `fn apply(f: fn(int) -> int, x: int) -> int` is checked and the call
+  `f(x)` is checked against the signature. `dict of string to list of int`
+  is the word form of a dictionary with a nested value type.
 
 The checker names the type that does not fit and the bound it does not
 satisfy, because that is the part the program has to change:

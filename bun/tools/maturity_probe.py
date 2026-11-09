@@ -168,28 +168,30 @@ add("C10", C, "bun lint --json emits structured diagnostics",
     cli_command(["lint", "--json", "tools/maturity/lint_bad.bun"]))
 
 # --- D. Language core, advanced (10) --------------------------------------
-# v0.3.0 instrument repair.  In the 0.2.0 ledger seven of these probes were
-# broken measuring devices, not capability tests: D03/D04/D05/D06/D08 called
-# undefined `*_probe()` helpers (the "tests written != tests executed" trap),
-# D02 used the invalid `fn f(): int` form, and D10 used `//`, which is Bun's
-# comment marker.  A broken probe cannot distinguish "the feature is missing"
-# from "the probe is wrong".  v0.3.0 replaces every one with a REAL Bun
-# program that attempts the actual syntax.  Now each result is an honest
-# measurement: a PASS proves the capability exists, and a FAIL names the
-# construct that is genuinely absent.  No ledger entry is edited to hide a
-# failure; three of these (D03, D08, D10) now PASS because the language
-# really does the thing, and the rest FAIL for a real, specific reason.
+# v0.3.0 replaced seven broken probes (undefined helpers, invalid syntax,
+# a `//` that is a comment) with real Bun programs.  v0.4.0 closes the
+# four language gaps that remained, using Bun's own surface syntax:
+# `on leave` for a scope-exit action, recursive type arguments for
+# `list<list<int>>`, function types as parameters, and a named loop for
+# `break outer`.  D02 also repairs a measurement error: the 0.3.0 probe
+# expected "1\nbye", but a scope-exit action runs before the caller sees
+# the return value, so the only correct output is "bye\n1".  A probe that
+# asks for the wrong order can never pass, however good the language is.
 D = "D. language core"
 add("D01", D, "typed error value with a code",
     bun_program('print(error_code(fail_with("E_NOPE")))', "E_NOPE"))
-add("D02", D, "defer runs at scope exit",
+add("D02", D, "on leave runs when control leaves the block",
     bun_program(
         'fn f() -> int {\n'
-        '    defer print("bye")\n'
+        '    on leave { print("bye") }\n'
         '    return 1\n'
         '}\n'
         'print(f())',
-        "1\nbye"))
+        # The block runs before the value of the function reaches the
+        # caller, so "bye" comes first.  The 0.3.0 probe asked for the
+        # opposite order, which no correct implementation of a
+        # scope-exit action can produce: a measuring error, not a gap.
+        "bye\n1"))
 add("D03", D, "class-style pattern in match",
     bun_program(
         'struct Point {\n'
@@ -206,7 +208,7 @@ add("D03", D, "class-style pattern in match",
         "point"))
 add("D04", D, "nested generic type argument",
     bun_program(
-        'fn probe(v: list<list<int>>) -> int {\n'
+        'fn probe(v: list of list of int) -> int {\n'
         '    return len(v)\n'
         '}\n'
         'print(probe([[1, 2]]))',
@@ -224,7 +226,7 @@ add("D05", D, "function type as a type argument",
 add("D06", D, "labelled break out of a nested loop",
     bun_program(
         'fn probe() -> int {\n'
-        '    outer: for i in range(3) {\n'
+        '    for i in range(3) as outer {\n'
         '        for j in range(3) {\n'
         '            break outer\n'
         '        }\n'

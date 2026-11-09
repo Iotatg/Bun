@@ -36,9 +36,11 @@ fn make_state(filename, source) {
     }
 }
 
-fn enter_loop(st, code) {
+fn enter_loop(st, code, node) {
     let context = {
         "code": code,
+        "label": node["label"],
+        "kind": node["kind"],
         "scope_depth": st["scope_depth"],
         "try_depth": st["try_contexts"].len(),
         "for_depth": st["for_depth"],
@@ -70,7 +72,21 @@ fn compile_loop_jump(st, node, code, kind) {
     if st["loops"].len() == 0 {
         throw "'" + kind + "' outside of a loop"
     }
-    let context = st["loops"][st["loops"].len() - 1]
+    var context = st["loops"][st["loops"].len() - 1]
+    if node["label"] != null {
+        context = null
+        var i = st["loops"].len() - 1
+        while i >= 0 {
+            if st["loops"][i]["label"] == node["label"] {
+                context = st["loops"][i]
+                break
+            }
+            i = i - 1
+        }
+        if context == null {
+            throw "unknown loop label '" + node["label"] + "'"
+        }
+    }
     var levels = []
     var idx = context["try_depth"]
     while idx < st["try_contexts"].len() {
@@ -83,12 +99,13 @@ fn compile_loop_jump(st, node, code, kind) {
         emit(code, "EXIT_SCOPE", null, node)
         s = s - 1
     }
-    if kind == "break" {
-        var f = st["for_depth"] - context["for_depth"]
-        while f > 0 {
-            emit(code, "FOR_POP", null, node)
-            f = f - 1
-        }
+    var pops = st["for_depth"] - context["for_depth"]
+    if kind == "continue" and context["kind"] == "ForStmt" {
+        pops = pops - 1
+    }
+    while pops > 0 {
+        emit(code, "FOR_POP", null, node)
+        pops = pops - 1
     }
     let index = emit(code, "JUMP", null, node)
     if kind == "break" {
@@ -620,7 +637,7 @@ fn compile_statement(st, node, code) {
         let head = code.len()
         compile_expr(st, node["condition"], code)
         let exit_jump = emit(code, "JUMP_IF_FALSE", null, node)
-        let context = enter_loop(st, code)
+        let context = enter_loop(st, code, node)
         compile_branch(st, node["body"], code)
         leave_loop(st, context)
         let cont_target = emit(code, "JUMP", head, node)
@@ -638,7 +655,7 @@ fn compile_statement(st, node, code) {
         emit(code, "FOR_SETUP", null, node)
         let head = code.len()
         let exit_jump = emit(code, "FOR_NEXT", null, node)
-        let context = enter_loop(st, code)
+        let context = enter_loop(st, code, node)
         st["for_depth"] = st["for_depth"] + 1
         emit(code, "ENTER_SCOPE", null, node)
         st["scope_depth"] = st["scope_depth"] + 1

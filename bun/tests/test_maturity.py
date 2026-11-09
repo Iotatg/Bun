@@ -1,8 +1,8 @@
-"""Tests of the 0.2.0 and 0.3.0 maturity waves.
+"""Tests of the 0.2.0, 0.3.0 and 0.4.0 maturity waves.
 
 These tests check the things a checklist cannot: that the six registries
 really agree, that the runtime really carries every builtin, that both
-front ends really understand the new escapes and the 0.3.0 syntax, that the
+front ends really understand the new escapes and the 0.4.0 syntax, that the
 native bytes / typed-error values really execute, that the toolchain commands
 really do their work, and that the external probe really runs (and that no
 capability is measured by a broken placeholder).
@@ -260,7 +260,7 @@ def test_native_value_classes_are_zero_copy_and_compare_by_content():
 def test_version_matches_the_version_file_and_package():
     version_file = open(os.path.join(ROOT, "VERSION"),
                         encoding="utf-8").read().strip()
-    assert __version__ == version_file == "0.3.0"
+    assert __version__ == version_file == "0.4.0"
     assert cli("version", "--short").stdout.strip() == __version__
     assert "Bun %s" % __version__ in cli("version").stdout
 
@@ -342,7 +342,7 @@ def test_engineering_commands_do_real_work():
     assert "coverage:" in cli("coverage").stdout
     assert "pytest" in cli("ci").stdout
     assert "release: dry-run OK" in cli("release", "--dry-run").stdout
-    assert "## 0.3.0" in cli("changelog").stdout
+    assert "## 0.4.0" in cli("changelog").stdout
     assert "## 0.2.0" in cli("changelog").stdout
     assert "doctor: ok" in cli("doctor").stdout
     assert "MATURITY:" in cli("maturity").stdout
@@ -365,7 +365,7 @@ def test_no_capability_probe_is_an_undefined_helper_call():
 
 
 def test_the_remaining_failures_are_the_documented_gaps():
-    # The six open items are genuine, honestly-measured gaps, not broken
+    # The two open items are genuine, honestly-measured gaps, not broken
     # instruments.  Lock this in so a future wave cannot silently "pass"
     # them by editing the ledger into something easier to satisfy.
     result = subprocess.run(
@@ -374,8 +374,8 @@ def test_the_remaining_failures_are_the_documented_gaps():
     data = json.loads(result.stdout)
     failed = {item["id"] for item in data["results"]
               if not item["passed"]}
-    assert failed == {"D02", "D04", "D05", "D06", "E06", "E07"}, failed
-    assert data["passed"] == 94, data["passed"]
+    assert failed == {"E06", "E07"}, failed
+    assert data["passed"] == 98, data["passed"]
 
 
 def test_the_maturity_probe_reports_a_real_score():

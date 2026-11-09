@@ -103,6 +103,10 @@ class WhileStmt:
     orelse: object = None
     line: int = 0
     col: int = 0
+    # A loop may carry a name: `outer: while ...`.  A `break` or a
+    # `continue` may name it, so a loop can leave more than the nearest
+    # loop.
+    label: str | None = None
 
 
 @record
@@ -113,6 +117,7 @@ class ForStmt:
     orelse: object = None
     line: int = 0
     col: int = 0
+    label: str | None = None
 
 
 @record
@@ -310,15 +315,30 @@ class ScopeStmt:
 
 
 @record
+class OnLeaveStmt:
+    """`on leave { ... }`: a block that runs when control leaves.
+
+    The parser lowers the statement to a `try`/`finally`, so every
+    engine runs it with the code it already has.  The node only exists
+    between the parse of the statement and the lowering of the block.
+    """
+    body: object
+    line: int = 0
+    col: int = 0
+
+
+@record
 class BreakStmt:
     line: int = 0
     col: int = 0
+    label: str | None = None
 
 
 @record
 class ContinueStmt:
     line: int = 0
     col: int = 0
+    label: str | None = None
 
 
 @record

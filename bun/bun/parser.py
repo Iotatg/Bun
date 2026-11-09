@@ -47,10 +47,21 @@ class Parser:
         statements = []
         while not self._check(TokenType.EOF):
             statements.append(self._statement())
+        # A module is a block too, so `on leave` at the top level runs
+        # when the module ends.
+        self._lower_on_leave(statements, self._peek())
         return ast.Program(statements)
 
     def _statement(self):
         t = self._peek().type
+        # A loop may be named: `outer: for i in ...`.  The name is only a
+        # label when a loop follows it, so an ordinary identifier followed
+        # by a colon is still an ordinary statement.
+        if (t == TokenType.IDENT and self._peek(1).type == TokenType.COLON
+                and self._peek(2).type in (TokenType.FOR, TokenType.WHILE)):
+            label = self._advance()
+            self._advance()
+            return self._labelled_loop(label)
         if t == TokenType.IMPORT:
             return self._import_stmt()
         if t == TokenType.EXPORT:
@@ -101,15 +112,44 @@ class Parser:
             node = self._try_match_stmt()
             if node is not None:
                 return node
+        if (t == TokenType.IDENT and self._peek().value == "on"
+                and self._peek(1).type == TokenType.IDENT
+                and self._peek(1).value == "leave"
+                and self._peek(2).type == TokenType.LBRACE):
+            # `on leave { ... }` is Bun's scope-exit action.  It is a soft
+            # keyword pair, so a program may still use `on` and `leave` as
+            # ordinary names.
+            return self._on_leave_stmt()
         if t == TokenType.THROW:
             return self._throw_stmt()
         if t == TokenType.BREAK:
             kw = self._advance()
-            return ast.BreakStmt(kw.line, kw.col)
+            label = None
+            if (self._check(TokenType.IDENT)
+                    and self._peek().line == kw.line):
+                label = self._advance().value
+            return ast.BreakStmt(kw.line, kw.col, label)
         if t == TokenType.CONTINUE:
             kw = self._advance()
-            return ast.ContinueStmt(kw.line, kw.col)
+            label = None
+            if (self._check(TokenType.IDENT)
+                    and self._peek().line == kw.line):
+                label = self._advance().value
+            return ast.ContinueStmt(kw.line, kw.col, label)
         return self._expr_stmt()
+
+    def _labelled_loop(self, label):
+        if self._check(TokenType.FOR):
+            node = self._for_stmt()
+        else:
+            node = self._while_stmt()
+        node.label = label.value
+        return node
+
+    def _on_leave_stmt(self):
+        kw = self._advance()
+        self._advance()
+        return ast.OnLeaveStmt(self._block(), kw.line, kw.col)
 
     def _var_decl(self, mutable):
         kw = self._advance()
@@ -384,28 +424,80 @@ class Parser:
         return None
 
     def _type_name(self):
-        """Parse a type: a name, or a name with type arguments.
+        """Parse a type.
 
-        A type argument is a plain type name or a type variable, so a
-        type is written `list<T>` and never `list<list<T>>`.
+        A type is a name with optional type arguments, a function type,
+        or a nested combination of the two: `list<list<int>>` and
+        `fn(int) -> list<string>` are both types.  The grammar is
+        recursive, so a type argument is a type.
         """
         if self._check(TokenType.FN):
-            return self._advance().value
+            return self._function_type()
         name = self._expect(TokenType.IDENT, "expected type name").value
+        # Bun's own word form: `list of int`, and `dict of string to int`.
+        # The form reads like the sentence it describes, and it is only
+        # available where a type is expected, so `of` and `to` stay
+        # ordinary names everywhere else.
+        if self._check(TokenType.IDENT) and self._peek().value == "of":
+            self._advance()
+            first = self._type_name()
+            if (name == "dict" and self._check(TokenType.IDENT)
+                    and self._peek().value == "to"):
+                self._advance()
+                second = self._type_name()
+                return "dict<" + first + ", " + second + ">"
+            return name + "<" + first + ">"
         if not self._check(TokenType.LT):
             return name
         self._advance()
         args = []
-        while not self._check(TokenType.GT):
-            args.append(self._type_argument())
+        while not self._at_gt():
+            args.append(self._type_name())
             if not self._match(TokenType.COMMA):
                 break
-        self._expect(TokenType.GT, "expected '>' after type arguments")
+        self._expect_gt("expected '>' after type arguments")
         return name + "<" + ", ".join(args) + ">"
 
-    def _type_argument(self):
-        """Parse one type argument: a type name or a type variable."""
-        return self._expect(TokenType.IDENT, "expected type argument").value
+    def _function_type(self):
+        """Parse a function type: `fn(int, string) -> bool`."""
+        self._advance()
+        if not self._check(TokenType.LPAREN):
+            # A bare `fn` is still the name of the function type.
+            return "fn"
+        self._advance()
+        params = []
+        if not self._check(TokenType.RPAREN):
+            params.append(self._type_name())
+            while self._match(TokenType.COMMA):
+                params.append(self._type_name())
+        self._expect(TokenType.RPAREN,
+                     "expected ')' after the parameters of a function type")
+        self._expect(TokenType.ARROW,
+                     "expected '->' after the parameters of a function type")
+        result = self._type_name()
+        return "fn(" + ", ".join(params) + ") -> " + result
+
+    def _at_gt(self):
+        return self._peek().type in (TokenType.GT, TokenType.RSHIFT)
+
+    def _expect_gt(self, message):
+        """Consume one `>`; a `>>` token gives one `>` and keeps one.
+
+        Nested type arguments end with `>>`, which the lexer reads as the
+        shift operator.  In a type the two characters are two closing
+        brackets, so the parser splits the token.
+        """
+        tok = self._peek()
+        if tok.type == TokenType.GT:
+            return self._advance()
+        if tok.type == TokenType.RSHIFT:
+            from .tokens import Token
+            first = Token(TokenType.GT, ">", tok.line, tok.col)
+            self.tokens[self.pos] = Token(TokenType.GT, ">", tok.line,
+                                          tok.col + 1)
+            return first
+        raise ParseError("%s, found %s" % (message, tok.type),
+                         tok.line, tok.col)
 
     def _import_stmt(self):
         kw = self._advance()
@@ -472,9 +564,19 @@ class Parser:
     def _while_stmt(self):
         kw = self._advance()
         condition = self._expression()
+        label = self._loop_label()
         body = self._block()
         orelse = self._loop_else()
-        return ast.WhileStmt(condition, body, orelse, kw.line, kw.col)
+        return ast.WhileStmt(condition, body, orelse, kw.line, kw.col,
+                             label=label)
+
+    def _loop_label(self):
+        """Parse Bun's `as name` suffix of a loop header."""
+        if not self._check(TokenType.AS):
+            return None
+        self._advance()
+        return self._expect(TokenType.IDENT,
+                            "expected a loop name after 'as'").value
 
     def _loop_else(self):
         """Parse the ``else`` of a loop, the block that runs when the loop
@@ -493,9 +595,11 @@ class Parser:
                                        "expected loop variable name").value)
         self._expect(TokenType.IN, "expected 'in' after loop variable")
         iterable = self._expression()
+        label = self._loop_label()
         body = self._block()
         orelse = self._loop_else()
-        return ast.ForStmt(targets, iterable, body, orelse, kw.line, kw.col)
+        return ast.ForStmt(targets, iterable, body, orelse, kw.line, kw.col,
+                           label=label)
 
     def _assert_stmt(self):
         kw = self._advance()
@@ -1008,7 +1112,28 @@ class Parser:
         while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
             statements.append(self._statement())
         self._expect(TokenType.RBRACE, "expected '}'")
+        self._lower_on_leave(statements, lbrace)
         return ast.Block(statements, lbrace.line, lbrace.col)
+
+    def _lower_on_leave(self, statements, node):
+        """Lower `on leave { H }` to `try { rest } finally { H }`.
+
+        The construct is surface syntax over the `try`/`finally` the
+        language already has, so the tree interpreter, the two virtual
+        machines and the native backend see a statement they know.  A
+        second `on leave` in the rest of the block is lowered first, so
+        the handlers run in the reverse order of their registration.
+        """
+        for index, statement in enumerate(statements):
+            if not isinstance(statement, ast.OnLeaveStmt):
+                continue
+            rest = statements[index + 1:]
+            self._lower_on_leave(rest, node)
+            body = ast.Block(rest, statement.line, statement.col)
+            statements[index:] = [ast.TryStmt(
+                body, [], None, statement.body,
+                statement.line, statement.col)]
+            return
 
     def _expression(self):
         expr = self._coalesce()

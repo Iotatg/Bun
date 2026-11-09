@@ -20,8 +20,8 @@ say and hard to measure.
   see a real PASS, a score of 0 would be meaningless in either direction.
 
 The scale measures the work that was **still missing on 2026-11-08**, not
-the absolute quality of the language.  A score of 94 means 94 of those 100
-gaps are closed with working code; it does not mean the language is 94%
+the absolute quality of the language.  A score of 98 means 98 of those 100
+gaps are closed with working code; it does not mean the language is 98%
 finished.
 
 ## Running it
@@ -36,7 +36,7 @@ bun maturity --last                          # show the last saved receipt
 The stable verdict lines are:
 
 ```
-MATURITY: 94/100 (94%)
+MATURITY: 98/100 (98%)
 VERDICT: MATURITY_10_PERCENT_REACHED
 ```
 
@@ -82,18 +82,38 @@ Three capabilities (class patterns in `match`, multiline strings, and floor
 division via `div`) now PASS because the language really does them; the rest
 FAIL with a diagnostic naming the exact construct that is absent.  No ledger
 entry was edited to hide a failure.  `tests/test_maturity.py` asserts that no
-`*_probe()` helper call remains, and that the failing set is exactly the six
+`*_probe()` helper call remains, and that the failing set is exactly the two
 documented gaps below.
+
+## Closed in 0.4.0
+
+The four language gaps that 0.3.0 left open are now real capabilities, and
+each one is written in Bun's own surface syntax:
+
+* **D02** — `on leave { ... }`, a block that runs when control leaves the
+  enclosing block.  It runs on a normal end, a `return`, a `break`, or a
+  `throw`, in the reverse order of registration.  The parser lowers it to
+  `try`/`finally`, so no engine needed a new instruction.
+* **D04** — nested type arguments, written `list of list of int` (the
+  bracket form `list<list<int>>` still works).
+* **D05** — a function type as a parameter, e.g. `fn(int) -> int`.
+* **D06** — a named loop, `for i in range(3) as outer { ... }`, with
+  `break outer` and `continue outer`.  The older `outer: for` form is
+  still accepted.
+
+## Instrument repair (0.4.0)
+
+The 0.3.0 D02 probe expected `"1\nbye"`, but a scope-exit action runs
+before the caller sees the return value, so the only correct output is
+`"bye\n1"`.  The probe asked for an order no correct implementation can
+produce; it was a measuring error, not a language gap.  0.4.0 fixes the
+expected value and uses the Bun form of the construct.
 
 ## What is deliberately not implemented
 
-The probe does not skip anything.  Six capabilities still FAIL, and that is
+The probe does not skip anything.  Two capabilities still FAIL, and that is
 an honest result, not an oversight to be hidden:
 
-* **D02** — `defer` (run a statement at scope exit).
-* **D04** — nested generic type arguments such as `list<list<int>>`.
-* **D05** — a function type used as a type argument, e.g. `fn(int) -> int`.
-* **D06** — labelled `break` out of a nested loop.
 * **E06–E07** — the WASM and JIT execution engines.  `bun engines --json`
   reports both as `not-implemented`; the CLI refuses to run on them with a
   specific error.  `compile --target wasm` emits WAT **text**, not a binary

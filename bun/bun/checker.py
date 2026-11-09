@@ -39,6 +39,9 @@ class Checker:
         # before the program runs, the way it rejects an unknown field.
         self.namespace_types = {}
         self.loop_depth = 0
+        # The labels of the loops that enclose the statement being
+        # checked, innermost last.  A `break name` must name one of them.
+        self.loop_labels = []
         self.module_names = set()
         self.name_stack = []
         self.function_depth = 0
@@ -458,11 +461,13 @@ class Checker:
         elif isinstance(node, ast.WhileStmt):
             self._expr(node.condition, scope)
             self.loop_depth += 1
+            self.loop_labels.append(node.label)
             try:
                 self._statements(node.body.statements, dict(scope))
                 if node.orelse is not None:
                     self._statement(node.orelse, dict(scope))
             finally:
+                self.loop_labels.pop()
                 self.loop_depth -= 1
         elif isinstance(node, ast.ForStmt):
             element = self._walked_element(node.iterable, scope, node)
@@ -470,6 +475,7 @@ class Checker:
             for name in node.targets:
                 loop_scope[name] = Binding(element or types.ANY)
             self.loop_depth += 1
+            self.loop_labels.append(node.label)
             try:
                 self._statements(node.body.statements, loop_scope)
                 if node.orelse is not None:
@@ -477,6 +483,7 @@ class Checker:
                     # loop is gone by then.
                     self._statement(node.orelse, dict(scope))
             finally:
+                self.loop_labels.pop()
                 self.loop_depth -= 1
         elif isinstance(node, ast.AssertStmt):
             self._expr(node.condition, scope)
@@ -541,13 +548,9 @@ class Checker:
             if node.cause is not None:
                 self._expr(node.cause, scope)
         elif isinstance(node, ast.BreakStmt):
-            if self.loop_depth == 0:
-                raise BunTypeError(
-                    "'break' outside of a loop", node.line, node.col)
+            self._check_loop_jump(node, "break")
         elif isinstance(node, ast.ContinueStmt):
-            if self.loop_depth == 0:
-                raise BunTypeError(
-                    "'continue' outside of a loop", node.line, node.col)
+            self._check_loop_jump(node, "continue")
         else:
             raise BunTypeError(
                 "cannot check statement: %s" % type(node).__name__,
@@ -614,6 +617,12 @@ class Checker:
             return
         if self._is_type_var(name):
             return
+        if types.is_function_type(name):
+            params, result = types.function_signature(name)
+            for param in params:
+                self._check_annotation(param, node)
+            self._check_annotation(result, node)
+            return
         base = types.base_type(name)
         if (types.is_known_type(base) or base in self.structs
                 or base in self.enums):
@@ -623,6 +632,18 @@ class Checker:
         if name in self.protocols:
             return
         raise BunTypeError("unknown type '%s'" % name, node.line, node.col)
+
+    def _check_loop_jump(self, node, kind):
+        """Check a `break` or a `continue`, with or without a label."""
+        if self.loop_depth == 0:
+            raise BunTypeError(
+                "'%s' outside of a loop" % kind, node.line, node.col)
+        if node.label is None:
+            return
+        if node.label not in self.loop_labels:
+            raise BunTypeError(
+                "unknown loop label '%s'" % node.label,
+                node.line, node.col)
 
     def _check_protocol(self, node, scope):
         """Check a protocol: the signatures of its methods."""
@@ -1154,6 +1175,20 @@ class Checker:
             return types.ANY
         if binding.type == types.STRUCT:
             return self._constructor_call(name, arg_types, node)
+        if types.is_function_type(binding.type):
+            params, result = types.function_signature(binding.type)
+            if len(arg_types) != len(params):
+                raise BunTypeError(
+                    "'%s' expects %d argument(s), got %d"
+                    % (name, len(params), len(arg_types)),
+                    node.line, node.col)
+            for index, (arg_type, param) in enumerate(zip(arg_types, params)):
+                if not types.is_assignable(arg_type, param):
+                    raise BunTypeError(
+                        "argument %d of '%s' has type '%s', not '%s'"
+                        % (index + 1, name, arg_type, param),
+                        node.line, node.col)
+            return result
         if binding.type != types.FN:
             raise BunTypeError(
                 "'%s' of type '%s' is not callable" % (name, binding.type),

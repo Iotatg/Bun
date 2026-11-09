@@ -4,6 +4,62 @@ All notable changes to the Bun language are recorded here.  The version
 number is the one `bun version` prints; a release is only made after the
 full test suite passes and the maturity probe has written a real receipt.
 
+## 0.4.0 — 2026-11-09
+
+The language-core wave.  It closes the four language gaps that the 0.3.0
+ledger left open, writes each one in Bun's own surface syntax, and repairs
+a second measurement error in the ledger.  The score goes from `94/100`
+to `98/100`; `D` is now `10/10`.
+
+- **`on leave { ... }` — a scope-exit action.**  The block runs when
+  control leaves the enclosing block, in the reverse order of
+  registration, and it runs on a normal end, a `return`, a `break`, or a
+  `throw`.  It is Bun's own form: a soft keyword pair, not a borrowed
+  `defer`.  The parser lowers it to `try`/`finally`, so the tree
+  interpreter, both virtual machines, the native C backend and the
+  Bun-written front end run it with code they already have; there is no
+  new opcode and no second semantics.
+- **Recursive type arguments, in Bun's word form.**  `list of list of
+  int` and `dict of string to list of int` are types; the bracket form
+  `list<list<int>>` still works.  The lexer reads `>>` as a shift token,
+  so the type parser splits it into two closing brackets only in a type.
+  `types.type_args()` now splits nested argument lists on the commas that
+  are not inside a nested type.
+- **Function types as parameters.**  `fn(int) -> int` is parsed,
+  checked (including the types inside it), and callable.  A function
+  value of type `fn` is assignable to a declared function type with the
+  same arity; the checker rejects a wrong argument type and an unknown
+  type inside the signature.
+- **Named loops.**  `for i in range(3) as outer { ... }` names a loop;
+  `break outer` leaves it and `continue outer` restarts it from a nested
+  loop.  The older `outer: for ...` form is still accepted and produces
+  the same AST.  The compiler pops the `for` iterators between the jump
+  and its target, so a `continue` to an outer loop does not leak the
+  iterators of the loops it leaves.
+- **`bun originality`.**  A lexical audit, not a proof: it reports the
+  keywords Bun shares with Python, JavaScript, Go, Rust, C and Java, the
+  one keyword no compared language has (`protocol`), and the constructs
+  Bun spells in its own way (`on leave`, `for ... as name`, `list of
+  int`, `div`, `import "path" as ns`, `scope`, `match` as an expression,
+  `#lang:`, `bun:<name>`).  The command states its own limit in the
+  output.
+
+### Honest score breakdown
+
+`D` moves from `6/10` to `10/10`; `E` stays `8/10`.  The two remaining
+FAILs are the WASM (E06) and JIT (E07) execution engines, measured with a
+real CLI attempt.  The ledger is now `98/100`.
+
+`D02` also repairs an instrument error: the 0.3.0 probe expected
+`"1\nbye"`, but a scope-exit action runs before the caller sees the
+return value, so the only correct output is `"bye\n1"`.  A probe that
+asks for the wrong order can never pass, however good the language is.
+No ledger entry was edited to hide a failure.
+
+`98/100` still does not mean "the language is 98% finished"; it means 98
+of the 100 capabilities that were missing on 2026-11-08 now have working
+code.
+
 ## 0.3.0 — 2026-11-08
 
 The second maturity wave.  It adds native runtime value types, four pieces

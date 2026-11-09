@@ -59,6 +59,13 @@ fn expect(st, token_type, message) {
 
 fn statement(st) {
     let t = peek(st)["type"]
+    // A loop may be named: `outer: for i in ...`.  The name is only a
+    // label when a loop follows it.
+    if t == "IDENT" and peek_token(st, 1)["type"] == "COLON" and (peek_token(st, 2)["type"] == "FOR" or peek_token(st, 2)["type"] == "WHILE") {
+        let label = advance(st)
+        advance(st)
+        return labelled_loop(st, label["value"])
+    }
     if t == "IMPORT" {
         return import_stmt(st)
     }    if t == "EXPORT" {
@@ -128,18 +135,43 @@ fn statement(st) {
             return node
         }
     }
+    if t == "IDENT" and peek(st)["value"] == "on" and peek_token(st, 1)["type"] == "IDENT" and peek_token(st, 1)["value"] == "leave" and peek_token(st, 2)["type"] == "LBRACE" {
+        // `on leave { ... }` is Bun's scope-exit action.
+        let kw = advance(st)
+        advance(st)
+        return {"kind": "OnLeaveStmt", "body": block(st), "line": kw["line"], "col": kw["col"]}
+    }
     if t == "THROW" {
         return throw_stmt(st)
     }
     if t == "BREAK" {
         let kw = advance(st)
-        return {"kind": "BreakStmt", "line": kw["line"], "col": kw["col"]}
+        var label = null
+        if check(st, "IDENT") and peek(st)["line"] == kw["line"] {
+            label = advance(st)["value"]
+        }
+        return {"kind": "BreakStmt", "line": kw["line"], "col": kw["col"], "label": label}
     }
     if t == "CONTINUE" {
         let kw = advance(st)
-        return {"kind": "ContinueStmt", "line": kw["line"], "col": kw["col"]}
+        var label = null
+        if check(st, "IDENT") and peek(st)["line"] == kw["line"] {
+            label = advance(st)["value"]
+        }
+        return {"kind": "ContinueStmt", "line": kw["line"], "col": kw["col"], "label": label}
     }
     return expr_stmt(st)
+}
+
+fn labelled_loop(st, label) {
+    var node = null
+    if check(st, "FOR") {
+        node = for_stmt(st)
+    } else {
+        node = while_stmt(st)
+    }
+    node["label"] = label
+    return node
 }
 
 fn binding_name(st) {
@@ -429,30 +461,77 @@ fn opt_type(st) {
 }
 
 fn type_name(st) {
-    // A type is a name, or a name with type arguments: `list<T>`. A
-    // type argument is a plain type name or a type variable, so a type
-    // is never written `list<list<T>>`.
+    // A type is a name with optional type arguments, a function type, or
+    // a nested combination of the two: `list<list<int>>` and
+    // `fn(int) -> list<string>` are both types.
     if check(st, "FN") {
-        return advance(st)["value"]
+        return function_type(st)
     }
     let name = expect(st, "IDENT", "expected type name")["value"]
+    // Bun's own word form: `list of int` and `dict of string to int`.
+    if check(st, "IDENT") and peek(st)["value"] == "of" {
+        advance(st)
+        let first = type_name(st)
+        if name == "dict" and check(st, "IDENT") and peek(st)["value"] == "to" {
+            advance(st)
+            let second = type_name(st)
+            return "dict<" + first + ", " + second + ">"
+        }
+        return name + "<" + first + ">"
+    }
     if !check(st, "LT") {
         return name
     }
     advance(st)
     let args = []
-    while !check(st, "GT") {
-        args.push(type_argument(st))
+    while !at_gt(st) {
+        args.push(type_name(st))
         if match_token(st, ["COMMA"]) == null {
             break
         }
     }
-    expect(st, "GT", "expected '>' after type arguments")
+    expect_gt(st, "expected '>' after type arguments")
     return name + "<" + join_types(args) + ">"
 }
 
-fn type_argument(st) {
-    return expect(st, "IDENT", "expected type argument")["value"]
+fn function_type(st) {
+    advance(st)
+    if !check(st, "LPAREN") {
+        return "fn"
+    }
+    advance(st)
+    let params = []
+    if !check(st, "RPAREN") {
+        params.push(type_name(st))
+        while match_token(st, ["COMMA"]) != null {
+            params.push(type_name(st))
+        }
+    }
+    expect(st, "RPAREN", "expected ')' after the parameters of a function type")
+    expect(st, "ARROW", "expected '->' after the parameters of a function type")
+    let result = type_name(st)
+    return "fn(" + join_types(params) + ") -> " + result
+}
+
+fn at_gt(st) {
+    let t = peek(st)["type"]
+    return t == "GT" or t == "RSHIFT"
+}
+
+fn expect_gt(st, message) {
+    // A `>>` token gives one `>` and keeps one: the two characters close
+    // two nested type arguments.
+    let tok = peek(st)
+    if tok["type"] == "GT" {
+        advance(st)
+        return
+    }
+    if tok["type"] == "RSHIFT" {
+        let replacement = {"type": "GT", "value": ">", "line": tok["line"], "col": tok["col"] + 1}
+        st["tokens"][st["pos"]] = replacement
+        return
+    }
+    throw message + ", found " + tok["type"]
 }
 
 fn join_types(args) {
@@ -563,9 +642,19 @@ fn if_stmt(st) {
 fn while_stmt(st) {
     let kw = advance(st)
     let condition = expression(st)
+    let label = loop_label(st)
     let body = block(st)
     let orelse = loop_else(st)
-    return {"kind": "WhileStmt", "condition": condition, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"]}
+    return {"kind": "WhileStmt", "condition": condition, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"], "label": label}
+}
+
+fn loop_label(st) {
+    // Bun's `as name` suffix of a loop header: `for i in xs as outer`.
+    if !check(st, "AS") {
+        return null
+    }
+    advance(st)
+    return expect(st, "IDENT", "expected a loop name after 'as'")["value"]
 }
 
 fn loop_else(st) {
@@ -589,9 +678,10 @@ fn for_stmt(st) {
     }
     expect(st, "IN", "expected 'in' after loop variable")
     let iterable = expression(st)
+    let label = loop_label(st)
     let body = block(st)
     let orelse = loop_else(st)
-    return {"kind": "ForStmt", "targets": targets, "iterable": iterable, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"]}
+    return {"kind": "ForStmt", "targets": targets, "iterable": iterable, "body": body, "orelse": orelse, "line": kw["line"], "col": kw["col"], "label": label}
 }
 
 fn assert_stmt(st) {
@@ -1161,7 +1251,45 @@ fn block(st) {
         statements.push(statement(st))
     }
     expect(st, "RBRACE", "expected '}'")
-    return {"kind": "Block", "statements": statements, "line": lbrace["line"], "col": lbrace["col"]}
+    let lowered = lower_on_leave(statements, lbrace)
+    return {"kind": "Block", "statements": lowered, "line": lbrace["line"], "col": lbrace["col"]}
+}
+
+fn lower_on_leave(statements, node) {
+    // `on leave { H }` becomes `try { rest } finally { H }`.  The
+    // construct is surface syntax over the `try`/`finally` the language
+    // already has, so every engine runs it without a new instruction.
+    var i = 0
+    while i < statements.len() {
+        if statements[i]["kind"] == "OnLeaveStmt" {
+            var rest = []
+            var j = i + 1
+            while j < statements.len() {
+                rest.push(statements[j])
+                j = j + 1
+            }
+            let lowered = lower_on_leave(rest, node)
+            let try_node = {
+                "kind": "TryStmt",
+                "try_block": {"kind": "Block", "statements": lowered, "line": statements[i]["line"], "col": statements[i]["col"]},
+                "catch_params": [],
+                "catch_block": null,
+                "finally_body": statements[i]["body"],
+                "line": statements[i]["line"],
+                "col": statements[i]["col"]
+            }
+            var out = []
+            var k = 0
+            while k < i {
+                out.push(statements[k])
+                k = k + 1
+            }
+            out.push(try_node)
+            return out
+        }
+        i = i + 1
+    }
+    return statements
 }
 
 fn expression(st) {
@@ -1565,7 +1693,8 @@ export fn parse(tokens) {
     while !check(st, "EOF") {
         statements.push(statement(st))
     }
-    return {"kind": "Program", "statements": statements}
+    let lowered = lower_on_leave(statements, {"line": 0, "col": 0})
+    return {"kind": "Program", "statements": lowered}
 }
 
 // ------------------------------------------------------------------

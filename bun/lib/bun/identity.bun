@@ -215,7 +215,23 @@ export fn forms() {
 
         {"name": "class / None / undefined / unsafe", "origin": "borrowed", "from": "Python, ECMAScript, Rust",
          "reason": "Deliberately refused. Bun has struct/impl/protocol, one null, and a capability-bounded ffi_load allowlist instead.",
-         "bun_rule": "R2", "status": "rejected"}
+         "bun_rule": "R2", "status": "rejected"},
+
+        {"name": "on leave { ... }", "origin": "bun", "from": "",
+         "reason": "A block that runs when control leaves the enclosing block, in reverse order, on a normal end, a return, a break or a throw. The parser lowers it to the try/finally every engine already has, so there is one semantics and no new opcode.",
+         "bun_rule": "R1", "status": "canonical"},
+
+        {"name": "for ... as name", "origin": "bun", "from": "",
+         "reason": "A loop carries a name in its own header, and break/continue may name it. The older `name: for` prefix is compatibility; the suffix uses only the word `as` every pack already translates.",
+         "bun_rule": "R7", "status": "canonical"},
+
+        {"name": "list of int / dict of string to int", "origin": "bun", "from": "",
+         "reason": "A type written as the sentence it describes. The bracket form list<int> stays as compatibility; the word form is the canonical spelling of a nested type.",
+         "bun_rule": "R6", "status": "canonical"},
+
+        {"name": "fn(int) -> int", "origin": "borrowed", "from": "Rust, TypeScript",
+         "reason": "The arrow and the parameter list are the common spelling, but Bun uses its own fn and checks the signature, including the types inside it, before the run.",
+         "bun_rule": "R3", "status": "canonical"}
     ]
 }
 

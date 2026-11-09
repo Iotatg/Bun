@@ -14,6 +14,8 @@ stub that prints a word it has not earned:
     coverage  really measures line execution with `trace`
     fuzz      really feeds random input to the lexer
     doctor    really checks the installation
+    originality reports the lexical overlap with six languages and the
+              forms Bun spells in its own way
 
 The scope of a command that is deliberately limited is stated in its
 output.  WASM emission is WAT text, not a binary module; `ci` collects the
@@ -800,6 +802,128 @@ def cmd_maturity(args):
 
 
 # ---------------------------------------------------------------------------
+# originality
+# ---------------------------------------------------------------------------
+
+# The keywords of six languages Bun is often compared with.  The table is
+# data, not a claim: the command below reports the overlap it can measure
+# and the constructs Bun added that none of these languages spells the
+# same way.
+OTHER_KEYWORDS = {
+    "python": {
+        "False", "None", "True", "and", "as", "assert", "async", "await",
+        "break", "class", "continue", "def", "del", "elif", "else",
+        "except", "finally", "for", "from", "global", "if", "import", "in",
+        "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+        "try", "while", "with", "yield",
+    },
+    "javascript": {
+        "break", "case", "catch", "class", "const", "continue", "debugger",
+        "default", "delete", "do", "else", "export", "extends", "finally",
+        "for", "function", "if", "import", "in", "instanceof", "let", "new",
+        "null", "return", "super", "switch", "this", "throw", "try",
+        "typeof", "var", "void", "while", "with", "yield",
+    },
+    "go": {
+        "break", "case", "chan", "const", "continue", "default", "defer",
+        "else", "fallthrough", "for", "func", "go", "goto", "if", "import",
+        "interface", "map", "package", "range", "return", "select",
+        "struct", "switch", "type", "var",
+    },
+    "rust": {
+        "as", "async", "await", "break", "const", "continue", "crate",
+        "dyn", "else", "enum", "extern", "false", "fn", "for", "if",
+        "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+        "ref", "return", "self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while",
+    },
+    "c": {
+        "auto", "break", "case", "char", "const", "continue", "default",
+        "do", "double", "else", "enum", "extern", "float", "for", "goto",
+        "if", "inline", "int", "long", "register", "restrict", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch",
+        "typedef", "union", "unsigned", "void", "volatile", "while",
+    },
+    "java": {
+        "abstract", "assert", "boolean", "break", "byte", "case", "catch",
+        "char", "class", "const", "continue", "default", "do", "double",
+        "else", "enum", "extends", "final", "finally", "float", "for",
+        "goto", "if", "implements", "import", "instanceof", "int",
+        "interface", "long", "native", "new", "package", "private",
+        "protected", "public", "return", "short", "static", "strictfp",
+        "super", "switch", "synchronized", "this", "throw", "throws",
+        "transient", "try", "void", "volatile", "while",
+    },
+}
+
+# The constructs that Bun spells in its own way.  Each entry names the
+# form and the reason it is Bun's, not a copy.
+BUN_ORIGINAL = [
+    ("on leave { ... }",
+     "a block that runs when control leaves the enclosing block"),
+    ("for ... as name",
+     "a loop that carries a name, so `break name` leaves more than the "
+     "nearest loop"),
+    ("list of int / dict of string to int",
+     "a type written as the sentence it describes; the `<...>` form stays "
+     "available"),
+    ("fn(int) -> int",
+     "a function type that the checker reads, including the types inside "
+     "the signature"),
+    ("div",
+     "floor division as a word, because `//` is Bun's comment"),
+    ('import "path" as ns',
+     "a whole module under one name, with no `*` and no `from`"),
+    ("scope { ... }",
+     "a task group that joins its children before the block ends"),
+    ("match as an expression",
+     "one construct where other languages add a ternary"),
+    ("#lang: hi",
+     "the same grammar written in 118 human languages"),
+    ("bun:<name>",
+     "a native module that is part of the language, not a package"),
+]
+
+
+def cmd_originality(args):
+    """Report the lexical overlap with six languages and Bun's own forms."""
+    from .lexer import KEYWORDS
+    bun = set(KEYWORDS)
+    shared = {}
+    union = set()
+    for name, words in sorted(OTHER_KEYWORDS.items()):
+        common = bun & words
+        shared[name] = sorted(common)
+        union |= common
+    only = sorted(bun - union)
+    data = {
+        "bun_keywords": sorted(bun),
+        "shared": shared,
+        "bun_only": only,
+        "constructs": [{"form": form, "meaning": meaning}
+                       for form, meaning in BUN_ORIGINAL],
+        "caveat": ("A keyword is a word, not a grammar.  The overlap is a "
+                   "lexical audit; it cannot prove that a language is a "
+                   "copy, and it cannot prove that one is original."),
+    }
+    if "--json" in args:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+    print("Bun keywords: %d" % len(bun))
+    for name in sorted(shared):
+        print("  shared with %-10s %2d  %s"
+              % (name, len(shared[name]), ", ".join(shared[name])))
+    print("Bun-only keywords: %d  %s" % (len(only), ", ".join(only)))
+    print("")
+    print("Bun's own forms:")
+    for form, meaning in BUN_ORIGINAL:
+        print("  %-32s %s" % (form, meaning))
+    print("")
+    print("note: %s" % data["caveat"])
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -809,7 +933,7 @@ COMMANDS = {
     "engines": cmd_engines, "parallel": cmd_parallel, "ci": cmd_ci,
     "release": cmd_release, "coverage": cmd_coverage, "fuzz": cmd_fuzz,
     "bench": cmd_bench, "audit": cmd_audit, "doctor": cmd_doctor,
-    "maturity": cmd_maturity,
+    "maturity": cmd_maturity, "originality": cmd_originality,
 }
 
 # Flags that route an existing command to its toolchain implementation.

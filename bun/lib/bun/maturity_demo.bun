@@ -1,7 +1,7 @@
 // A tiny module for `bun doc <module> --exports`.
 // It exists so the docs command has a real module to inspect.
 
-export let VERSION = "0.3.0"
+export let VERSION = "0.4.0"
 
 export fn greet(name: string) -> string {
     return "hello " + name

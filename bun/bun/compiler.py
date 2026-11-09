@@ -592,6 +592,8 @@ class Compiler:
     def _enter_loop(self, node, code):
         context = {
             "code": code,
+            "label": getattr(node, "label", None),
+            "kind": "for" if isinstance(node, ast.ForStmt) else "while",
             "scope_depth": self._scope_depth,
             "try_depth": len(self._try_contexts),
             "for_depth": self._for_depth,
@@ -822,13 +824,28 @@ class Compiler:
             raise CompileError(
                 "'%s' outside of a loop" % kind, node.line, node.col)
         context = self._loops[-1]
+        label = getattr(node, "label", None)
+        if label is not None:
+            context = None
+            for candidate in reversed(self._loops):
+                if candidate["label"] == label:
+                    context = candidate
+                    break
+            if context is None:
+                raise CompileError(
+                    "unknown loop label '%s'" % label, node.line, node.col)
         depth = self._unwind_try_handlers(
             code, node, self._try_contexts[context["try_depth"]:])
         for _ in range(depth - context["scope_depth"]):
             emit(code, OP_EXIT_SCOPE, None, node)
-        if kind == "break":
-            for _ in range(self._for_depth - context["for_depth"]):
-                emit(code, OP_FOR_POP, None, node)
+        # A `break` leaves every loop it crosses, so every `for` iterator
+        # between here and the target is popped.  A `continue` keeps the
+        # iterator of the loop it continues, and pops the ones inside it.
+        pops = self._for_depth - context["for_depth"]
+        if kind == "continue" and context["kind"] == "for":
+            pops -= 1
+        for _ in range(pops):
+            emit(code, OP_FOR_POP, None, node)
         index = emit(code, OP_JUMP, None, node)
         context["%s_patches" % kind].append(index)
 

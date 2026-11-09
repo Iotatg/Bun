@@ -297,11 +297,14 @@ BOUND_TYPES = {
 def base_type(name):
     """The name of a type, without its type arguments.
 
-    The type `list<int>` has the base `list`, and the type `int` has
-    the base `int`.
+    The type `list<int>` has the base `list`, the type
+    `fn(int) -> int` has the base `fn`, and the type `int` has the base
+    `int`.
     """
     if not name:
         return name
+    if is_function_type(name):
+        return FN
     index = name.find("<")
     if index < 0:
         return name
@@ -311,15 +314,71 @@ def base_type(name):
 def type_args(name):
     """The type arguments of a type.
 
-    The type `list<int>` has the argument `int`, and the type `int` has
-    no argument.
+    The type `list<int>` has the argument `int`, the type
+    `list<list<int>>` has the argument `list<int>`, and the type `int`
+    has no argument.  The split is aware of nesting, so a comma inside a
+    nested type argument does not start a new argument.
     """
     if not name:
+        return []
+    if is_function_type(name):
         return []
     index = name.find("<")
     if index < 0:
         return []
-    return [part.strip() for part in name[index + 1:-1].split(",")]
+    return _split_types(name[index + 1:-1])
+
+
+def _split_types(text):
+    """Split a type list on the commas that are not inside a type."""
+    parts = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(text):
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def is_function_type(name):
+    """Report whether a type is a function type: `fn(int) -> int`."""
+    if not name or not name.startswith("fn("):
+        return False
+    return _closing_paren(name, 2) >= 0 and "->" in name
+
+
+def function_signature(name):
+    """The parameters and the result of a function type.
+
+    `fn(int, string) -> bool` answers `(["int", "string"], "bool")`.
+    A name that is not a function type answers `(None, None)`.
+    """
+    if not is_function_type(name):
+        return None, None
+    close = _closing_paren(name, 2)
+    params = _split_types(name[3:close])
+    result = name[close + 1:].split("->", 1)[1].strip()
+    return params, result
+
+
+def _closing_paren(text, start):
+    """The index of the `)` that closes the `(` at `start`."""
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
 
 
 def satisfies_bound(name, bound):
@@ -349,6 +408,22 @@ def is_assignable(source, target):
         return True
     if source == NULL:
         return True
+    # A function value has the type `fn`, and a declared function type
+    # says more about it.  The two agree when the arity agrees and every
+    # parameter and the result are assignable.
+    if is_function_type(target):
+        if source == FN:
+            return True
+        if is_function_type(source):
+            source_params, source_result = function_signature(source)
+            target_params, target_result = function_signature(target)
+            return (len(source_params) == len(target_params)
+                    and all(is_assignable(a, b) for a, b in
+                            zip(source_params, target_params))
+                    and is_assignable(source_result, target_result))
+        return False
+    if is_function_type(source):
+        return target == FN
     # A type with type arguments is a type with the same name: the
     # arguments of a container are a promise of the program, not a
     # check of the language.

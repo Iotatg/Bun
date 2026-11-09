@@ -356,6 +356,9 @@ fn base_type(name) {
     if name == null {
         return null
     }
+    if is_function_type(name) {
+        return "fn"
+    }
     let index = index_of(name, "<")
     if index < 0 {
         return name
@@ -364,9 +367,13 @@ fn base_type(name) {
 }
 
 // The type arguments of a type: the type `list<int>` has the argument
-// `int`, and the type `int` has no argument.
+// `int`, the type `list<list<int>>` has the argument `list<int>`, and
+// the type `int` has no argument.  The split is aware of nesting.
 fn type_args(name) {
     if name == null {
+        return []
+    }
+    if is_function_type(name) {
         return []
     }
     let index = index_of(name, "<")
@@ -374,14 +381,70 @@ fn type_args(name) {
         return []
     }
     let inner = substring(name, index + 1, len(name) - 1)
-    let parts = split(inner, ",")
-    var result = []
+    return split_types(inner)
+}
+
+fn split_types(text) {
+    var parts = []
+    var depth = 0
+    var start = 0
     var i = 0
-    while i < parts.len() {
-        result.push(trim(parts[i]))
+    while i < len(text) {
+        let ch = substring(text, i, i + 1)
+        if ch == "<" or ch == "(" or ch == "[" {
+            depth = depth + 1
+        } else if ch == ">" or ch == ")" or ch == "]" {
+            depth = depth - 1
+        } else if ch == "," and depth == 0 {
+            parts.push(trim(substring(text, start, i)))
+            start = i + 1
+        }
         i = i + 1
     }
+    parts.push(trim(substring(text, start, len(text))))
+    var result = []
+    var j = 0
+    while j < parts.len() {
+        if parts[j] != "" {
+            result.push(parts[j])
+        }
+        j = j + 1
+    }
     return result
+}
+
+fn is_function_type(name) {
+    if name == null {
+        return false
+    }
+    return starts_with(name, "fn(") and index_of(name, "->") >= 0
+}
+
+fn closing_paren(text, start) {
+    var depth = 0
+    var i = start
+    while i < len(text) {
+        let ch = substring(text, i, i + 1)
+        if ch == "(" {
+            depth = depth + 1
+        } else if ch == ")" {
+            depth = depth - 1
+            if depth == 0 {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn function_signature(name) {
+    let close = closing_paren(name, 2)
+    let params = split_types(substring(name, 3, close))
+    let rest = substring(name, close + 1, len(name))
+    let arrow = index_of(rest, "->")
+    let result = trim(substring(rest, arrow + 2, len(rest)))
+    return [params, result]
 }
 
 // The bounds a type parameter may carry. A bound with an empty set is
@@ -440,6 +503,32 @@ fn is_assignable(source, target) {
     }
     if source == "null" {
         return true
+    }
+    // A function value has the type `fn`, and a declared function type
+    // says more about it.
+    if is_function_type(target) {
+        if source == "fn" {
+            return true
+        }
+        if is_function_type(source) {
+            let source_sig = function_signature(source)
+            let target_sig = function_signature(target)
+            if source_sig[0].len() != target_sig[0].len() {
+                return false
+            }
+            var i = 0
+            while i < source_sig[0].len() {
+                if !is_assignable(source_sig[0][i], target_sig[0][i]) {
+                    return false
+                }
+                i = i + 1
+            }
+            return is_assignable(source_sig[1], target_sig[1])
+        }
+        return false
+    }
+    if is_function_type(source) {
+        return target == "fn"
     }
     // A type with type arguments is a type with the same name: the
     // arguments of a container are a promise of the program, not a
@@ -514,7 +603,7 @@ fn copy_scope(scope) {
 }
 
 fn make_state(base_dir) {
-    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "enums": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": [], "namespace_types": {}}
+    return {"base_dir": base_dir, "return_stack": [], "module_cache": {}, "module_loading": {}, "loop_depth": 0, "loop_labels": [], "module_names": {}, "name_stack": [], "function_depth": 0, "structs": {}, "enums": {}, "impls": {}, "protocols": {}, "checking_method": null, "type_vars": [], "namespace_types": {}}
 }
 
 fn check_annotation(state, name, node) {
@@ -522,6 +611,16 @@ fn check_annotation(state, name, node) {
         return
     }
     if is_type_var(state, name) {
+        return
+    }
+    if is_function_type(name) {
+        let signature = function_signature(name)
+        var i = 0
+        while i < signature[0].len() {
+            check_annotation(state, signature[0][i], node)
+            i = i + 1
+        }
+        check_annotation(state, signature[1], node)
         return
     }
     let base = base_type(name)
@@ -545,6 +644,16 @@ fn check_annotation_throw(state, name) {
         return
     }
     if is_type_var(state, name) {
+        return
+    }
+    if is_function_type(name) {
+        let signature = function_signature(name)
+        var i = 0
+        while i < signature[0].len() {
+            check_annotation_throw(state, signature[0][i])
+            i = i + 1
+        }
+        check_annotation_throw(state, signature[1])
         return
     }
     let base = base_type(name)
@@ -1789,6 +1898,23 @@ fn protocol_method_call(state, node, protocol_name, arg_types) {
     return signature["return_type"]
 }
 
+fn check_loop_jump(state, node, kind) {
+    if state["loop_depth"] == 0 {
+        fail("'" + kind + "' outside of a loop", node)
+    }
+    if node["label"] == null {
+        return
+    }
+    var i = 0
+    while i < state["loop_labels"].len() {
+        if state["loop_labels"][i] == node["label"] {
+            return
+        }
+        i = i + 1
+    }
+    fail("unknown loop label '" + node["label"] + "'", node)
+}
+
 fn check_statement(state, node, scope) {
     let kind = node["kind"]
     if kind == "LetStmt" {
@@ -1978,10 +2104,12 @@ fn check_statement(state, node, scope) {
     if kind == "WhileStmt" {
         check_expr(state, node["condition"], scope)
         state["loop_depth"] = state["loop_depth"] + 1
+        state["loop_labels"].push(node["label"])
         check_statements(state, node["body"]["statements"], copy_scope(scope))
         if node["orelse"] != null {
             check_statement(state, node["orelse"], copy_scope(scope))
         }
+        state["loop_labels"].pop()
         state["loop_depth"] = state["loop_depth"] - 1
         return
     }
@@ -2004,12 +2132,14 @@ fn check_statement(state, node, scope) {
             i = i + 1
         }
         state["loop_depth"] = state["loop_depth"] + 1
+        state["loop_labels"].push(node["label"])
         check_statements(state, node["body"]["statements"], loop_scope)
         if node["orelse"] != null {
             // The else runs after the loop, so the name of the loop is
             // gone by then.
             check_statement(state, node["orelse"], copy_scope(scope))
         }
+        state["loop_labels"].pop()
         state["loop_depth"] = state["loop_depth"] - 1
         return
     }
@@ -2116,15 +2246,11 @@ fn check_statement(state, node, scope) {
         return
     }
     if kind == "BreakStmt" {
-        if state["loop_depth"] == 0 {
-            fail("'break' outside of a loop", node)
-        }
+        check_loop_jump(state, node, "break")
         return
     }
     if kind == "ContinueStmt" {
-        if state["loop_depth"] == 0 {
-            fail("'continue' outside of a loop", node)
-        }
+        check_loop_jump(state, node, "continue")
         return
     }
     fail("cannot check statement: " + kind, node)
@@ -2443,6 +2569,20 @@ fn check_call(state, node, scope) {
     }
     if binding["type"] == "struct" {
         return constructor_call(state, name, arg_types, node)
+    }
+    if is_function_type(binding["type"]) {
+        let signature = function_signature(binding["type"])
+        if arg_types.len() != signature[0].len() {
+            fail("'" + name + "' expects " + str(signature[0].len()) + " argument(s), got " + str(arg_types.len()), node)
+        }
+        var i = 0
+        while i < arg_types.len() {
+            if !is_assignable(arg_types[i], signature[0][i]) {
+                fail("argument " + str(i + 1) + " of '" + name + "' has type '" + arg_types[i] + "', not '" + signature[0][i] + "'", node)
+            }
+            i = i + 1
+        }
+        return signature[1]
     }
     if binding["type"] != "fn" {
         fail("'" + name + "' of type '" + binding["type"] + "' is not callable", node)

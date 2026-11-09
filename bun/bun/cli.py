@@ -46,6 +46,7 @@ Usage:
   bun startup | engines | parallel   measure the runtime
   bun changelog | ci | release | coverage | fuzz | bench | audit | doctor
   bun maturity [--run]            the 100-capability maturity probe
+  bun originality [--json]        the lexical overlap and Bun's own forms
   bun                             start the interactive REPL
   bun -h | --help                 show this help
 """

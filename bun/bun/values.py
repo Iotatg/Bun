@@ -112,10 +112,11 @@ class ReturnSignal(Exception):
 
 
 class LoopSignal(Exception):
-    def __init__(self, line=0, col=0):
+    def __init__(self, line=0, col=0, label=None):
         super().__init__()
         self.line = line
         self.col = col
+        self.label = label
 
 
 class BreakSignal(LoopSignal):
