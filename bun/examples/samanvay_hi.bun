@@ -1,0 +1,57 @@
+#!lang hi
+// examples/samanvay_hi.bun — वही कार्यक्रम, हिन्दी पैक में।
+//
+// केवल कीवर्ड बदलते हैं; print, range, null और sv.* के नाम सार्वभौमिक हैं।
+// Samanvay ने कोई नया कीवर्ड नहीं जोड़ा, इसलिए 118 भाषा पैक आज ही इसे
+// लिख सकते हैं। आउटपुट अंग्रेज़ी संस्करण के साथ बाइट-दर-बाइट समान है।
+
+आयात "bun:samanvay" जैसे sv
+
+sv.beej(7)
+
+मानी jobs = sv.kanal(2)
+मानी out = sv.kanal(8)
+मानी total = sv.sajha(0, "total")
+मानी guard = sv.tal()
+
+काम producer() {
+    हर i में range(1, 7) {
+        sv.bhej(jobs, i)
+    }
+    sv.band(jobs)
+}
+
+काम worker() {
+    जबतक सही {
+        मानी job = sv.le(jobs)
+        अगर job == कुछनहीं {
+            रुको
+        }
+        मानी square = job * job
+        sv.pakad(guard)
+        sv.likh(total, sv.padh(total) + square)
+        sv.chhod(guard)
+        sv.bhej(out, square)
+    }
+}
+
+मानी p = sv.kary(producer, "producer")
+मानी w1 = sv.kary(worker, "w1")
+मानी w2 = sv.kary(worker, "w2")
+sv.mel(p)
+sv.mel(w1)
+sv.mel(w2)
+
+मानी squares = []
+हर i में range(0, 6) {
+    squares.push(sv.le(out))
+}
+squares.sort()
+
+मानी report = sv.trace()
+print("squares", squares)
+print("total", sv.padh(total))
+print("tasks", report["tasks"])
+print("races", len(report["races"]))
+print("steps", report["steps"] > 0)
+print("SAMANVAY PIPELINE OK")

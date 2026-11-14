@@ -1014,6 +1014,160 @@ def _raksha_nidan_text(nidan, source):
     return "raksha[%s]: %s" % (nidan.code, nidan.message)
 
 
+def cmd_samanvay(args):
+    """Show, check and run the Samanvay concurrency analysis.
+
+    Without `--run` the command never executes the program: it reports the
+    spawn sites, what each task does with shared names, and the lock order
+    of every flow.  With `--run` it executes the program on the tree engine
+    under the deterministic scheduler and reports the races and deadlocks
+    that this seed actually produced.  The seed is the replay token: the
+    same program and the same seed give the same interleaving.
+    """
+    from . import samanvay as samanvay_module
+
+    flags = [arg for arg in args if arg.startswith("--")]
+    paths = [arg for arg in args if not arg.startswith("--")]
+    seed_value = None
+    sweep = None
+    for flag in flags:
+        if flag.startswith("--seed="):
+            seed_value = int(flag.split("=", 1)[1])
+        elif flag.startswith("--seeds="):
+            low, _, high = flag.split("=", 1)[1].partition(":")
+            sweep = (int(low), int(high or low))
+    if not paths:
+        print("error: expects a file", file=sys.stderr)
+        return 2
+    path = paths[0]
+    if not os.path.exists(path):
+        print("error: no such file: %s" % path, file=sys.stderr)
+        return 2
+    try:
+        program, source = _parse_program(path)
+        analysis = samanvay_module.analyze_program(program, path, source)
+        check = samanvay_module.verify(analysis)
+    except Exception as error:                           # noqa: BLE001
+        print("error: samanvay failed: %s" % error, file=sys.stderr)
+        return 1
+
+    if "--run" in flags or seed_value is not None or sweep is not None:
+        return _samanvay_run(path, source, analysis, seed_value, sweep,
+                             "--json" in flags)
+
+    nidans = list(analysis.diagnostics)
+    ok = bool(check.ok) and not nidans
+    stats = dict(check.stats)
+    stats.update(analysis.stats())
+    if "--json" in flags:
+        print(samanvay_module.render_json(analysis))
+        return 0 if ok else 1
+    if "--dot" in flags:
+        print(samanvay_module.render_dot(analysis))
+        return 0 if ok else 1
+    if "--stats" in flags:
+        print(json.dumps(stats, indent=2, sort_keys=True))
+        return 0 if ok else 1
+    if "--verify" in flags:
+        if ok:
+            print("SAMANVAY: OK (%d task, %d spawn, %d sync call, 0 nidan)"
+                  % (stats.get("karies", 0), stats.get("karies", 0),
+                     stats.get("sync_calls", 0)))
+        else:
+            for problem in check.problems:
+                print("SAMANVAY: %s" % problem)
+            for nidan in nidans:
+                print(samanvay_module.Nidan(code=nidan.code,
+                                            message=nidan.message,
+                                            primary=nidan.primary,
+                                            labels=nidan.labels,
+                                            hint=nidan.hint,
+                                            notes=nidan.notes,
+                                            filename=path).render(source))
+            print("SAMANVAY: %d problem(s), %d nidan"
+                  % (len(check.problems), len(nidans)))
+        return 0 if ok else 1
+    if "--explain" in flags:
+        print(samanvay_module.render_explain(analysis, source))
+        return 0 if ok else 1
+
+    print(samanvay_module.render_text(analysis))
+    return 0 if ok else 1
+
+
+def _samanvay_run(path, source, analysis, seed_value, sweep, as_json):
+    """Execute the program under the deterministic scheduler."""
+    import contextlib
+    import io as _io
+    from . import samanvay as module
+    from .cli import run_source
+
+    def one(seed):
+        module.reset()
+        os.environ["BUN_SAMANVAY_SEED"] = str(seed)
+        buffer = _io.StringIO()
+        failure = None
+        with contextlib.redirect_stdout(buffer):
+            try:
+                run_source(source, filename=path, check=False, engine="tree")
+            except Exception as error:                   # noqa: BLE001
+                failure = str(error)
+        summary = module.summary()
+        summary["exit"] = 1 if failure else 0
+        summary["error"] = failure
+        summary["output"] = buffer.getvalue()
+        return summary
+
+    if sweep is not None:
+        low, high = sweep
+        found = []
+        for seed in range(low, high + 1):
+            result = one(seed)
+            races = len(result["races"])
+            deadlocks = 1 if result["aborted"] else 0
+            print("seed %-4d races=%d deadlocks=%d steps=%-4d hash=%s"
+                  % (seed, races, deadlocks, result["steps"],
+                     result["schedule_hash"]))
+            if races or deadlocks:
+                found.append(seed)
+        print("SAMANVAY SWEEP: %d seed(s), %d with findings%s"
+              % (high - low + 1, len(found),
+                 (", first %d" % found[0]) if found else ""))
+        return 0 if not found else 1
+
+    result = one(seed_value if seed_value is not None else 0)
+    if as_json:
+        print(json.dumps({key: value for key, value in result.items()
+                          if key != "trace"}, indent=2, sort_keys=True))
+        return 0 if not (result["races"] or result["aborted"]) else 1
+
+    if result["output"]:
+        sys.stdout.write(result["output"])
+    races = len(result["races"])
+    aborted = result["aborted"]
+    print("SAMANVAY RUN seed=%d steps=%d tasks=%d hash=%s races=%d"
+          % (result["seed"], result["steps"], result["tasks"],
+             result["schedule_hash"], races))
+    for race in result["races"]:
+        first, second = race["first"], race["second"]
+        print("  SV03 dwand: cell '%s' t%d at %s vs t%d at %s"
+              % (race["cell"], first["tid"], first["at"],
+                 second["tid"], second["at"]))
+    if aborted:
+        if aborted.get("kind") == "bandh":
+            print("  SV04 bandh: %s" % aborted["reason"])
+            if aborted.get("cycle"):
+                print("    cycle: %s" % " -> ".join("t%d" % tid for tid in
+                                                    aborted["cycle"]))
+            for item in aborted.get("blocked", []):
+                print("    t%d waits for %s" % (item["tid"], item["wait"]))
+        else:
+            print("  SV04 %s: %s" % (aborted.get("kind"), aborted.get("reason")))
+    findings = races + (1 if aborted else 0)
+    print("SAMANVAY: %d finding(s)" % findings)
+    return 0 if findings == 0 else 1
+
+
 def cmd_raksha(args):
     """Show, check and measure the Raksha static safety analysis.
 
@@ -1091,6 +1245,7 @@ COMMANDS = {
     "bench": cmd_bench, "audit": cmd_audit, "doctor": cmd_doctor,
     "maturity": cmd_maturity, "originality": cmd_originality,
     "antar": cmd_antar, "raksha": cmd_raksha,
+    "samanvay": cmd_samanvay,
 }
 
 # Flags that route an existing command to its toolchain implementation.

@@ -811,7 +811,12 @@ class Interpreter:
             if kwargs:
                 raise BunRuntimeError(
                     "builtin '%s' does not accept keyword arguments" % callee.name)
-            return callee.func(args)
+            from . import samanvay as _samanvay
+            _samanvay.set_site(node.line, node.col)
+            try:
+                return callee.func(args)
+            finally:
+                _samanvay.clear_site()
         raise BunRuntimeError("%s is not callable" % stringify(callee))
 
     def _method_call(self, inner, env):
@@ -825,13 +830,26 @@ class Interpreter:
                                         args, env, inner)
         receiver = self.evaluate(inner.receiver, env)
         args = [self.evaluate(arg, env) for arg in inner.args]
-        if isinstance(receiver, BunStruct):
-            function = ops.struct_method(receiver.type_name, inner.method)
-            if isinstance(function, BunFunction):
-                return self.call_function(function, [receiver] + args, borrowed=1)
+        # Samanvay records the caller's span for an instrumented builtin.
+        # The write is thread-local and costs two attribute stores; a
+        # program that does not import bun:samanvay never reads it.  The
+        # span covers both dispatch shapes, because a module receiver is a
+        # struct-shaped value and takes the branch below.
+        from . import samanvay as _samanvay
+        _samanvay.set_site(inner.line, inner.col)
+        try:
+            if isinstance(receiver, BunStruct):
+                function = ops.struct_method(receiver.type_name,
+                                             inner.method)
+                if isinstance(function, BunFunction):
+                    return self.call_function(function, [receiver] + args,
+                                              borrowed=1)
+                return ops.method_call(inner.method, receiver, args,
+                                       self.call_value)
             return ops.method_call(inner.method, receiver, args,
                                    self.call_value)
-        return ops.method_call(inner.method, receiver, args, self.call_value)
+        finally:
+            _samanvay.clear_site()
 
     def _index(self, obj, index):
         return ops.index_value(obj, index)

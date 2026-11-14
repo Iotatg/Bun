@@ -44,21 +44,22 @@ in force. R1–R8 are the short list a new construct is checked against.
 
 ## 3. The origin ledger
 
-`bun:identity` → `families()` records 15 families. This is the honest count,
+`bun:identity` → `families()` records 16 families. This is the honest count,
 not a score to be proud of:
 
 | Origin | Families | Meaning |
 |--------|----------|---------|
-| `bun` | 7 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface, and the 0.7.0 safety pass (`safety`). |
+| `bun` | 8 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface, the 0.7.0 safety pass (`safety`), and the 0.8.0 coordination pass (`coordination`). |
 | `borrowed` | 7 | Bindings, functions, control flow, modules, data types, patterns, resources. Each names the languages it came from and the reason it was kept. |
 | `shared` | 1 | Operators — the shared alphabet of arithmetic. |
 
 `bun:identity` → `keywords()` maps **all 37 keywords** (33 hard keywords
 from `bun/lexer.py` plus the 4 soft keywords from `bun/langpacks.py`) to one
-of those families. The 0.7.0 wave added a family and three forms without
-touching this table: every new safety word is a module function name, not a
-keyword. `forms()` records 17 sentence shapes with an origin, a reason, a
-rule and a status (`canonical`, `compatibility`, `rejected`); 14 are
+of those families. The 0.7.0 wave added a family and three forms, and the
+0.8.0 wave added one more family and three more forms, without touching this
+table: every new safety and coordination word is a module function name, not
+a keyword. `forms()` records 20 sentence shapes with an origin, a reason, a
+rule and a status (`canonical`, `compatibility`, `rejected`); 17 are
 canonical, 1 is compatibility and 2 are rejected.
 
 `audit()` runs 15 falsifiable checks over these tables: complete
@@ -195,6 +196,20 @@ falsifiable checks, and the current result is
 register+tier. The safety wave is a case of §5 step 1 with **no** step 3:
 no keyword form was introduced, so no new translation had to ship. The
 normative reference is `docs/reference/raksha.md`.
+
+### 4.4 The 0.8.0 coordination forms
+
+The Samanvay wave adds **one family** (`coordination`, held to R5) and
+**three forms**, and adds **no keyword** — `keywords()` is still 37
+entries and `audit()` still runs exactly 15 checks.
+
+| Form | Origin | Rule | Why it is Bun's |
+|---|---|---|---|
+| `let c = sv.sajha(v)` | bun | R5 | Sharing is a value created by a call, not an annotation; every traced access goes through `sv.padh`/`sv.likh`. |
+| `sv.pakad(l) ... sv.chhod(l)` | bun | R5 | A lock is two calls, not a block form; the release is a happens-before edge the detector can see. |
+| `sv.beej(n)` | bun | R5 | The seed is the replay token: one integer fixes the interleaving, so a failure is repeatable byte for byte. |
+
+The normative reference is `docs/reference/samanvay.md`.
 
 ## 5. Adding a construct
 

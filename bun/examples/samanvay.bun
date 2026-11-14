@@ -1,0 +1,69 @@
+// examples/samanvay.bun — Bun 0.8.0 «Samanvay»
+//
+// One producer, two workers, one channel of results, one shared total.
+// Every shared access goes through the wave, so the run is traceable:
+//
+//   jobs   a channel of capacity 2 (the producer blocks when it is full)
+//   out    a channel of capacity 8 (the workers never block on it)
+//   total  a cell written under one lock
+//
+// The output is sorted before it is printed, so the *report* is the same
+// for every seed even though the *interleaving* is not.  That difference
+// is the whole point of the wave: the schedule may vary, the answer may
+// not.
+//
+//   python3 -m bun examples/samanvay.bun
+//   python3 -m bun samanvay examples/samanvay.bun            # static
+//   python3 -m bun samanvay --run --seed=3 examples/samanvay.bun
+//   python3 -m bun samanvay --seeds=0:8 examples/samanvay.bun
+
+import "bun:samanvay" as sv
+
+sv.beej(7)
+
+let jobs = sv.kanal(2)
+let out = sv.kanal(8)
+let total = sv.sajha(0, "total")
+let guard = sv.tal()
+
+fn producer() {
+    for i in range(1, 7) {
+        sv.bhej(jobs, i)
+    }
+    sv.band(jobs)
+}
+
+fn worker() {
+    while true {
+        let job = sv.le(jobs)
+        if job == null {
+            break
+        }
+        let square = job * job
+        sv.pakad(guard)
+        sv.likh(total, sv.padh(total) + square)
+        sv.chhod(guard)
+        sv.bhej(out, square)
+    }
+}
+
+let p = sv.kary(producer, "producer")
+let w1 = sv.kary(worker, "w1")
+let w2 = sv.kary(worker, "w2")
+sv.mel(p)
+sv.mel(w1)
+sv.mel(w2)
+
+let squares = []
+for i in range(0, 6) {
+    squares.push(sv.le(out))
+}
+squares.sort()
+
+let report = sv.trace()
+print("squares", squares)
+print("total", sv.padh(total))
+print("tasks", report["tasks"])
+print("races", len(report["races"]))
+print("steps", report["steps"] > 0)
+print("SAMANVAY PIPELINE OK")

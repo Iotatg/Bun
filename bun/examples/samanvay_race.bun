@@ -1,0 +1,39 @@
+// examples/samanvay_race.bun — a real race, on purpose.
+//
+// Two tasks read a cell, meet at a scheduling point, and write it back.
+// Nothing orders the read of one against the write of the other, so the
+// happens-before detector reports SV03.  Whether the update is *lost*
+// depends on the interleaving, and the interleaving is the seed:
+//
+//   seed 0  -> counter 2, one race reported   (both increments survive)
+//   seed 3  -> counter 1, one race reported   (one increment is lost)
+//
+// Both runs are correct reports of the same program.  That is why the
+// seed is the replay token:
+//
+//   BUN_SAMANVAY_SEED=3 python3 -m bun examples/samanvay_race.bun
+//   python3 -m bun samanvay --seeds=0:8 examples/samanvay_race.bun
+//
+// The fix is one lock around the pair of accesses, or one channel that
+// orders them; examples/samanvay.bun does the second.
+
+import "bun:samanvay" as sv
+
+let counter = sv.sajha(0, "counter")
+
+fn bump() {
+    let v = sv.padh(counter)
+    sv.ajna()
+    sv.likh(counter, v + 1)
+}
+
+let a = sv.kary(bump, "a")
+let b = sv.kary(bump, "b")
+sv.mel(a)
+sv.mel(b)
+
+let report = sv.trace()
+print("counter", sv.padh(counter))
+print("races", len(report["races"]))
+print("steps", report["steps"])
+print("SAMANVAY RACE DEMO DONE")

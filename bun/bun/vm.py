@@ -639,9 +639,16 @@ class VM:
             if isinstance(function, BunFunction):
                 return self._call_function(
                     frame, function, [receiver] + args, {}, borrowed=1)
-        frame.stack.append(ops.method_call(
-            method, receiver, args,
-            lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
+        # Samanvay records the caller's span, so a trace event points at
+        # the line the program wrote, not at the library that wraps it.
+        from . import samanvay as _samanvay
+        _samanvay.set_site(line, col)
+        try:
+            frame.stack.append(ops.method_call(
+                method, receiver, args,
+                lambda fn, argv: self.call_value(fn, argv, frame.base_dir)))
+        finally:
+            _samanvay.clear_site()
 
     def _op_make_struct(self, frame, arg, line, col):
         type_name, field_names = arg

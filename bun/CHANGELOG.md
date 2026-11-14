@@ -4,6 +4,62 @@ All notable changes to the Bun language are recorded here.  The version
 number is the one `bun version` prints; a release is only made after the
 full test suite passes and the maturity probe has written a real receipt.
 
+## 0.8.0 — 2026-11-14
+
+The coordination wave.  It adds **Samanvay** (समन्वय, "coordination"):
+one deterministic scheduler, a happens-before race detector, a wait-for
+deadlock report, and a seed that is the replay token.  The question it
+answers is the one `spawn` left open — *which orders did the program allow,
+and can I see that order again tomorrow?*  **No keyword was added**: every
+new word is a function of `bun:samanvay`, so all 118 language packs can
+write the wave on the day it ships.
+
+- **One baton.**  Exactly one task runs at a time.  At every coordination
+  call the scheduler picks the next task with `random.Random(seed)`.  The
+  interleaving is therefore a function of `(program, seed)`, not of the OS:
+  the same seed reproduces a run byte for byte, and `--seed=3` is a real
+  replay token rather than a label.  This is FoundationDB's determinism
+  argument applied to a language runtime.
+- **Happens-before, not timers.**  Each task carries a vector clock.  A
+  spawn, a join, a send/receive, a close/receive and a release/acquire are
+  the edges; two accesses to one cell with no edge between them are `SV03`,
+  reported with both source spans and both task ids.  The algorithm is
+  ThreadSanitizer's; the trace and the vocabulary are Bun's.
+- **A wait-for graph.**  When nothing can run, the scheduler does not hang
+  and does not guess: it records every blocked task, its wait and the
+  holder, looks for a cycle, and reports `SV04` with the cycle
+  (`t3 -> t4 -> t3`) or with the full blocked set when there is no cycle.
+- **Eight codes, eight names.**  `SV01` unsynchronised write, `SV02` task
+  leak, `SV03` data race, `SV04` deadlock, `SV05` channel misuse, `SV06`
+  stale read, `SV07` lock-order inversion, `SV08` fan-out in a loop.  Every
+  diagnostic carries a primary span, labelled spans, a hint and notes.
+- **Sharing is explicit.**  A cell is created with `sv.sajha(v)` and read
+  or written with `sv.padh` / `sv.likh`; a plain variable is not traced.
+  That is the `Mutex<T>` boundary, and `SV01` enforces it instead of
+  assuming it.  `sv.tal` / `sv.pakad` / `sv.chhod` are the lock;
+  `sv.kanal` / `sv.bhej` / `sv.le` / `sv.band` are the channel, with
+  capacity 0 meaning rendezvous.
+- **A library written in Bun.**  `lib/bun/samanvay.bun` re-exports the
+  builtins under the wave's names — so `sv.padh(cell)` is a direct builtin
+  call at the caller's line and the trace points at the program, not at the
+  library — and carries `niyam()`, `codes()`, `audit()` and `ledger()`.
+  `audit()` proves eight things with real calls, including its own
+  race-freedom, and prints `SAMANVAY_LEDGER_CERTIFIED 8/8`.
+- **Three commands in one.**  `bun samanvay <file>` never runs the program;
+  `--run [--seed=N]` runs it under the scheduler and prints the trace
+  summary, the races and the deadlock cycle; `--seeds=A:B` sweeps seeds and
+  reports the first one with a finding.  `--json`, `--dot`, `--stats`,
+  `--verify` and `--explain` answer the five questions a tool asks.
+- **A real bug found by the wave.**  A task body compiled by the register
+  engine carries `consts`, and the pre-0.8 task runner assumed stack
+  bytecode: running such a body on a `VM` failed with `KeyError: 'CONST'`.
+  The runner now picks the machine that compiled the body.  The same
+  assumption in `spawn` was fixed with it.
+- **Receipts.**  `tests/test_samanvay.py` (57 tests), an external verifier
+  `tools/verify_samanvay.py` that never imports the implementation, the
+  three-engine byte-identical example, and the Hindi example whose output
+  is byte-identical to the English one.
+
 ## 0.7.0 — 2026-11-14
 
 The safety wave.  It adds **Raksha** (रक्षा, "protection"): a static

@@ -26,8 +26,8 @@ The rule, the origin ledger and the checklist for adding a construct are in
 [`docs/reference/bun-identity.md`](docs/reference/bun-identity.md). The
 guard test derives the real keyword set from `bun/lexer.py`, so a new
 keyword without an attributed origin fails the suite. Bun did not invent
-everything; the ledger says exactly which seven of fifteen families are
-borrowed.
+everything; the ledger says exactly which eight of sixteen families are
+Bun's own.
 
 ## Raksha — static safety (0.7.0)
 
@@ -47,6 +47,26 @@ python3 -m bun examples/raksha.bun       # RAKSHA LEDGER CERTIFIED
 The vocabulary, the 14 error codes, the `with`/`__exit__` RAII protocol,
 `kaal`/region inference and the boundary with `antar` are in
 [`docs/reference/raksha.md`](docs/reference/raksha.md).
+
+## Samanvay — deterministic concurrency (0.8.0)
+
+`bun:samanvay` is the coordination wave: one baton, one running task, one
+seeded choice per scheduling point. A seed is a replay token — the same
+program and the same seed produce the same interleaving, byte for byte, on
+every engine — and a race is a missing happens-before edge, not a timing
+accident.
+
+```bash
+python3 -m bun examples/samanvay.bun                 # SAMANVAY PIPELINE OK
+python3 -m bun examples/samanvay_hi.bun              # byte-identical (Hindi)
+python3 -m bun samanvay examples/samanvay.bun        # static report
+python3 -m bun samanvay --run --seed=3 examples/samanvay_race.bun
+python3 -m bun samanvay --seeds=0:8 examples/samanvay_race.bun
+```
+
+Cells, channels, locks, the eight codes (SV01–SV08), the scheduler's
+guarantees and the boundaries are in
+[`docs/reference/samanvay.md`](docs/reference/samanvay.md).
 
 ## Requirements
 

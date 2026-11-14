@@ -2,7 +2,7 @@
 """An external verifier of the Antar wave.
 
 This script never imports the `bun` package.  It talks to the language the
-way a user does — `python3 -m bun` — and checks the claims of the 0.7.0
+way a user does — `python3 -m bun` — and checks the claims of the 0.8.0
 release one by one.  A claim counts only when a real command produces the
 expected result.
 
@@ -120,7 +120,7 @@ def main():
 
     # 9. The version is 0.7.0 and the package agrees.
     result = run(["version", "--short"])
-    check("bun version --short is 0.7.0", result.stdout.strip() == "0.7.0",
+    check("bun version --short is 0.8.0", result.stdout.strip() == "0.8.0",
           result.stdout.strip())
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)

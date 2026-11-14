@@ -137,6 +137,10 @@ export fn families() {
 
         {"name": "safety", "origin": "bun", "from": "",
          "reason": "Memory safety uses the existing with and on leave statements plus universal bun:raksha module names; no keyword was added, so all 118 language packs can use it on the day it ships. The principle is borrowed, the syntax is not.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "coordination", "origin": "bun", "from": "",
+         "reason": "The 0.8.0 wave: one deterministic scheduler, cells read and written through module functions, channels and locks. The happens-before rule is borrowed from race detectors and the repeatable-failure idea from deterministic simulation; the words and the seed-as-replay-token are Bun's own.",
          "bun_rule": "R5", "status": "canonical"}
     ]
 }
@@ -247,6 +251,18 @@ export fn forms() {
 
         {"name": "import \"bun:raksha\" as rk", "origin": "bun", "from": "",
          "reason": "A native module bound under one universal name: import and as are keywords every language pack already translates, and every safety word is a function name, not a keyword, so the form is writable in every language on day one.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "let c = sv.sajha(v)", "origin": "bun", "from": "",
+         "reason": "Sharing is a value, not an annotation: the cell is created by a call and every traced access goes through sv.padh or sv.likh. Nothing is added to the grammar, so a pack writes it unchanged.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "sv.pakad(l) ... sv.chhod(l)", "origin": "bun", "from": "",
+         "reason": "A lock is two calls, not a block form. The release is a happens-before edge, so the detector can see what the lock protects instead of guessing from indentation.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "sv.beej(n) — the seed is the replay token", "origin": "bun", "from": "",
+         "reason": "One integer fixes the interleaving. The same seed reproduces a failure byte for byte, which is what makes a concurrency report actionable; no other language runtime in the family exposes the schedule as a value.",
          "bun_rule": "R5", "status": "canonical"}
     ]
 }

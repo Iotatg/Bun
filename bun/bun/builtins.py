@@ -715,9 +715,13 @@ def _run_task(function, args, record, group=None):
     tasks.set_current_task(record)
     try:
         if isinstance(function.body, dict):
-            from .vm import VM
-            vm = VM()
-            record["result"] = vm.call_function(function, args)
+            if "consts" in function.body:
+                from .regvm import RegisterVM
+                machine = RegisterVM()
+            else:
+                from .vm import VM
+                machine = VM()
+            record["result"] = machine.call_function(function, args)
         else:
             from .interpreter import Interpreter
             engine = Interpreter()
@@ -2177,6 +2181,209 @@ def _has_builtin(args):
 _ENVIRONMENT = None
 
 
+# ---------------------------------------------------------------------------
+# Samanvay (समन्वय) — the deterministic concurrency wave
+# ---------------------------------------------------------------------------
+#
+# The builtins are the thin edge of bun/samanvay.py: they convert a handle
+# from BunDict to a plain dict, call the runtime, and convert the answer
+# back.  The wave's user-facing names live in lib/bun/samanvay.bun, which
+# re-exports these builtins as `sajha`, `padh`, `likh`, ...  A builtin is
+# called directly at the user's line, so the trace records the right span.
+
+def _sv_runtime():
+    from . import samanvay as module
+    return module
+
+
+def _sv_ensure():
+    module = _sv_runtime()
+    runtime = module.runtime()
+    if not runtime.used:
+        runtime.start(module.pending_seed())
+    return runtime
+
+
+def _sv_handle(value, kind, name):
+    if not isinstance(value, BunDict) or value.get("kind") != kind:
+        raise BunRuntimeError("%s() expects a %s handle" % (name, kind))
+    return {"kind": kind, "id": value.get("id")}
+
+
+def _sv_make(kind, ident):
+    handle = BunDict()
+    handle.set("kind", kind)
+    handle.set("id", ident)
+    return handle
+
+
+def _sv_call(name, function, *args):
+    from .samanvay import Bandh
+    try:
+        return function(*args)
+    except Bandh as bandh:
+        report = bandh.report or {}
+        blocked = ", ".join(
+            "t%d waits for %s" % (item["tid"], item["wait"])
+            for item in report.get("blocked", []))
+        raise BunRuntimeError("samanvay: deadlock (%s)"
+                              % (blocked or "no task can run"))
+    except (RuntimeError, TypeError) as error:
+        raise BunRuntimeError(str(error))
+
+
+def _sv_value(value):
+    if isinstance(value, dict):
+        result = BunDict()
+        for key, item in value.items():
+            result.set(key, _sv_value(item))
+        return result
+    if isinstance(value, list):
+        return [_sv_value(item) for item in value]
+    return value
+
+
+def _sv_beej(args):
+    _one("sv_beej", args)
+    value = args[0]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise BunRuntimeError("sv_beej() expects an integer seed")
+    try:
+        _sv_runtime().seed(value)
+    except RuntimeError as error:
+        raise BunRuntimeError(str(error))
+    return value
+
+
+def _sv_sajha(args):
+    if len(args) not in (1, 2):
+        raise BunRuntimeError("sv_sajha() expects 1 or 2 arguments")
+    name = args[1] if len(args) == 2 else None
+    if name is not None and not isinstance(name, str):
+        raise BunRuntimeError("sv_sajha() expects a string name")
+    runtime = _sv_ensure()
+    handle = _sv_call("sv_sajha", runtime.cell, args[0], name)
+    return _sv_make("sajha", handle["id"])
+
+
+def _sv_padh(args):
+    _one("sv_padh", args)
+    runtime = _sv_ensure()
+    return _sv_call("sv_padh", runtime.read,
+                    _sv_handle(args[0], "sajha", "sv_padh"))
+
+
+def _sv_likh(args):
+    _two("sv_likh", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_likh", runtime.write,
+             _sv_handle(args[0], "sajha", "sv_likh"), args[1])
+    return None
+
+
+def _sv_tal(args):
+    if args:
+        raise BunRuntimeError("sv_tal() expects no arguments")
+    runtime = _sv_ensure()
+    handle = _sv_call("sv_tal", runtime.lock)
+    return _sv_make("tal", handle["id"])
+
+
+def _sv_pakad(args):
+    _one("sv_pakad", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_pakad", runtime.acquire,
+             _sv_handle(args[0], "tal", "sv_pakad"))
+    return None
+
+
+def _sv_chhod(args):
+    _one("sv_chhod", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_chhod", runtime.release,
+             _sv_handle(args[0], "tal", "sv_chhod"))
+    return None
+
+
+def _sv_kanal(args):
+    if len(args) > 1:
+        raise BunRuntimeError("sv_kanal() expects 0 or 1 arguments")
+    capacity = args[0] if args else 0
+    if not isinstance(capacity, int) or isinstance(capacity, bool) \
+            or capacity < 0:
+        raise BunRuntimeError("sv_kanal() expects a non-negative capacity")
+    runtime = _sv_ensure()
+    handle = _sv_call("sv_kanal", runtime.channel, capacity)
+    return _sv_make("kanal", handle["id"])
+
+
+def _sv_bhej(args):
+    _two("sv_bhej", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_bhej", runtime.send,
+             _sv_handle(args[0], "kanal", "sv_bhej"), args[1])
+    return None
+
+
+def _sv_le(args):
+    _one("sv_le", args)
+    runtime = _sv_ensure()
+    return _sv_call("sv_le", runtime.recv,
+                    _sv_handle(args[0], "kanal", "sv_le"))
+
+
+def _sv_band(args):
+    _one("sv_band", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_band", runtime.close,
+             _sv_handle(args[0], "kanal", "sv_band"))
+    return None
+
+
+def _sv_kary(args):
+    if len(args) not in (1, 2, 3):
+        raise BunRuntimeError("sv_kary() expects 1, 2 or 3 arguments")
+    name = args[1] if len(args) >= 2 else None
+    if name is not None and not isinstance(name, str):
+        raise BunRuntimeError("sv_kary() expects a string name")
+    arguments = args[2] if len(args) == 3 else []
+    if not isinstance(arguments, list):
+        raise BunRuntimeError("sv_kary() expects a list of arguments")
+    runtime = _sv_ensure()
+    handle = _sv_call("sv_kary", runtime.spawn, args[0], name, arguments)
+    return _sv_make("kary", handle["id"])
+
+
+def _sv_mel(args):
+    _one("sv_mel", args)
+    runtime = _sv_ensure()
+    return _sv_call("sv_mel", runtime.join,
+                    _sv_handle(args[0], "kary", "sv_mel"))
+
+
+def _sv_chhodo(args):
+    _one("sv_chhodo", args)
+    runtime = _sv_ensure()
+    _sv_call("sv_chhodo", runtime.cancel,
+             _sv_handle(args[0], "kary", "sv_chhodo"))
+    return None
+
+
+def _sv_ajna(args):
+    if args:
+        raise BunRuntimeError("sv_ajna() expects no arguments")
+    runtime = _sv_ensure()
+    _sv_call("sv_ajna", runtime.checkpoint)
+    return None
+
+
+def _sv_trace(args):
+    if args:
+        raise BunRuntimeError("sv_trace() expects no arguments")
+    runtime = _sv_ensure()
+    return _sv_value(runtime.summary())
+
+
 def register_builtins(env, program_args=None):
     env.define("args", Builtin("args", _make_args(program_args)), False)
     env.define("print", Builtin("print", _print), False)
@@ -2241,6 +2448,25 @@ def register_builtins(env, program_args=None):
     env.define("mutex", Builtin("mutex", _mutex), False)
     env.define("lock", Builtin("lock", _lock), False)
     env.define("unlock", Builtin("unlock", _unlock), False)
+    # Samanvay: the deterministic concurrency wave (0.8.0).  These are
+    # builtins, not keywords; lib/bun/samanvay.bun re-exports them under
+    # the wave's names so a program writes sv.padh(cell).
+    env.define("sv_beej", Builtin("sv_beej", _sv_beej), False)
+    env.define("sv_sajha", Builtin("sv_sajha", _sv_sajha), False)
+    env.define("sv_padh", Builtin("sv_padh", _sv_padh), False)
+    env.define("sv_likh", Builtin("sv_likh", _sv_likh), False)
+    env.define("sv_tal", Builtin("sv_tal", _sv_tal), False)
+    env.define("sv_pakad", Builtin("sv_pakad", _sv_pakad), False)
+    env.define("sv_chhod", Builtin("sv_chhod", _sv_chhod), False)
+    env.define("sv_kanal", Builtin("sv_kanal", _sv_kanal), False)
+    env.define("sv_bhej", Builtin("sv_bhej", _sv_bhej), False)
+    env.define("sv_le", Builtin("sv_le", _sv_le), False)
+    env.define("sv_band", Builtin("sv_band", _sv_band), False)
+    env.define("sv_kary", Builtin("sv_kary", _sv_kary), False)
+    env.define("sv_mel", Builtin("sv_mel", _sv_mel), False)
+    env.define("sv_chhodo", Builtin("sv_chhodo", _sv_chhodo), False)
+    env.define("sv_ajna", Builtin("sv_ajna", _sv_ajna), False)
+    env.define("sv_trace", Builtin("sv_trace", _sv_trace), False)
     env.define("ffi_load", Builtin("ffi_load", _ffi_load), False)
     env.define("list_dir", Builtin("list_dir", _list_dir), False)
     env.define("make_dir", Builtin("make_dir", _make_dir), False)
@@ -2318,6 +2544,8 @@ def register_builtins(env, program_args=None):
     env.define("none", Builtin("none", _none), False)
     env.define("is_some", Builtin("is_some", _is_some), False)
     env.define("is_none", Builtin("is_none", _is_none), False)
+
+
     # BEGIN GENERATED MATURITY WAVE 1
     env.define("hmac_sha256_hex", Builtin("hmac_sha256_hex", _maturity.IMPLEMENTATIONS["hmac_sha256_hex"]), False)
     env.define("hmac_sha512_hex", Builtin("hmac_sha512_hex", _maturity.IMPLEMENTATIONS["hmac_sha512_hex"]), False)

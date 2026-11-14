@@ -69,11 +69,12 @@ def write_temp(name, text):
 def main():
     # -- 1. The release exists and is internally consistent -----------------
     result = run(["version", "--short"])
-    check("bun version --short is 0.7.0",
-          result.stdout.strip() == "0.7.0", result.stdout.strip())
+    check("bun version --short is at least 0.7.0",
+          tuple(int(p) for p in result.stdout.strip().split(".")) >= (0, 7, 0),
+          result.stdout.strip())
     version_files = ["VERSION", "pyproject.toml", os.path.join("bun", "__init__.py")]
-    check("VERSION / pyproject / __init__ all say 0.7.0",
-          all("0.7.0" in source_of(p) for p in version_files))
+    check("VERSION / pyproject / __init__ all name the current version",
+          all("0.8.0" in source_of(p) for p in version_files))
     check("changelog documents 0.7.0",
           "## 0.7.0" in source_of("CHANGELOG.md"))
 

@@ -1,5 +1,5 @@
 {
-  "generated_by": "bun pkg lock 0.7.0",
+  "generated_by": "bun pkg lock 0.8.0",
   "manifest": "bun.toml",
   "packages": [
     "ai",
@@ -17,6 +17,7 @@
     "quantum",
     "raksha",
     "rea",
+    "samanvay",
     "science",
     "sec",
     "sutra",
@@ -25,5 +26,5 @@
     "tensor",
     "web"
   ],
-  "sha256": "5882b0b5349e108513321e0fdb9ab9822ac6de9cd70cf7ad632fff90e6e5e6e3"
+  "sha256": "4a04c4875a59198f62adf6e8629321364ffac5c9fdd745edca3c3a6f406064f6"
 }

@@ -28,6 +28,9 @@ Usage:
   bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
   bun raksha <file.bun> [--json|--dot|--verify|--stats|--explain]  static safety analysis
   bun check --raksha <file.bun>   type check plus the Raksha safety pass
+  bun samanvay <file.bun> [--json|--dot|--verify|--stats|--explain]  concurrency report
+  bun samanvay --run [--seed=N] <file.bun>   run under the deterministic scheduler
+  bun samanvay --seeds=A:B <file.bun>        sweep seeds, report the first finding
   bun --front-end python|bun <file.bun> choose the front end (default: python)
   bun --lang <code>|auto <file.bun>  write Bun in another language (see: bun langs)
   bun langs [--json]              list the language packs of the keywords

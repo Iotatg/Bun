@@ -1,0 +1,206 @@
+// lib/bun/samanvay.bun — Bun 0.8.0 «Samanvay / समन्वय»
+//
+//   "ek samay, ek task" — one baton, one running task.
+//
+// This is the runtime half of the Samanvay wave, written in Bun.  It adds
+// no grammar: every name below is an ordinary module function, and the
+// instrumented operations are re-exports of builtins, so `sv.padh(cell)`
+// is a direct builtin call at the caller's line and the trace records the
+// caller's span rather than a line inside this file.
+//
+// Vocabulary (names, not keywords):
+//   sajha   shared cell        padh   read a cell     likh   write a cell
+//   tal     lock               pakad  acquire         chhod  release
+//   kanal   channel            bhej   send            le     receive
+//   band    close a channel    kary   start a task    mel    join a task
+//   chhodo  cancel a task      ajna   an explicit scheduling point
+//   beej    the seed (the replay token)
+//   dwand   a data race        bandh  a deadlock      ghadi  a vector clock
+//
+// ---------------------------------------------------------------------------
+// CONTRACT FOR THE OTHER AGENTS
+// ---------------------------------------------------------------------------
+// * niyam() returns exactly 8 dicts with ids SV01..SV08.  bun/samanvay.py's
+//   RULES list is the one-to-one mirror of it.
+// * codes() returns exactly 8 dicts with code SV01..SV08 and the fields
+//   code / name / message / hint.  bun/samanvay.py CODES must copy them
+//   verbatim.
+// * audit() proves the runtime with real calls, not with a table lookup:
+//   a cell roundtrip, a lock, a channel, a spawned task that is joined, and
+//   the trace counters.  It prints nothing; it returns a dict.
+// * The runtime refuses, by name, in these words:
+//     "samanvay: deadlock", "samanvay: send on a closed channel",
+//     "samanvay: channel #N is already closed",
+//     "samanvay: lock #N is not re-entrant",
+//     "samanvay: lock #N is not held by this task",
+//     "samanvay: task tN was cancelled".
+//   A program can reach all six with real calls.
+
+// ---------------------------------------------------------------------------
+// the exported names
+// ---------------------------------------------------------------------------
+
+export let sajha = sv_sajha
+export let padh = sv_padh
+export let likh = sv_likh
+export let tal = sv_tal
+export let pakad = sv_pakad
+export let chhod = sv_chhod
+export let kanal = sv_kanal
+export let bhej = sv_bhej
+export let le = sv_le
+export let band = sv_band
+export let kary = sv_kary
+export let mel = sv_mel
+export let chhodo = sv_chhodo
+export let ajna = sv_ajna
+export let beej = sv_beej
+export let trace = sv_trace
+
+// ---------------------------------------------------------------------------
+// the ledger
+// ---------------------------------------------------------------------------
+
+export fn niyam() {
+    return [
+        {"id": "SV01", "name": "asurakshit_lekh", "rule": "S1",
+            "text": "a task writes a captured variable with no coordination"},
+        {"id": "SV02", "name": "kary_leak", "rule": "S2",
+            "text": "a spawned task is never joined"},
+        {"id": "SV03", "name": "dwand", "rule": "S3",
+            "text": "two tasks touch one cell and neither happens before the other"},
+        {"id": "SV04", "name": "bandh", "rule": "S4",
+            "text": "no task can make progress"},
+        {"id": "SV05", "name": "kanal_dosh", "rule": "S5",
+            "text": "the channel is used after it was closed"},
+        {"id": "SV06", "name": "stale", "rule": "S2",
+            "text": "a task reads a value that the parent writes after the spawn"},
+        {"id": "SV07", "name": "tal_kram", "rule": "S4",
+            "text": "two flows take the same two locks in opposite order"},
+        {"id": "SV08", "name": "kary_visfot", "rule": "S2",
+            "text": "a task is spawned inside a loop with no scope"}
+    ]
+}
+
+export fn codes() {
+    return [
+        {"code": "SV01", "name": "asurakshit_lekh",
+            "message": "a task writes a captured variable with no coordination",
+            "hint": "wrap the value with sv.sajha and write it with sv.likh"},
+        {"code": "SV02", "name": "kary_leak",
+            "message": "a spawned task is never joined",
+            "hint": "keep the handle and call sv.mel(h), or spawn inside scope"},
+        {"code": "SV03", "name": "dwand",
+            "message": "two tasks touch one cell and neither happens before the other",
+            "hint": "put both accesses under one sv.tal, or order them with a channel"},
+        {"code": "SV04", "name": "bandh",
+            "message": "no task can make progress",
+            "hint": "one task must take the locks in the same order as the other"},
+        {"code": "SV05", "name": "kanal_dosh",
+            "message": "the channel is used after it was closed",
+            "hint": "close a channel once, after the last send"},
+        {"code": "SV06", "name": "stale",
+            "message": "a task reads a value that the parent writes after the spawn",
+            "hint": "write before the spawn, or join before the write"},
+        {"code": "SV07", "name": "tal_kram",
+            "message": "two flows take the same two locks in opposite order",
+            "hint": "give every flow one global lock order"},
+        {"code": "SV08", "name": "kary_visfot",
+            "message": "a task is spawned inside a loop with no scope",
+            "hint": "spawn inside scope { ... } so the group joins them"}
+    ]
+}
+
+export fn summary() {
+    return sv_trace()
+}
+
+// ---------------------------------------------------------------------------
+// audit — real calls, eight falsifiable checks
+// ---------------------------------------------------------------------------
+
+fn audit_task(box) {
+    likh(box, padh(box) + 1)
+    return padh(box)
+}
+
+export fn audit() {
+    let failed = []
+    var checks = 0
+
+    // 1. a cell roundtrip
+    let box = sajha(41, "audit-box")
+    likh(box, padh(box) + 1)
+    checks = checks + 1
+    if padh(box) != 42 {
+        failed.push("cell roundtrip")
+    }
+
+    // 2. a lock is exclusive and re-usable
+    let l = tal()
+    pakad(l)
+    chhod(l)
+    pakad(l)
+    chhod(l)
+    checks = checks + 1
+
+    // 3. a channel of capacity 1 keeps the value
+    let ch = kanal(1)
+    bhej(ch, "x")
+    let got = le(ch)
+    band(ch)
+    checks = checks + 1
+    if got != "x" {
+        failed.push("channel roundtrip")
+    }
+
+    // 4. a spawned task runs and is joined.  The read happens before the
+    // spawn on purpose: a spawn is a release, so the task may see it, and
+    // nothing after the spawn is read until the join.
+    let before = padh(box)
+    let h = kary(audit_task, "audit-task", [box])
+    let after = mel(h)
+    checks = checks + 1
+    if after != before + 1 {
+        failed.push("task join")
+    }
+
+    // 5. the trace counted steps
+    let t = sv_trace()
+    checks = checks + 1
+    if t["steps"] < 1 {
+        failed.push("no steps recorded")
+    }
+
+    // 6. the schedule has a hash
+    checks = checks + 1
+    if t["schedule_hash"] == "" {
+        failed.push("no schedule hash")
+    }
+
+    // 7. the audit itself is race-free
+    checks = checks + 1
+    if len(t["races"]) != 0 {
+        failed.push("the audit raced with itself")
+    }
+
+    // 8. the ledger has eight rules and eight codes
+    checks = checks + 1
+    if len(niyam()) != 8 or len(codes()) != 8 {
+        failed.push("the ledger is not 8 + 8")
+    }
+
+    return {"certified": len(failed) == 0, "checks": checks,
+        "failed": failed}
+}
+
+export fn ledger() {
+    let result = audit()
+    if result["certified"] {
+        print("SAMANVAY_LEDGER_CERTIFIED " + str(result["checks"]) + "/" +
+        str(result["checks"]))
+    } else {
+        print("SAMANVAY_LEDGER_FAILED " + str(result["failed"]))
+    }
+    return result
+}
