@@ -1,0 +1,74 @@
+// tools/maturity/raksha_core.bun — a four-engine parity fixture.
+//
+// antar owns only the integer core, so the Raksha rule ledger is queried
+// through a function of the code number instead of a dict. Every answer is
+// computed by a real branch, a real loop and a real call, on tree / vm /
+// register / antar alike. No import, no with, no try, no container: that is
+// the boundary the antar engine states by name.
+
+fn ledger_size() -> int {
+    return 14
+}
+
+// 1 = swatva / sanchay (ownership)
+// 2 = udhaar / adhikar / kaal (loans)
+// 3 = parinam / vikalp (channels)
+// 4 = nidan / refusal (diagnostics)
+// 0 = not a rule of the ledger
+fn rule_family(code: int) -> int {
+    if code == 1 { return 1 }
+    if code == 2 { return 1 }
+    if code == 3 { return 2 }
+    if code == 4 { return 2 }
+    if code == 5 { return 2 }
+    if code == 6 { return 1 }
+    if code == 7 { return 1 }
+    if code == 8 { return 2 }
+    if code == 9 { return 1 }
+    if code == 10 { return 3 }
+    if code == 11 { return 3 }
+    if code == 12 { return 4 }
+    if code == 13 { return 2 }
+    if code == 14 { return 1 }
+    return 0
+}
+
+fn count_family(family: int) -> int {
+    var total = 0
+    for i in range(1, 15) {
+        if rule_family(i) == family { total = total + 1 }
+    }
+    return total
+}
+
+fn ledger_sum() -> int {
+    var total = 0
+    for f in range(1, 5) {
+        total = total + count_family(f)
+    }
+    return total
+}
+
+fn first_unknown() -> int {
+    var i = 1
+    while i <= ledger_size() {
+        if rule_family(i) == 0 { return i }
+        i = i + 1
+    }
+    return 0
+}
+
+// Bun borrowed Rust's principles, not its grammar: zero copied syntax.
+fn copied_syntax() -> int {
+    return 0
+}
+
+print(ledger_size())
+print(count_family(1))
+print(count_family(2))
+print(count_family(3))
+print(count_family(4))
+print(count_family(0))
+print(ledger_sum())
+print(first_unknown())
+print(copied_syntax())

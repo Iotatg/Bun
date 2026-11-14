@@ -1,0 +1,89 @@
+// examples/raksha.bun — Bun 0.7.0 «Raksha» in one deterministic program.
+//
+// Every new word below is an ordinary module function name, not a keyword:
+// swatva / udhaar / adhikar / padh / likh / sanchay / visarjan / kosh /
+// parinam / vikalp / niyam. The only control flow is Bun's own `with`,
+// `try/catch` and `?`. Rust's principles are borrowed; its syntax is not.
+
+import "bun:raksha" as rk
+
+// `?` is Bun's own operator and is legal only inside a function whose
+// declared result channel is `result`.
+fn half(n: int) -> result {
+    if n % 2 != 0 { return Err("odd") }
+    return Ok(n / 2)
+}
+
+fn twice(n: int) -> result {
+    let v = half(n)?
+    return Ok(v * 2)
+}
+
+print("RAKSHA: swatva / udhaar / adhikar / sanchay / kosh / parinam")
+
+// 1. `with ... as` is deterministic release. A shared loan reads the value;
+//    when the block ends __exit__ ends the loan's kaal and calls visarjan().
+var first_cap = null
+with rk.swatva([1, 2, 3]) as a {
+    first_cap = a
+    let shared = rk.udhaar(a)
+    print(rk.padh(shared))
+    print(shared["reads"])
+}
+print(first_cap["sthiti"])
+print(first_cap["drop_log"].len())
+
+// 2. An exclusive loan may write; a shared one may not.
+var second_cap = null
+with rk.swatva(10) as b {
+    second_cap = b
+    let exclusive = rk.adhikar(b)
+    print(rk.likh(exclusive, 25))
+    print(rk.padh(exclusive))
+    print(exclusive["writes"])
+}
+print(second_cap["sthiti"])
+
+// 3. sanchay() transfers ownership. The old owner is refused by name and
+//    the refusal is caught, so the program stays deterministic.
+let source = rk.swatva(7)
+let moved = rk.sanchay(source)
+print(moved["value"])
+print(source["sthiti"])
+try {
+    // raksha:allow RK01: demo deliberately moves source and catches the runtime refusal
+    rk.udhaar(source)
+} catch e {
+    print(e)
+}
+rk.visarjan(moved)
+print(moved["sthiti"])
+
+// 4. kosh is interior mutability with a runtime alias check. A live lease
+//    in the exposed `borrows` list makes a write a named refusal.
+let cell = rk.kosh(40)
+print(rk.kosh_padh(cell))
+print(rk.kosh_likh(cell, 41))
+print(rk.kosh_padh(cell))
+cell["borrows"].push({"kind": "adhikar", "id": 1})
+try {
+    rk.kosh_likh(cell, 42)
+} catch e {
+    print(e)
+}
+cell["borrows"] = []
+print(rk.kosh_padh(cell))
+
+// 5. The Ok/Err channel: parinam_chain, parinam_or and Bun's own `?`.
+let chained = rk.parinam_chain(Ok(21), fn(x) { return Ok(x * 2) })
+print(chained["ok"])
+print(rk.parinam_or(Err("bad"), 99))
+let via_question = twice(16)
+print(via_question["ok"])
+
+// 6. The rule ledger challenges itself with 15 real calls.
+let ledger = rk.audit()
+print(ledger["passed"])
+print(ledger["total"])
+print(rk.audit()["verdict"])
+print("RAKSHA LEDGER CERTIFIED")

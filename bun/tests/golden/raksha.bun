@@ -1,0 +1,9 @@
+// The Raksha wave in the golden corpus: one owner, one shared loan, one
+// read and Bun's own `with` release.  No new keyword; every new word is a
+// module function name, so tree, vm and register must print the same bytes.
+import "bun:raksha" as rk
+with rk.swatva(7) as a {
+    let l = rk.udhaar(a)
+    print(rk.padh(l))
+}
+print(rk.audit()["verdict"])

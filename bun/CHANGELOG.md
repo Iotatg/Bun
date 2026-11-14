@@ -4,6 +4,65 @@ All notable changes to the Bun language are recorded here.  The version
 number is the one `bun version` prints; a release is only made after the
 full test suite passes and the maturity probe has written a real receipt.
 
+## 0.7.0 — 2026-11-14
+
+The safety wave.  It adds **Raksha** (रक्षा, "protection"): a static
+memory-safety pass, a runtime library written in Bun, and a ledger of
+rules and error codes.  The idea is the useful half of Rust's ownership
+model — exactly one owner, move, shared XOR exclusive loans, regions as
+sets of program points, deterministic destruction, interior mutability,
+result/option channels and labelled diagnostics.  **原理借用、语法未借用**
+(the principle is borrowed, the syntax is not): there is no `&`, no `'a`,
+no `mut`, no `unsafe`, no `Drop` trait and no `Result<T,E>`.  Every new
+word is a function name of `bun:raksha`, no keyword was added, and the
+118 language packs can therefore write the wave on the day it ships.
+
+- **One memory flow per function.**  `bun/raksha.py` lowers statements to
+  `bindu` (program points) and edges, computes predecessors, reverse
+  postorder, dominators and natural loops, and infers each loan's `kaal`
+  as the set of points reachable from its issue to its last use — the NLL
+  idea of a region, not a lexical scope.  Two overlapping regions with an
+  `adhikar` between them are refused statically.
+- **14 error codes, 14 names.**  `RK01`–`RK14` cover use after move,
+  double move, loan conflict, write through a shared loan, move while
+  loaned, use after release, double release, loan escape, owner leak,
+  unhandled result, unchecked option, unsafe/raw-pointer names refused,
+  a loan crossing into `spawn`, and drop order.  Each `nidan` carries a
+  primary `sthan`, labelled `chinh` spans, a hint and notes.
+- **Bun-style RAII, not Rust syntax.**  `swatva(value)` returns an owner
+  dict carrying `__enter__` and `__exit__`; the existing `with ... as ...`
+  statement therefore calls `visarjan` on a normal exit *and* on a throw,
+  with `__exit__(err)` distinguishing the two.  `on leave { ... }` is the
+  explicit cleanup spelling.  No new statement, no new opcode.
+- **A runtime library in Bun.**  `lib/bun/raksha.bun` exports `swatva`,
+  `sanchay`, `udhaar`, `adhikar`, `padh`, `likh`, `visarjan`, `kosh`,
+  `parinam_*`, `vikalp_*`, `niyam()`, `codes()`, `audit()` and
+  `summary()`.  Its `audit()` uses real calls, not a table lookup, and
+  certifies the ledger with `RAKSHA_LEDGER_CERTIFIED`.
+- **Two commands.**  `bun raksha <file.bun>` prints the analysis;
+  `--json`, `--dot`, `--stats`, `--verify` and `--explain` answer the
+  five questions a tool asks.  A diagnostic or a failed `verify()` gives
+  exit status 1.  `bun check --raksha <file.bun>` folds the nidan into
+  the ordinary `check` diagnostics, and `bun check` without the flag is
+  unchanged.
+- **An honest boundary.**  `antar` refuses `with` by name because its
+  machine does not implement that statement; Raksha does not refuse it —
+  it is the construct the cleanup edge is built on.  The four-engine
+  maturity program `tools/maturity/raksha_core.bun` deliberately avoids
+  `with` so tree, vm, register and antar stay byte-identical.
+- **The identity ledger grew without a keyword.**  `bun:identity` gains
+  one `bun` family (`safety`, held to R5) and three canonical forms —
+  `with rk.swatva(v) as a { ... }`, `on leave { rk.visarjan(a) }` and
+  `import "bun:raksha" as rk`.  `keywords()` is untouched and `audit()`
+  still runs exactly 15 falsifiable checks.  The counts in
+  `docs/reference/bun-identity.md` are updated with it.
+- **Reference and receipts.**  `docs/reference/raksha.md` is the normative
+  reference: vocabulary, the 14 codes, the `with`/`__exit__` protocol,
+  `kaal`/region, a Rust comparison table that names what was and was not
+  borrowed, both commands, and reproducible commands.  The acceptance
+  receipts (`pytest`, maturity probe, `tools/verify_raksha.py`,
+  `bun doctor`, four-engine parity) live in `/workspace/`.
+
 ## 0.6.0 — 2026-11-14
 
 The graph wave.  It adds **Antar** (`antar`, "the inside"), Bun's own

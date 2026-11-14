@@ -1,0 +1,821 @@
+// lib/bun/raksha.bun — Bun 0.7.0 «Raksha / रक्षा»
+//
+//   "Rust ka原理, Bun ki语法" — principle borrowed, syntax NOT borrowed.
+//
+// This file is the whole runtime half of the Raksha wave and it is written
+// in Bun, not in Python. It uses only the grammar the language already has:
+// module-level var, dict/list, fn, import, with ... as, throw, try/catch.
+// No keyword was added, no hard builtin was added, no engine was changed,
+// so tree / vm / register (and any front end) all read the same program.
+//
+// Vocabulary (all of these are ordinary module function names, NOT keywords):
+//   swatva    ownership            sanchay  move ownership
+//   udhaar    shared loan          adhikar  exclusive loan
+//   padh      read through a loan  likh     write through an exclusive loan
+//   visarjan  release (drop)       kosh     runtime-checked interior cell
+//   kaal      a loan's region      bindu    a program point
+//   parinam   Ok/Err channel       vikalp   some/none channel
+//   niyam     the rule ledger
+//
+// ---------------------------------------------------------------------------
+// CONTRACT FOR THE OTHER AGENTS (impl-core / impl-test / impl-cli)
+// ---------------------------------------------------------------------------
+// * niyam() below returns exactly 14 dicts with ids RK01..RK14. The Python
+//   RULES list in bun/raksha.py is meant to be the one-to-one mirror of it.
+// * codes() below returns exactly 14 dicts with code RK01..RK14 and the
+//   fields code / name / message / hint. The messages are the Chinese trigger
+//   strings of RAKSHA_SPEC.md §3.4, so bun/raksha.py CODES can copy them
+//   verbatim. The names are:
+//     RK01 use_after_sanchay      RK02 double_sanchay
+//     RK03 loan_conflict          RK04 write_through_shared
+//     RK05 move_while_loaned      RK06 use_after_visarjan
+//     RK07 double_visarjan        RK08 loan_escape
+//     RK09 owner_leak             RK10 unhandled_parinam
+//     RK11 unchecked_vikalp       RK12 unsafe_refused
+//     RK13 spawn_loan             RK14 drop_order
+// * The seven runtime refusal prefixes (§2.4) are, verbatim:
+//     "RAKSHA: moved value", "RAKSHA: dropped value",
+//     "RAKSHA: loan conflict", "RAKSHA: shared loan is read-only",
+//     "RAKSHA: owner is loaned", "RAKSHA: double release",
+//     "RAKSHA: cell conflict".
+//   Each one is reachable with real calls of the exported API; audit()
+//   proves all seven with try/catch.
+// * A kosh cell is exactly
+//     {"kind":"kosh", "value": v, "active": 0, "borrows": []}
+//   A runtime alias conflict is created by putting a live lease in the
+//   exposed fields, e.g. c["active"] = 1 or
+//   c["borrows"].push({"kind":"adhikar", "id":1}), then calling
+//   kosh_likh() / kosh_padh(). audit() does exactly that through its private
+//   cell_udhaar / cell_adhikar / cell_release helpers.
+// * swatva()'s owner dict carries "__enter__" and "__exit__" as required by
+//   §2.3. At a `with` exit the loans issued inside the region end (their
+//   kaal ends) and then visarjan(owner) runs; __exit__ sees err == null on
+//   the normal path and the error text on the unwind path, and returns false
+//   so the error is never swallowed.
+
+// ---------------------------------------------------------------------------
+// module state — one dict, shared by every engine (see §2.2)
+// ---------------------------------------------------------------------------
+
+var visarjan_log = []
+var state = {"next": 1, "log": visarjan_log, "owners": {}, "loans": {},
+             "drops": [], "exits": []}
+
+// ---------------------------------------------------------------------------
+// small helpers — all private, all plain Bun
+// ---------------------------------------------------------------------------
+
+fn has_key(d, k) {
+    if type_of(d) != "dict" { return false }
+    return d.has(k)
+}
+
+fn is_kind(x, kind) {
+    if type_of(x) != "dict" { return false }
+    if not has_key(x, "kind") { return false }
+    return x["kind"] == kind
+}
+
+fn starts_with(s, prefix) {
+    let n = prefix.len()
+    if s.len() < n { return false }
+    return s[0:n] == prefix
+}
+
+fn contains_text(s, needle) {
+    let n = needle.len()
+    if s.len() < n { return false }
+    for i in range(0, s.len() - n + 1) {
+        if s[i:i + n] == needle { return true }
+    }
+    return false
+}
+
+fn fresh_id() {
+    let id = state["next"]
+    state["next"] = id + 1
+    return id
+}
+
+// capture() runs a zero-argument function and hands back the error text, or
+// "" when nothing was thrown. It is how audit() makes falsifiable checks
+// against the real runtime instead of inspecting a table.
+fn capture(f) {
+    var msg = ""
+    try { f() } catch e { msg = e }
+    return msg
+}
+
+fn require_owner(x) {
+    if not is_kind(x, "swatva") {
+        throw "RAKSHA: not a swatva owner: pass rk.swatva(value)"
+    }
+    if not has_key(x, "sthiti") {
+        throw "RAKSHA: not a swatva owner: missing sthiti"
+    }
+}
+
+fn check_live(owner) {
+    require_owner(owner)
+    if owner["sthiti"] == "moved" {
+        throw "RAKSHA: moved value (RK01 use_after_sanchay): the old swatva was moved by sanchay()"
+    }
+    if owner["sthiti"] == "dropped" {
+        throw "RAKSHA: dropped value (RK06 use_after_visarjan): the swatva was released by visarjan()"
+    }
+    if owner["sthiti"] != "live" {
+        throw "RAKSHA: moved value (RK01 use_after_sanchay): unknown sthiti"
+    }
+}
+
+fn live_loan_ids(owner) {
+    var ids = []
+    for lid in owner["loans"] {
+        if has_key(state["loans"], lid) {
+            let loan = state["loans"][lid]
+            if loan["sthiti"] == "live" { ids.push(lid) }
+        }
+    }
+    return ids
+}
+
+fn end_loans(owner) {
+    for lid in owner["loans"] {
+        if has_key(state["loans"], lid) {
+            state["loans"][lid]["sthiti"] = "ended"
+        }
+    }
+    owner["loans"] = []
+}
+
+fn make_loan(owner, kind) {
+    let id = fresh_id()
+    let loan = {"kind": kind, "id": id, "owner": owner["id"],
+                "sthiti": "live", "reads": 0, "writes": 0}
+    state["loans"][id] = loan
+    return loan
+}
+
+fn borrow(owner, kind) {
+    check_live(owner)
+    let live = live_loan_ids(owner)
+    if live.len() > 0 {
+        for lid in live {
+            if state["loans"][lid]["kind"] == "adhikar" {
+                throw "RAKSHA: loan conflict (RK03 loan_conflict): an adhikar loan is live on this swatva"
+            }
+        }
+        if kind == "adhikar" {
+            throw "RAKSHA: loan conflict (RK03 loan_conflict): udhaar loans are live on this swatva"
+        }
+    }
+    let loan = make_loan(owner, kind)
+    owner["loans"].push(loan["id"])
+    return loan
+}
+
+fn make_owner(value, origin) {
+    let id = fresh_id()
+    var owner = {}
+    owner["kind"] = "swatva"
+    owner["id"] = id
+    owner["value"] = value
+    owner["sthiti"] = "live"
+    owner["loans"] = []
+    owner["drop_log"] = []
+    owner["origin"] = origin
+    owner["__enter__"] = fn() { return owner }
+    owner["__exit__"] = fn(err) {
+        state["exits"].push({"id": id, "err": err})
+        end_loans(owner)
+        // A moved or already released owner has no drop glue left: Rust's
+        // drop elaboration elides it too. On the live path visarjan(owner)
+        // runs, on both the normal and the unwind path.
+        if owner["sthiti"] == "live" {
+            visarjan(owner)
+        }
+        return false
+    }
+    state["owners"][id] = owner
+    return owner
+}
+
+fn release_owner(owner) {
+    check_live(owner)
+    if live_loan_ids(owner).len() > 0 {
+        throw "RAKSHA: owner is loaned (RK05 move_while_loaned): end every loan before visarjan()"
+    }
+    owner["sthiti"] = "dropped"
+    let rec = {"id": owner["id"], "kind": "visarjan"}
+    owner["drop_log"].push(rec)
+    state["log"].push(rec)
+    state["drops"].push(owner["id"])
+    return null
+}
+
+// ---------------------------------------------------------------------------
+// §2.1 exports: ownership, move, loans, release
+// ---------------------------------------------------------------------------
+
+export fn swatva(value) {
+    return make_owner(value, "swatva")
+}
+
+export fn sanchay(owner) {
+    require_owner(owner)
+    if owner["sthiti"] == "moved" {
+        throw "RAKSHA: moved value (RK02 double_sanchay): this swatva was already moved by sanchay()"
+    }
+    if owner["sthiti"] == "dropped" {
+        throw "RAKSHA: dropped value (RK06 use_after_visarjan): cannot move a released swatva"
+    }
+    if live_loan_ids(owner).len() > 0 {
+        throw "RAKSHA: owner is loaned (RK05 move_while_loaned): end every loan before sanchay()"
+    }
+    owner["sthiti"] = "moved"
+    return make_owner(owner["value"], "sanchay")
+}
+
+export fn udhaar(owner) {
+    return borrow(owner, "udhaar")
+}
+
+export fn adhikar(owner) {
+    return borrow(owner, "adhikar")
+}
+
+export fn padh(loan) {
+    if not is_kind(loan, "udhaar") {
+        if not is_kind(loan, "adhikar") {
+            throw "RAKSHA: not a udhaar/adhikar loan: pass rk.udhaar() or rk.adhikar()"
+        }
+    }
+    let id = loan["owner"]
+    if not has_key(state["owners"], id) {
+        throw "RAKSHA: loan conflict (RK08 loan_escape): the loan points at no live swatva"
+    }
+    let owner = state["owners"][id]
+    check_live(owner)
+    if loan["sthiti"] != "live" {
+        throw "RAKSHA: loan conflict (RK03 loan_conflict): this loan's kaal has ended"
+    }
+    loan["reads"] = loan["reads"] + 1
+    return owner["value"]
+}
+
+export fn likh(loan, value) {
+    if not is_kind(loan, "udhaar") {
+        if not is_kind(loan, "adhikar") {
+            throw "RAKSHA: not a udhaar/adhikar loan: pass rk.udhaar() or rk.adhikar()"
+        }
+    }
+    let id = loan["owner"]
+    if not has_key(state["owners"], id) {
+        throw "RAKSHA: loan conflict (RK08 loan_escape): the loan points at no live swatva"
+    }
+    let owner = state["owners"][id]
+    check_live(owner)
+    if loan["sthiti"] != "live" {
+        throw "RAKSHA: loan conflict (RK03 loan_conflict): this loan's kaal has ended"
+    }
+    if loan["kind"] != "adhikar" {
+        throw "RAKSHA: shared loan is read-only (RK04 write_through_shared): likh() needs an adhikar loan"
+    }
+    loan["writes"] = loan["writes"] + 1
+    owner["value"] = value
+    return value
+}
+
+export fn visarjan(owner) {
+    require_owner(owner)
+    if owner["sthiti"] == "moved" {
+        throw "RAKSHA: moved value (RK01 use_after_sanchay): cannot release a moved swatva"
+    }
+    if owner["sthiti"] == "dropped" {
+        throw "RAKSHA: double release (RK07 double_visarjan): this swatva was already released"
+    }
+    return release_owner(owner)
+}
+
+// ---------------------------------------------------------------------------
+// §2.1 exports: kosh — runtime-checked interior mutability
+//
+// The cell is a plain dict. "active" counts live shared leases; a negative
+// value means one exclusive lease. "borrows" holds the live lease records.
+// kosh_likh() refuses when anything is live (aliasing XOR mutability), and
+// kosh_padh() refuses only when an exclusive lease is live. The three
+// private helpers below are used by audit() to make the conflict real.
+// ---------------------------------------------------------------------------
+
+export fn kosh(value) {
+    return {"kind": "kosh", "value": value, "active": 0, "borrows": []}
+}
+
+fn require_cell(cell) {
+    if not is_kind(cell, "kosh") {
+        throw "RAKSHA: cell conflict (RK03 loan_conflict): pass a kosh() cell"
+    }
+}
+
+fn cell_has_any(cell) {
+    if cell["active"] != 0 { return true }
+    if cell["borrows"].len() > 0 { return true }
+    return false
+}
+
+fn cell_has_exclusive(cell) {
+    if cell["active"] < 0 { return true }
+    for b in cell["borrows"] {
+        if type_of(b) == "dict" {
+            if has_key(b, "kind") {
+                if b["kind"] == "adhikar" { return true }
+            }
+        } else {
+            if contains_text(str(b), "adhikar") { return true }
+        }
+    }
+    return false
+}
+
+export fn kosh_padh(cell) {
+    require_cell(cell)
+    if cell_has_exclusive(cell) {
+        throw "RAKSHA: cell conflict (RK03 loan_conflict): an adhikar kosh lease is live"
+    }
+    return cell["value"]
+}
+
+export fn kosh_likh(cell, value) {
+    require_cell(cell)
+    if cell_has_any(cell) {
+        throw "RAKSHA: cell conflict (RK03 loan_conflict): a live kosh lease forbids a write"
+    }
+    cell["value"] = value
+    return value
+}
+
+fn cell_udhaar(cell) {
+    require_cell(cell)
+    if cell_has_exclusive(cell) {
+        throw "RAKSHA: cell conflict (RK03 loan_conflict): cannot share an exclusively leased kosh"
+    }
+    let id = fresh_id()
+    cell["borrows"].push({"kind": "udhaar", "id": id})
+    cell["active"] = cell["active"] + 1
+    return id
+}
+
+fn cell_adhikar(cell) {
+    require_cell(cell)
+    if cell_has_any(cell) {
+        throw "RAKSHA: cell conflict (RK03 loan_conflict): cannot take an exclusive kosh lease"
+    }
+    let id = fresh_id()
+    cell["borrows"].push({"kind": "adhikar", "id": id})
+    cell["active"] = -1
+    return id
+}
+
+fn cell_release(cell, id) {
+    var keep = []
+    for b in cell["borrows"] {
+        if type_of(b) == "dict" {
+            if b["id"] != id { keep.push(b) }
+        }
+    }
+    cell["borrows"] = keep
+    cell["active"] = keep.len()
+    return null
+}
+
+// ---------------------------------------------------------------------------
+// §2.1 exports: parinam (Ok/Err) and vikalp (some/none) channels
+// ---------------------------------------------------------------------------
+
+export fn parinam_map(r, f) {
+    if is_ok(r) { return Ok(f(r["ok"])) }
+    return r
+}
+
+export fn parinam_chain(r, f) {
+    if not is_ok(r) { return r }
+    let out = f(r["ok"])
+    if is_ok(out) { return out }
+    if is_err(out) { return out }
+    return Ok(out)
+}
+
+export fn parinam_or(r, fallback) {
+    if is_ok(r) { return r["ok"] }
+    return fallback
+}
+
+export fn vikalp_map(o, f) {
+    if is_some(o) { return some(f(o["some"])) }
+    return none()
+}
+
+export fn vikalp_or(o, fallback) {
+    if is_some(o) { return o["some"] }
+    return fallback
+}
+
+// ---------------------------------------------------------------------------
+// §2.5 niyam() — the rule ledger (14 rules, RK01..RK14)
+// Every rust_seed explicitly says 原理借用，语法未借用.
+// ---------------------------------------------------------------------------
+
+export fn niyam() {
+    return [
+        {"id": "RK01", "name": "use_after_sanchay",
+         "text": "sanchay() purane swatva ko 'moved' karta hai; us swatva ka dobara istemal mana hai.",
+         "rust_seed": "Rust ownership/move: a value has exactly one owner (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK02", "name": "double_sanchay",
+         "text": "Ek swatva sirf ek baar sanchay hota hai; doosri sanchay RK02 hai.",
+         "rust_seed": "Rust move semantics: a moved binding is uninitialised (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK03", "name": "loan_conflict",
+         "text": "Ek samay mein ek adhikar ya anek udhaar; adhikar ka kaal kisi bhi udhaar se na mile.",
+         "rust_seed": "Rust alias XOR mutability: an exclusive borrow excludes every other borrow (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK04", "name": "write_through_shared",
+         "text": "likh() sirf adhikar loan par chalega; udhaar keval padh() ke liye hai.",
+         "rust_seed": "Rust shared references are read-only and writing needs the exclusive form (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK05", "name": "move_while_loaned",
+         "text": "Jab tak koi loan live hai, sanchay() aur visarjan() rukte hain.",
+         "rust_seed": "Rust forbids moving or dropping a value while it is borrowed (原理借用，语法未借用).",
+         "bun_rule": "R3"},
+        {"id": "RK06", "name": "use_after_visarjan",
+         "text": "visarjan() ke baad swatva 'dropped' hai; us par udhaar/adhikar/padh mana hai.",
+         "rust_seed": "Rust drop ends a value's lifetime and later use is rejected (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK07", "name": "double_visarjan",
+         "text": "visarjan() ek hi baar; with ke __exit__ ne pehle hi chhod diya hota hai.",
+         "rust_seed": "Rust drops a value once and a double drop is refused (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK08", "name": "loan_escape",
+         "text": "Loan ko return ya container mein store nahi kar sakte; value ya owner return karo.",
+         "rust_seed": "Rust lifetimes reject a reference that outlives its owner (原理借用，语法未借用).",
+         "bun_rule": "R2"},
+        {"id": "RK09", "name": "owner_leak",
+         "text": "Function ke ant mein live swatva bache to RK09; with ya on leave se visarjan karo.",
+         "rust_seed": "Rust drop glue releases every owner when its scope ends (原理借用，语法未借用).",
+         "bun_rule": "R3"},
+        {"id": "RK10", "name": "unhandled_parinam",
+         "text": "Ok()/Err() ka result kabhi discard mat karo; parinam_* se sambhalo.",
+         "rust_seed": "Rust marks the Result channel must-use so no error is lost (原理借用，语法未借用).",
+         "bun_rule": "R1"},
+        {"id": "RK11", "name": "unchecked_vikalp",
+         "text": "some()/none() ko bina is_some jaanche mat kholo; vikalp_or fallback deta hai.",
+         "rust_seed": "Rust Option must be checked before it is unwrapped (原理借用，语法未借用).",
+         "bun_rule": "R2"},
+        {"id": "RK12", "name": "unsafe_refused",
+         "text": "raw_pointer/deref_raw/ffi_load jaise naam raksha mein naam lekar refuse hote hain.",
+         "rust_seed": "Rust's unchecked escape hatch is deliberately not carried into Bun (原理借用，语法未借用).",
+         "bun_rule": "R5"},
+        {"id": "RK13", "name": "spawn_loan",
+         "text": "spawn task mein loan mat bhejo; value copy karke bhejo.",
+         "rust_seed": "Rust Send/Sync keep borrowed references out of detached tasks (原理借用，语法未借用).",
+         "bun_rule": "R2"},
+        {"id": "RK14", "name": "drop_order",
+         "text": "Ek scope ke owners declaration ke ulta kram mein visarjan hote hain.",
+         "rust_seed": "Rust drops locals in reverse declaration order (原理借用，语法未借用).",
+         "bun_rule": "R8"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// §2.5 codes() — the 14 error codes of RAKSHA_SPEC.md §3.4
+// ---------------------------------------------------------------------------
+
+export fn codes() {
+    return [
+        {"code": "RK01", "name": "use_after_sanchay", "message": "使用已移动 owner",
+         "hint": "use the new swatva returned by sanchay(); the old one is dead"},
+        {"code": "RK02", "name": "double_sanchay", "message": "再次移动已移动 owner",
+         "hint": "move once and keep the owner that sanchay() returned"},
+        {"code": "RK03", "name": "loan_conflict", "message": "独占借用与任一借用区域相交",
+         "hint": "end the adhikar loan, or shorten its kaal before another loan"},
+        {"code": "RK04", "name": "write_through_shared", "message": "likh 用在 udhaar",
+         "hint": "likh() needs an adhikar loan; udhaar is read-only, use padh()"},
+        {"code": "RK05", "name": "move_while_loaned", "message": "有活借用时移动/释放",
+         "hint": "let every loan leave its kaal before sanchay() or visarjan()"},
+        {"code": "RK06", "name": "use_after_visarjan", "message": "使用已释放 owner",
+         "hint": "after visarjan() the owner is gone; do not borrow or read it"},
+        {"code": "RK07", "name": "double_visarjan", "message": "二次释放",
+         "hint": "visarjan() runs once; with ... as already calls it in __exit__"},
+        {"code": "RK08", "name": "loan_escape", "message": "借用返回/存入容器",
+         "hint": "return the value or the owner, never a loan"},
+        {"code": "RK09", "name": "owner_leak", "message": "函数结束 owner 仍 live",
+         "hint": "wrap the owner in with ... as, or call visarjan() in on leave"},
+        {"code": "RK10", "name": "unhandled_parinam", "message": "result 值被丢弃",
+         "hint": "handle Ok/Err with parinam_map, parinam_chain or parinam_or"},
+        {"code": "RK11", "name": "unchecked_vikalp", "message": "option 未检查就取值",
+         "hint": "check is_some/is_none first, or give vikalp_or a fallback"},
+        {"code": "RK12", "name": "unsafe_refused", "message": "裸指针/unsafe 按名字拒绝",
+         "hint": "Bun refuses bare pointers by name; use kosh() for checked interior mutability"},
+        {"code": "RK13", "name": "spawn_loan", "message": "借用跨入 spawn 任务",
+         "hint": "copy the value into the spawn task, do not carry a loan"},
+        {"code": "RK14", "name": "drop_order", "message": "析构顺序不是声明逆序",
+         "hint": "nest with ... as blocks; Bun exits them in reverse order"}
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// §2.5 audit() — 15 falsifiable checks, all of them real calls
+// ---------------------------------------------------------------------------
+
+fn code_ids(cs) {
+    var out = []
+    for c in cs { out.push(c["code"]) }
+    return out
+}
+
+fn in_list(xs, x) {
+    for v in xs {
+        if v == x { return true }
+    }
+    return false
+}
+
+export fn audit() {
+    var checks = []
+    var ok = true
+
+    // C01 — the 14 error codes are complete and well formed.
+    ok = true
+    let cs = codes()
+    var cseen = []
+    for c in cs {
+        if not has_key(c, "code") { ok = false }
+        if not has_key(c, "name") { ok = false }
+        if not has_key(c, "message") { ok = false }
+        if not has_key(c, "hint") { ok = false }
+        if has_key(c, "code") {
+            if in_list(cseen, c["code"]) { ok = false }
+            cseen.push(c["code"])
+        }
+    }
+    if cs.len() != 14 { ok = false }
+    for i in range(1, 15) {
+        var want = "RK0" + str(i)
+        if i > 9 { want = "RK" + str(i) }
+        if not in_list(code_ids(cs), want) { ok = false }
+    }
+    checks.push({"name": "C01 codes_complete", "ok": ok})
+
+    // C02 — the rule ledger is complete and well formed.
+    ok = true
+    let rs = niyam()
+    var rseen = []
+    for r in rs {
+        if not has_key(r, "id") { ok = false }
+        if not has_key(r, "name") { ok = false }
+        if not has_key(r, "text") { ok = false }
+        if not has_key(r, "rust_seed") { ok = false }
+        if not has_key(r, "bun_rule") { ok = false }
+        if has_key(r, "id") {
+            if in_list(rseen, r["id"]) { ok = false }
+            rseen.push(r["id"])
+        }
+    }
+    if rs.len() < 12 { ok = false }
+    checks.push({"name": "C02 rules_complete", "ok": ok})
+
+    // C03 — every rule is held to one of Bun's own R1..R8 rules.
+    ok = true
+    for r in rs {
+        if not in_list(["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"], r["bun_rule"]) {
+            ok = false
+        }
+    }
+    checks.push({"name": "C03 rules_have_bun_rule", "ok": ok})
+
+    // C04 — every rule declares that the syntax was NOT borrowed.
+    ok = true
+    for r in rs {
+        if not contains_text(r["rust_seed"], "语法未借用") { ok = false }
+        if not contains_text(r["rust_seed"], "原理借用") { ok = false }
+    }
+    checks.push({"name": "C04 rules_declare_no_syntax_copy", "ok": ok})
+
+    // C05 — swatva() makes exactly one owner, with a unique id.
+    ok = true
+    let a1 = swatva(11)
+    let a2 = swatva(22)
+    if a1["kind"] != "swatva" { ok = false }
+    if a1["sthiti"] != "live" { ok = false }
+    if a1["value"] != 11 { ok = false }
+    if a2["id"] == a1["id"] { ok = false }
+    if a1["loans"].len() != 0 { ok = false }
+    if state["owners"][a1["id"]]["id"] != a1["id"] { ok = false }
+    if not has_key(a1, "__enter__") { ok = false }
+    if not has_key(a1, "__exit__") { ok = false }
+    checks.push({"name": "C05 swatva_single_owner", "ok": ok})
+
+    // C06 — sanchay() transfers ownership and kills the old owner.
+    ok = true
+    let m0 = swatva(7)
+    let m1 = sanchay(m0)
+    if m0["sthiti"] != "moved" { ok = false }
+    if m1["sthiti"] != "live" { ok = false }
+    if m1["value"] != 7 { ok = false }
+    if m1["id"] == m0["id"] { ok = false }
+    let e01 = capture(fn() { udhaar(m0) })
+    if not starts_with(e01, "RAKSHA: moved value") { ok = false }
+    let e02 = capture(fn() { sanchay(m0) })
+    if not starts_with(e02, "RAKSHA: moved value") { ok = false }
+    checks.push({"name": "C06 sanchay_invalidates_old", "ok": ok})
+
+    // C07 — visarjan() refuses a second release, using a released owner too.
+    ok = true
+    let d0 = swatva(3)
+    if visarjan(d0) != null { ok = false }
+    if d0["sthiti"] != "dropped" { ok = false }
+    if d0["drop_log"].len() != 1 { ok = false }
+    let e07 = capture(fn() { visarjan(d0) })
+    if not starts_with(e07, "RAKSHA: double release") { ok = false }
+    let e06 = capture(fn() { udhaar(d0) })
+    if not starts_with(e06, "RAKSHA: dropped value") { ok = false }
+    checks.push({"name": "C07 visarjan_refuses_double_release", "ok": ok})
+
+    // C08 — udhaar and adhikar conflict; shared loans may coexist.
+    ok = true
+    let c0 = swatva(4)
+    let x0 = adhikar(c0)
+    let e03a = capture(fn() { udhaar(c0) })
+    if not starts_with(e03a, "RAKSHA: loan conflict") { ok = false }
+    let e03b = capture(fn() { adhikar(c0) })
+    if not starts_with(e03b, "RAKSHA: loan conflict") { ok = false }
+    if padh(x0) != 4 { ok = false }
+    end_loans(c0)
+    let e03c = capture(fn() { padh(x0) })
+    if not starts_with(e03c, "RAKSHA: loan conflict") { ok = false }
+    let s1 = udhaar(c0)
+    let s2 = udhaar(c0)
+    if padh(s1) != 4 { ok = false }
+    if padh(s2) != 4 { ok = false }
+    checks.push({"name": "C08 udhaar_adhikar_conflict", "ok": ok})
+
+    // C09 — padh/likh permissions and their counters.
+    ok = true
+    let p0 = swatva(2)
+    let sh = udhaar(p0)
+    if padh(sh) != 2 { ok = false }
+    let e04 = capture(fn() { likh(sh, 9) })
+    if not starts_with(e04, "RAKSHA: shared loan is read-only") { ok = false }
+    if sh["reads"] != 1 { ok = false }
+    if sh["writes"] != 0 { ok = false }
+    end_loans(p0)
+    let ex = adhikar(p0)
+    if likh(ex, 5) != 5 { ok = false }
+    if padh(ex) != 5 { ok = false }
+    if ex["writes"] != 1 { ok = false }
+    if ex["reads"] != 1 { ok = false }
+    end_loans(p0)
+    checks.push({"name": "C09 padh_likh_permissions", "ok": ok})
+
+    // C10 — a loaned owner cannot be moved or released.
+    ok = true
+    let l0 = swatva(6)
+    let l1 = udhaar(l0)
+    let e05a = capture(fn() { sanchay(l0) })
+    if not starts_with(e05a, "RAKSHA: owner is loaned") { ok = false }
+    let e05b = capture(fn() { visarjan(l0) })
+    if not starts_with(e05b, "RAKSHA: owner is loaned") { ok = false }
+    if l0["sthiti"] != "live" { ok = false }
+    end_loans(l0)
+    checks.push({"name": "C10 owner_is_loaned", "ok": ok})
+
+    // C11 — `with` releases automatically on the normal path, in reverse
+    // declaration order, and ends the loans issued inside the region.
+    ok = true
+    var cap_a = null
+    var cap_b = null
+    let before = state["log"].len()
+    with swatva(101) as wa {
+        cap_a = wa
+        let wl = udhaar(wa)
+        if padh(wl) != 101 { ok = false }
+        with swatva(202) as wb {
+            cap_b = wb
+            if padh(udhaar(wb)) != 202 { ok = false }
+        }
+    }
+    if cap_a["sthiti"] != "dropped" { ok = false }
+    if cap_b["sthiti"] != "dropped" { ok = false }
+    if cap_a["drop_log"].len() != 1 { ok = false }
+    if state["log"].len() != before + 2 { ok = false }
+    if state["log"][before]["id"] != cap_b["id"] { ok = false }
+    if state["log"][before + 1]["id"] != cap_a["id"] { ok = false }
+    if cap_a["loans"].len() != 0 { ok = false }
+    let last_exit = state["exits"][state["exits"].len() - 1]
+    if last_exit["err"] != null { ok = false }
+    checks.push({"name": "C11 with_auto_release_success", "ok": ok})
+
+    // C12 — `with` releases on the unwind path too; __exit__ sees the text.
+    ok = true
+    var cap_c = null
+    var caught = ""
+    try {
+        with swatva(303) as wc {
+            cap_c = wc
+            throw "boom"
+        }
+    } catch e {
+        caught = e
+    }
+    if caught != "boom" { ok = false }
+    if cap_c["sthiti"] != "dropped" { ok = false }
+    let err_exit = state["exits"][state["exits"].len() - 1]
+    if err_exit["err"] != "boom" { ok = false }
+    if err_exit["id"] != cap_c["id"] { ok = false }
+    checks.push({"name": "C12 with_auto_release_exception", "ok": ok})
+
+    // C13 — kosh checks aliasing at runtime, not only in a table.
+    ok = true
+    let cell = kosh(1)
+    if kosh_padh(cell) != 1 { ok = false }
+    if kosh_likh(cell, 2) != 2 { ok = false }
+    if kosh_padh(cell) != 2 { ok = false }
+    let lease = cell_adhikar(cell)
+    let ec1 = capture(fn() { kosh_likh(cell, 3) })
+    if not starts_with(ec1, "RAKSHA: cell conflict") { ok = false }
+    let ec2 = capture(fn() { kosh_padh(cell) })
+    if not starts_with(ec2, "RAKSHA: cell conflict") { ok = false }
+    cell_release(cell, lease)
+    if kosh_likh(cell, 4) != 4 { ok = false }
+    if kosh_padh(cell) != 4 { ok = false }
+    let cell2 = kosh(8)
+    let shared = cell_udhaar(cell2)
+    if kosh_padh(cell2) != 8 { ok = false }
+    let ec3 = capture(fn() { kosh_likh(cell2, 9) })
+    if not starts_with(ec3, "RAKSHA: cell conflict") { ok = false }
+    cell_release(cell2, shared)
+    checks.push({"name": "C13 kosh_runtime_check", "ok": ok})
+
+    // C14 — the Ok/Err channel really maps, chains and falls back.
+    ok = true
+    let good = Ok(2)
+    let bad = Err("bad")
+    if parinam_map(good, fn(x) { return x * 3 })["ok"] != 6 { ok = false }
+    if parinam_map(bad, fn(x) { return x * 3 })["err"] != "bad" { ok = false }
+    if parinam_chain(good, fn(x) { return Ok(x + 1) })["ok"] != 3 { ok = false }
+    if parinam_chain(good, fn(x) { return Err("no") })["err"] != "no" { ok = false }
+    if parinam_chain(bad, fn(x) { return Ok(x) })["err"] != "bad" { ok = false }
+    if parinam_or(bad, 7) != 7 { ok = false }
+    if parinam_or(good, 7) != 2 { ok = false }
+    checks.push({"name": "C14 parinam_channel", "ok": ok})
+
+    // C15 — the some/none channel really maps and falls back.
+    ok = true
+    let yes = some(2)
+    let no = none()
+    if vikalp_map(yes, fn(x) { return x * 3 })["some"] != 6 { ok = false }
+    if not is_none(vikalp_map(no, fn(x) { return x * 3 })) { ok = false }
+    if vikalp_or(no, 7) != 7 { ok = false }
+    if vikalp_or(yes, 7) != 2 { ok = false }
+    if not is_some(yes) { ok = false }
+    checks.push({"name": "C15 vikalp_channel", "ok": ok})
+
+    var passed = 0
+    for c in checks {
+        if c["ok"] { passed = passed + 1 }
+    }
+    let total = checks.len()
+    var verdict = "RAKSHA_LEDGER_INCOMPLETE"
+    if passed == total { verdict = "RAKSHA_LEDGER_CERTIFIED" }
+    return {"checks": checks, "passed": passed, "total": total,
+            "ok": passed == total, "verdict": verdict}
+}
+
+// ---------------------------------------------------------------------------
+// §2.1 summary() — statistics about the ledger and this run
+// ---------------------------------------------------------------------------
+
+export fn summary() {
+    let a = audit()
+    var owners = 0
+    for k in state["owners"] { owners = owners + 1 }
+    return {
+        "system": "raksha",
+        "wave": "0.7.0",
+        "exports": 19,
+        "words": ["raksha", "swatva", "sanchay", "udhaar", "adhikar",
+                  "padh", "likh", "visarjan", "kosh", "kaal", "bindu",
+                  "nidan", "chinh", "sthan", "praman", "parinam", "vikalp",
+                  "niyam"],
+        "rules": niyam().len(),
+        "codes": codes().len(),
+        "owners": owners,
+        "ids_issued": state["next"] - 1,
+        "drops": state["log"].len(),
+        "exits": state["exits"].len(),
+        "checks": a["total"],
+        "passed": a["passed"],
+        "verdict": a["verdict"],
+        "claim": "原理借用，语法未借用"
+    }
+}

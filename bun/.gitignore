@@ -13,3 +13,4 @@ tests/vm_fixtures/
 tools/maturity/.fmt_work.bun
 tools/maturity/api.html
 tools/maturity/*.wat
+tools/maturity/*.wasm

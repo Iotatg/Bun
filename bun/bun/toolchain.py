@@ -10,6 +10,7 @@ stub that prints a word it has not earned:
     compile   really compiles to bytecode, caches it, or emits a .wasm module
     check     really walks the import graph to find cycles
     antar     really lowers a program to a control-flow graph and checks it
+    raksha    really lowers a program to a memory flow and checks it
     startup   really measures the interpreter start-up
     parallel  really runs workers
     coverage  really measures line execution with `trace`
@@ -513,6 +514,14 @@ def _imports_of(path):
 
 
 def cmd_check(args):
+    # `check --raksha` is the ordinary type check with the static safety
+    # pass added.  It is routed here by SPECIAL, but the diagnostic shape
+    # belongs to the CLI's checker, so delegate to it.  `check --cycles`
+    # and the default `check` keep their old behaviour byte for byte.
+    if "--raksha" in args:
+        from . import cli
+        return cli.cmd_check([a for a in args if a != "--raksha"],
+                             raksha=True)
     paths = [a for a in args if not a.startswith("--")]
     if not paths:
         print("error: expects a file", file=sys.stderr)
@@ -997,6 +1006,79 @@ def cmd_antar(args):
     return 0 if check.ok else 1
 
 
+def _raksha_nidan_text(nidan, source):
+    """Render one nidan, preferring its own labelled-span renderer."""
+    render = getattr(nidan, "render", None)
+    if callable(render):
+        return render(source)
+    return "raksha[%s]: %s" % (nidan.code, nidan.message)
+
+
+def cmd_raksha(args):
+    """Show, check and measure the Raksha static safety analysis.
+
+    The command never runs the program.  It reads the source, checks it,
+    lowers it to one memory flow per function and then answers a question
+    about the shape: which values have exactly one owner, where loans are
+    issued, how long their kaal (region) lasts, and where the deterministic
+    releases happen -- including the cleanup edge of a `with` block.
+    """
+    from . import raksha as raksha_module
+
+    flags = {arg for arg in args if arg.startswith("--")}
+    paths = [arg for arg in args if not arg.startswith("--")]
+    if not paths:
+        print("error: expects a file", file=sys.stderr)
+        return 2
+    path = paths[0]
+    try:
+        program, source = _parse_program(path)
+        analysis = raksha_module.analyze_program(program, path)
+        check = raksha_module.verify(analysis)
+    except Exception as error:                           # noqa: BLE001
+        print("error: raksha failed: %s" % error, file=sys.stderr)
+        return 1
+
+    nidans = list(analysis.diagnostics or [])
+    problems = list(check.problems or [])
+    ok = bool(check.ok) and not nidans
+    stats = dict(check.stats) if isinstance(check.stats, dict) else {}
+    stats.update(analysis.stats() or {})
+
+    if "--json" in flags:
+        print(raksha_module.render_json(analysis))
+        return 0 if ok else 1
+    if "--dot" in flags:
+        print(raksha_module.render_dot(analysis))
+        return 0 if ok else 1
+    if "--stats" in flags:
+        print(json.dumps(check.stats, indent=2, sort_keys=True))
+        return 0 if ok else 1
+    if "--verify" in flags:
+        if ok:
+            print("RAKSHA: OK (%d pravah, %d bindu, %d swatva, %d udhaar, "
+                  "%d visarjan, %d nidan)"
+                  % (stats.get("flows", 0), stats.get("points", 0),
+                     stats.get("owners", 0), stats.get("loans", 0),
+                     stats.get("drops", 0), len(nidans)))
+        else:
+            for problem in problems:
+                print("RAKSHA: %s" % problem)
+            for nidan in nidans:
+                print("RAKSHA: %s" % _raksha_nidan_text(nidan, source))
+            print("RAKSHA: %d problem(s), %d nidan"
+                  % (len(problems), len(nidans)))
+        return 0 if ok else 1
+    if "--explain" in flags:
+        print(raksha_module.render_explain(analysis, source))
+        return 0 if ok else 1
+
+    print(raksha_module.render_text(analysis))
+    for problem in problems:
+        print("raksha: %s" % problem, file=sys.stderr)
+    return 0 if ok else 1
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1008,14 +1090,14 @@ COMMANDS = {
     "release": cmd_release, "coverage": cmd_coverage, "fuzz": cmd_fuzz,
     "bench": cmd_bench, "audit": cmd_audit, "doctor": cmd_doctor,
     "maturity": cmd_maturity, "originality": cmd_originality,
-    "antar": cmd_antar,
+    "antar": cmd_antar, "raksha": cmd_raksha,
 }
 
 # Flags that route an existing command to its toolchain implementation.
 SPECIAL = {
     "doc": ("--html", "--exports"),
     "compile": ("--cache", "--target"),
-    "check": ("--cycles",),
+    "check": ("--cycles", "--raksha"),
 }
 
 

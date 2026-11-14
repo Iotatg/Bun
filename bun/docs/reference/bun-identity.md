@@ -44,19 +44,22 @@ in force. R1–R8 are the short list a new construct is checked against.
 
 ## 3. The origin ledger
 
-`bun:identity` → `families()` records 14 families. This is the honest count,
+`bun:identity` → `families()` records 15 families. This is the honest count,
 not a score to be proud of:
 
 | Origin | Families | Meaning |
 |--------|----------|---------|
-| `bun` | 6 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface. |
+| `bun` | 7 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface, and the 0.7.0 safety pass (`safety`). |
 | `borrowed` | 7 | Bindings, functions, control flow, modules, data types, patterns, resources. Each names the languages it came from and the reason it was kept. |
 | `shared` | 1 | Operators — the shared alphabet of arithmetic. |
 
 `bun:identity` → `keywords()` maps **all 37 keywords** (33 hard keywords
 from `bun/lexer.py` plus the 4 soft keywords from `bun/langpacks.py`) to one
-of those families. `forms()` records 14 sentence shapes with an origin, a
-reason, a rule and a status (`canonical`, `compatibility`, `rejected`).
+of those families. The 0.7.0 wave added a family and three forms without
+touching this table: every new safety word is a module function name, not a
+keyword. `forms()` records 17 sentence shapes with an origin, a reason, a
+rule and a status (`canonical`, `compatibility`, `rejected`); 14 are
+canonical, 1 is compatibility and 2 are rejected.
 
 `audit()` runs 15 falsifiable checks over these tables: complete
 attribution, unique names, valid origins, borrowed entries naming their
@@ -172,6 +175,27 @@ compared language has (`protocol`), and the constructs Bun spells in its own
 way.  The command states its own limit in the output: a keyword is a word,
 not a grammar, so the overlap can neither prove nor disprove a copy.
 
+### 4.3 The 0.7.0 safety forms
+
+The Raksha wave adds **one family** and **three forms**, and adds **no
+keyword**. The family is `safety`, held to R5 (`own_grammar_not_a_copy`):
+its reason is that memory safety is expressed with the `with` and `on leave`
+statements Bun already has plus universal `bun:raksha` module names, so no
+language pack needs a new translation. The three forms are:
+
+| Form | Origin | Rule | Why it is Bun's |
+|---|---|---|---|
+| `with rk.swatva(v) as a { ... }` | bun | R5 | The existing `with` calls `__enter__`/`__exit__`; `swatva` returns an owner dict carrying both. No `Drop` trait, no new statement. |
+| `on leave { rk.visarjan(a) }` | bun | R5 | The existing scope-exit block (already lowered to `try`/`finally`) is the explicit cleanup spelling; the pass reads it as a cleanup drop point. |
+| `import "bun:raksha" as rk` | bun | R5 | Only `import` and `as` appear, both translated by all 118 packs; `rk.swatva` and friends are function names, not keywords. |
+
+`keywords()` is unchanged (37 entries), `audit()` still runs exactly 15
+falsifiable checks, and the current result is
+`IDENTITY_LEDGER_CERTIFIED 15 / 15` on tree, vm, register and
+register+tier. The safety wave is a case of §5 step 1 with **no** step 3:
+no keyword form was introduced, so no new translation had to ship. The
+normative reference is `docs/reference/raksha.md`.
+
 ## 5. Adding a construct
 
 A change that adds a keyword, a statement shape or an operator must:
@@ -203,7 +227,7 @@ arriving from Python. It is not the definition of Bun, and it says so.
 
 ## 7. What this document does not claim
 
-- It does not claim Bun is 100% original. Seven of fourteen families are
+- It does not claim Bun is 100% original. Seven of fifteen families are
   borrowed and are named as such.
 - It does not claim the borrowed surface has been removed. It has been
   attributed and is no longer being extended.

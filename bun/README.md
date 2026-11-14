@@ -26,8 +26,27 @@ The rule, the origin ledger and the checklist for adding a construct are in
 [`docs/reference/bun-identity.md`](docs/reference/bun-identity.md). The
 guard test derives the real keyword set from `bun/lexer.py`, so a new
 keyword without an attributed origin fails the suite. Bun did not invent
-everything; the ledger says exactly which seven of fourteen families are
+everything; the ledger says exactly which seven of fifteen families are
 borrowed.
+
+## Raksha — static safety (0.7.0)
+
+`bun:raksha` is the safety wave: a static pass over ownership, moves,
+shared/exclusive loans, regions and deterministic release, plus a runtime
+library written in Bun. It borrows Rust's *principles* and none of its
+syntax — **原理借用、语法未借用** — so no keyword was added and all 118
+language packs can use it immediately.
+
+```bash
+python3 -m bun raksha examples/raksha.bun --verify
+python3 -m bun raksha examples/raksha.bun --json
+python3 -m bun check --raksha examples/raksha.bun
+python3 -m bun examples/raksha.bun       # RAKSHA LEDGER CERTIFIED
+```
+
+The vocabulary, the 14 error codes, the `with`/`__exit__` RAII protocol,
+`kaal`/region inference and the boundary with `antar` are in
+[`docs/reference/raksha.md`](docs/reference/raksha.md).
 
 ## Requirements
 
@@ -455,6 +474,8 @@ bun -                           run a Bun program from the standard input
 bun --no-check <file.bun>       run without type checking
 bun --engine tree|vm|register|c|wasm|jit|antar <file.bun> choose the execution engine (default: vm)
 bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
+bun raksha <file.bun> [--json|--dot|--verify|--stats|--explain]  static safety analysis
+bun check --raksha <file.bun>   type check plus the Raksha safety pass
 bun --engine register --tier <file.bun> run with the superinstructions
 bun --front-end python|bun <file.bun> choose the front end (default: python)
 bun api [--json]                list the builtin signatures

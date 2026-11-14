@@ -133,7 +133,11 @@ export fn families() {
 
         {"name": "diagnostics", "origin": "bun", "from": "",
          "reason": "The language is queryable: check --json, doc, api --json. An assistant or editor reads the same surface a human reads.",
-         "bun_rule": "R3", "status": "canonical"}
+         "bun_rule": "R3", "status": "canonical"},
+
+        {"name": "safety", "origin": "bun", "from": "",
+         "reason": "Memory safety uses the existing with and on leave statements plus universal bun:raksha module names; no keyword was added, so all 118 language packs can use it on the day it ships. The principle is borrowed, the syntax is not.",
+         "bun_rule": "R5", "status": "canonical"}
     ]
 }
 
@@ -231,7 +235,19 @@ export fn forms() {
 
         {"name": "fn(int) -> int", "origin": "borrowed", "from": "Rust, TypeScript",
          "reason": "The arrow and the parameter list are the common spelling, but Bun uses its own fn and checks the signature, including the types inside it, before the run.",
-         "bun_rule": "R3", "status": "canonical"}
+         "bun_rule": "R3", "status": "canonical"},
+
+        {"name": "with rk.swatva(v) as a { ... }", "origin": "bun", "from": "",
+         "reason": "The existing with statement calls __enter__ and __exit__; swatva returns an owner dict carrying both, so a normal exit or an error releases the value deterministically. No Drop trait, no RAII statement and no new keyword were added.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "on leave { rk.visarjan(a) }", "origin": "bun", "from": "",
+         "reason": "The existing scope-exit block, already lowered to try/finally, is the explicit cleanup spelling; the safety pass reads it as a cleanup drop point. One semantics, no new opcode.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "import \"bun:raksha\" as rk", "origin": "bun", "from": "",
+         "reason": "A native module bound under one universal name: import and as are keywords every language pack already translates, and every safety word is a function name, not a keyword, so the form is writable in every language on day one.",
+         "bun_rule": "R5", "status": "canonical"}
     ]
 }
 

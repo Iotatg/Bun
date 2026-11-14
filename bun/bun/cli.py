@@ -26,6 +26,8 @@ Usage:
                                   engine (default: vm)
   bun --engine register --tier <file.bun> run with the superinstructions
   bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
+  bun raksha <file.bun> [--json|--dot|--verify|--stats|--explain]  static safety analysis
+  bun check --raksha <file.bun>   type check plus the Raksha safety pass
   bun --front-end python|bun <file.bun> choose the front end (default: python)
   bun --lang <code>|auto <file.bun>  write Bun in another language (see: bun langs)
   bun langs [--json]              list the language packs of the keywords
@@ -480,9 +482,41 @@ def cmd_compile(args):
     return 0
 
 
-def cmd_check(args):
-    """`bun check [--json] <file.bun>...` — type check without running."""
+def _raksha_diagnostics(program, path):
+    """Run the static Raksha pass and return `bun check` diagnostics.
+
+    `bun/raksha.py` is imported lazily: the default `bun check` must not
+    depend on the safety pass at all.  A nidan becomes the same six-field
+    diagnostic shape `_error_kind` feeds, plus its code and hint.
+    """
+    from . import raksha as raksha_module
+
+    analysis = raksha_module.analyze_program(program, path)
+    out = []
+    for nidan in analysis.diagnostics:
+        sthan = nidan.primary
+        out.append({
+            "file": path,
+            "severity": "error",
+            "kind": "raksha",
+            "code": nidan.code,
+            "hint": nidan.hint,
+            "message": "raksha[%s]: %s" % (nidan.code, nidan.message),
+            "line": getattr(sthan, "line", 0) or 0,
+            "col": getattr(sthan, "col", 0) or 0,
+        })
+    return out
+
+
+def cmd_check(args, raksha=False):
+    """`bun check [--json] [--raksha] <file.bun>...` — check without running.
+
+    With `raksha=True` (or an explicit `--raksha` flag) the type check is
+    followed by the static safety pass; its nidan are appended to the same
+    diagnostics list.  Without it, nothing changes.
+    """
     as_json = "--json" in args
+    raksha = raksha or "--raksha" in args
     paths = [arg for arg in args if not arg.startswith("--")]
     if not paths:
         print("error: bun check expects at least one file", file=sys.stderr)
@@ -499,10 +533,13 @@ def cmd_check(args):
             print("error: cannot open file '%s': %s" % (path, error),
                   file=sys.stderr)
             return 1
+        program = None
+        checked = False
         try:
             program = Parser(Lexer(source).tokenize()).parse()
             Checker().check(program,
                            base_dir=os.path.dirname(os.path.abspath(path)))
+            checked = True
         except BunError as error:
             diagnostics.append({
                 "file": path,
@@ -512,6 +549,18 @@ def cmd_check(args):
                 "line": error.line,
                 "col": error.col,
             })
+        if raksha and checked and program is not None:
+            try:
+                diagnostics.extend(_raksha_diagnostics(program, path))
+            except Exception as error:                       # noqa: BLE001
+                diagnostics.append({
+                    "file": path,
+                    "severity": "error",
+                    "kind": "raksha",
+                    "message": "raksha analysis failed: %s" % error,
+                    "line": 0,
+                    "col": 0,
+                })
     if as_json:
         print(canonical_dump({
             "ok": not diagnostics,
