@@ -4,6 +4,60 @@ All notable changes to the Bun language are recorded here.  The version
 number is the one `bun version` prints; a release is only made after the
 full test suite passes and the maturity probe has written a real receipt.
 
+## 0.9.0 — 2026-11-14
+
+The resilience wave.  It adds **Palan** (पालन, "nurture"): a virtual clock,
+a seeded die, supervisors with a restart budget, retry with deterministic
+jitter, and a circuit breaker.  The question it answers is the one 0.8.0
+left open — *a task died; what happens next, and can I make that death
+repeatable?*  **No keyword was added**: every new word is a function of
+`bun:palan`, so all 118 language packs can write the wave on the day it
+ships.
+
+- **Time is a counter.**  One tick per scheduling point.  `pl.sona(n)` parks
+  a task on a timer the scheduler owns; when nothing can run the scheduler
+  jumps the clock to the earliest wake-up instead of reporting a deadlock.
+  An hour of backoff therefore costs microseconds and lands on the same
+  tick every run.  `pl.avadhi` + `pl.jaanch` are a deadline that a task
+  checks at a point where stopping is safe — Bun will not pretend to
+  interrupt a thread between two instructions.
+- **The die is seeded.**  `pl.sankat(p)` says the program may fail;
+  `pl.jokhim()` rolls.  The roll is derived from `(seed, task, roll index)`,
+  so a chaos run is a function of one integer, two tasks rolling at the
+  same moment get different answers, and adding a jitter call cannot change
+  which read fails (`pl.chunav` draws from a separate stream).
+- **Supervisors are values.**  `rakshak(strategy, budget, window)` builds,
+  `baccha` fills, `chalau` runs.  Three strategies — `ek`, `sab`, `baad`
+  (OTP's `one_for_one`, `one_for_all`, `rest_for_one`) — and a budget of
+  N restarts inside W ticks that slides with the clock.  **Bun joins, it
+  does not kill**: cancellation here is cooperative, and a supervisor that
+  claimed to kill a non-yielding child would be lying.
+- **Retry and the breaker.**  `punar(fn, attempts, base, cap)` waits
+  `base * 2^n`, capped, plus Equal-Jitter-style jitter from the seeded
+  stream; the last failure is re-raised unchanged.  `vyavdhi(threshold,
+  cooldown)` / `guzar` implement Fowler's three states, with the cooldown
+  on the virtual clock.
+- **Eight codes.**  `PL01` empty supervisor, `PL02` a retry that cannot
+  retry, `PL03` a deadline nothing checks, `PL04` a budget of zero, `PL05`
+  sleeping while holding a lock, `PL06` a breaker that never closes (all
+  static); `PL07` budget exhausted, `PL08` call refused (runtime).  Each
+  carries a primary span, labelled spans, a hint and notes, rendered by the
+  same renderer as Raksha and Samanvay.
+- **Three commands in one.**  `bun palan <file>` never runs the program;
+  `--run [--seed=N]` runs it on the virtual clock and prints ticks, sleeps,
+  rolls, failures and findings; `--chaos=A:B` prints one line per world.
+  `--json`, `--dot`, `--stats`, `--verify` and `--explain` answer the five
+  questions a tool asks.
+- **A measured result.**  `examples/palan.bun` is a service with a bad disk
+  (35% failure, 3 attempts, a breaker at 4 failures, a supervisor at 3
+  restarts).  Over 16 seeds: **6 worlds degrade, 10 survive**, and the tick
+  count ranges from 2 to 45.  Seed 3 and seed 5 differ by one integer and
+  by 8 ticks of backoff.
+- **Receipts.**  `tests/test_palan.py` (58 tests), an external verifier
+  `tools/verify_palan.py` (59 checks, never imports the implementation),
+  three-engine byte parity, a Hindi example byte-identical to the English
+  one, and `PALAN_LEDGER_CERTIFIED 8/8`.
+
 ## 0.8.0 — 2026-11-14
 
 The coordination wave.  It adds **Samanvay** (समन्वय, "coordination"):

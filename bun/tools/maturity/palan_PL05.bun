@@ -1,0 +1,8 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+fn w() {
+    let l = sv.tal()
+    sv.pakad(l)
+    pl.sona(5)
+    sv.chhod(l)
+}

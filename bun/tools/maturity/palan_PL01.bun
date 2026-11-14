@@ -1,0 +1,3 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+let s = pl.rakshak("ek", 3, 100)

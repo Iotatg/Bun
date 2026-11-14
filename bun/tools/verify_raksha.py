@@ -74,7 +74,7 @@ def main():
           result.stdout.strip())
     version_files = ["VERSION", "pyproject.toml", os.path.join("bun", "__init__.py")]
     check("VERSION / pyproject / __init__ all name the current version",
-          all("0.8.0" in source_of(p) for p in version_files))
+          all("0.9.0" in source_of(p) for p in version_files))
     check("changelog documents 0.7.0",
           "## 0.7.0" in source_of("CHANGELOG.md"))
 

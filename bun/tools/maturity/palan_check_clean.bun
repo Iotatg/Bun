@@ -1,0 +1,10 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+fn w() {
+    pl.avadhi(100)
+    pl.jaanch()
+    return 1
+}
+let s = pl.rakshak("ek", 2, 100)
+pl.baccha(s, w, "w")
+print(pl.chalau(s)["children"])

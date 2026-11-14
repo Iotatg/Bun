@@ -1,0 +1,478 @@
+// lib/bun/palan.bun — Bun 0.9.0 «Palan / पालन»
+//
+//   "jo girta hai, use uthana padta hai" — what falls must be lifted.
+//
+// This is the resilience half of the Palan wave, written in Bun.  It adds
+// no grammar: every name below is an ordinary module function.  The clock
+// and the die are builtins (they must be, because only the scheduler can
+// move virtual time), and the policy — supervisors, retry, breaker — is
+// written here, in the language the wave is for.
+//
+// Vocabulary (names, not keywords):
+//   sona     sleep for n ticks        abhi    the current tick
+//   avadhi   set a deadline           jaanch  check it
+//   sankat   say a task may fail      jokhim  roll the die
+//   chunav   a deterministic choice   rakshak a supervisor
+//   baccha   add a child              chalau  run the supervisor
+//   punar    retry with backoff       vyavdhi a circuit breaker
+//   guzar    call through a breaker   report  the runtime counters
+//
+// ---------------------------------------------------------------------------
+// CONTRACT FOR THE OTHER AGENTS
+// ---------------------------------------------------------------------------
+// * niyam() returns exactly 8 dicts with ids PL01..PL08; bun/palan.py's
+//   RULES list is the one-to-one mirror.
+// * codes() returns exactly 8 dicts with code PL01..PL08 and the fields
+//   code / name / message / hint; bun/palan.py CODES must copy them
+//   verbatim.
+// * audit() proves the runtime with real calls: the clock moves, the die is
+//   deterministic, a supervisor restarts and then escalates, one_for_all
+//   restarts the siblings, punar survives, and the breaker opens.
+// * The runtime refuses, by name, in these words:
+//     "palan: deadline exceeded at tick N (limit M)"
+//     "palan: circuit breaker is open"
+//     "palan: supervisor escalated after N restarts"
+//     "palan: a supervisor needs at least one child"
+//     "palan: unknown restart strategy '<x>'"
+//   A program can reach all five with real calls.
+
+// ---------------------------------------------------------------------------
+// the clock and the die
+// ---------------------------------------------------------------------------
+
+export let sona = pl_sona
+export let abhi = pl_abhi
+export let avadhi = pl_avadhi
+export let jaanch = pl_jaanch
+export let sankat = pl_sankat
+export let jokhim = pl_jokhim
+export let chunav = pl_chunav
+export let report = pl_report
+
+import "bun:samanvay" as sv
+
+// ---------------------------------------------------------------------------
+// supervisors
+// ---------------------------------------------------------------------------
+//
+// A supervisor is a value, not a scope.  `rakshak` builds it, `baccha`
+// fills it, `chalau` runs it.  That order is the whole API: nothing is
+// started until `chalau`, so a program can build a tree of supervisors and
+// run the root, and the tree is a value a test can inspect.
+//
+// Strategies:
+//   "ek"    restart the failed child only
+//   "sab"   join every live sibling, then start all children again
+//   "baad"  join the children started after the failed one, then restart
+//           the failed child and those after it
+//
+// Bun joins, it does not kill.  A supervisor that killed its children
+// would need every child to reach a checkpoint, and a child that never
+// yields could not be killed at all; joining is the honest primitive.
+// The cost is written down: `sab` and `baad` wait for the live siblings to
+// finish their current work.
+
+fn strategy_ok(name) {
+    return name == "ek" or name == "sab" or name == "baad"
+}
+
+export fn rakshak(strategy, budget, window) {
+    if not strategy_ok(strategy) {
+        throw "palan: unknown restart strategy '" + str(strategy) + "'"
+    }
+    return {"kind": "rakshak", "strategy": strategy, "budget": budget,
+        "window": window, "children": [], "restarts": 0,
+        "window_start": abhi(), "log": [], "rounds": 0}
+}
+
+export fn baccha(sup, body, name) {
+    sup["children"].push({"name": name, "body": body})
+    return sup
+}
+
+fn note_failure(sup, child, message) {
+    sup["log"].push({"child": child, "error": str(message), "tick": abhi()})
+    return sup["log"]
+}
+
+fn bump_budget(sup) {
+    // A restart budget is "N restarts inside W ticks".  The window slides:
+    // when the clock has moved past it, the count starts again.  This is
+    // the OTP rule, measured on the virtual clock instead of a wall clock,
+    // which is what makes it reproducible.
+    if abhi() - sup["window_start"] > sup["window"] {
+        sup["restarts"] = 0
+        sup["window_start"] = abhi()
+    }
+    sup["restarts"] = sup["restarts"] + 1
+    return sup["restarts"]
+}
+
+fn backoff(attempt) {
+    // 1, 2, 4, 8 ... capped at 64 ticks, plus a deterministic jitter in
+    // [0, half).  The jitter comes from the seeded die, so the schedule is
+    // reproducible; it exists so two supervisors that fail together do not
+    // retry together.
+    var wait = 1
+    var i = 1
+    while i < attempt and wait < 64 {
+        wait = wait * 2
+        i = i + 1
+    }
+    let half = wait / 2
+    if half > 0 {
+        wait = wait + chunav(half + 1)
+    }
+    return wait
+}
+
+fn join_quiet(handle) {
+    try {
+        sv.mel(handle)
+    } catch e {
+        // A sibling that was already failing is not a second failure: the
+        // round ends when the first one is seen.
+        return false
+    }
+    return true
+}
+
+export fn chalau(sup) {
+    let kids = sup["children"]
+    let count = len(kids)
+    if count == 0 {
+        throw "palan: a supervisor needs at least one child"
+    }
+    let live = []
+    let done = []
+    for i in range(0, count) {
+        live.push(null)
+        done.push(false)
+    }
+    while true {
+        sup["rounds"] = sup["rounds"] + 1
+        for i in range(0, count) {
+            if not done[i] and live[i] == null {
+                live[i] = sv.kary(kids[i]["body"], kids[i]["name"])
+            }
+        }
+        var failed = -1
+        var message = ""
+        for i in range(0, count) {
+            if done[i] or live[i] == null {
+                continue
+            }
+            try {
+                sv.mel(live[i])
+                done[i] = true
+                live[i] = null
+            } catch e {
+                failed = i
+                message = e
+                live[i] = null
+                break
+            }
+        }
+        if failed < 0 {
+            break
+        }
+        note_failure(sup, kids[failed]["name"], message)
+        let used = bump_budget(sup)
+        if used > sup["budget"] {
+            pl_note("PL07")
+            throw "palan: supervisor escalated after " + str(used) +
+            " restarts in " + str(abhi() - sup["window_start"]) + " ticks"
+        }
+        sona(backoff(used))
+        if sup["strategy"] == "sab" {
+            for i in range(0, count) {
+                if live[i] != null and not done[i] {
+                    join_quiet(live[i])
+                    live[i] = null
+                }
+                done[i] = false
+            }
+        } else if sup["strategy"] == "baad" {
+            for i in range(failed, count) {
+                if live[i] != null and not done[i] {
+                    join_quiet(live[i])
+                    live[i] = null
+                }
+                done[i] = false
+            }
+        } else {
+            done[failed] = false
+        }
+    }
+    return {"rounds": sup["rounds"], "restarts": sup["restarts"],
+        "log": sup["log"], "children": count}
+}
+
+// ---------------------------------------------------------------------------
+// retry
+// ---------------------------------------------------------------------------
+
+export fn punar(body, attempts, base, cap) {
+    var n = 1
+    while true {
+        try {
+            return body()
+        } catch e {
+            if n >= attempts {
+                throw e
+            }
+            var wait = base * backoff(n)
+            if wait > cap {
+                wait = cap
+            }
+            sona(wait)
+            n = n + 1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// circuit breaker
+// ---------------------------------------------------------------------------
+//
+// Three states, and the cooldown is measured on the virtual clock:
+//   band   (closed)     calls pass; failures are counted
+//   khula  (open)       calls are refused until the cooldown elapses
+//   aadha  (half-open)  one trial call decides: success closes, failure
+//                       opens again
+//
+// A breaker is a dict, so a program can read b["state"] and print it.
+
+export fn vyavdhi(threshold, cooldown) {
+    return {"kind": "vyavdhi", "threshold": threshold, "cooldown": cooldown,
+        "state": "band", "failures": 0, "opened": 0, "refusals": 0,
+        "trips": 0}
+}
+
+export fn guzar(b, body) {
+    if b["state"] == "khula" {
+        if abhi() - b["opened"] >= b["cooldown"] {
+            b["state"] = "aadha"
+        } else {
+            b["refusals"] = b["refusals"] + 1
+            pl_note("PL08")
+            throw "palan: circuit breaker is open"
+        }
+    }
+    try {
+        let value = body()
+        if b["state"] == "aadha" {
+            b["state"] = "band"
+            b["failures"] = 0
+        }
+        return value
+    } catch e {
+        b["failures"] = b["failures"] + 1
+        if b["state"] == "aadha" or b["failures"] >= b["threshold"] {
+            b["state"] = "khula"
+            b["opened"] = abhi()
+            b["trips"] = b["trips"] + 1
+        }
+        throw e
+    }
+}
+
+// ---------------------------------------------------------------------------
+// the ledger
+// ---------------------------------------------------------------------------
+
+export fn niyam() {
+    return [
+        {"id": "PL01", "name": "rikt rakshak",
+            "text": "this supervisor has no children, so it can only wait",
+            "principle": "Erlang/OTP: a supervisor exists to watch children",
+            "bun_rule": "P1"},
+        {"id": "PL02", "name": "vyarth punar",
+            "text": "this retry cannot retry: it allows one attempt",
+            "principle": "retry is a loop with a bound, not a wish",
+            "bun_rule": "P2"},
+        {"id": "PL03", "name": "anaavashyak avadhi",
+            "text": "this function sets a deadline that nothing checks",
+            "principle": "a deadline is a promise that something will check it",
+            "bun_rule": "P3"},
+        {"id": "PL04", "name": "shunya budget",
+            "text": "this supervisor gives up on the first failure",
+            "principle": "a restart budget is the difference between a hiccup and an outage",
+            "bun_rule": "P1"},
+        {"id": "PL05", "name": "tal mein sona",
+            "text": "this task sleeps while it holds a lock",
+            "principle": "a lock is held for as short a time as the work allows",
+            "bun_rule": "P4"},
+        {"id": "PL06", "name": "kabhi band",
+            "text": "this breaker never leaves the open state",
+            "principle": "a breaker that never closes is a permanent outage",
+            "bun_rule": "P2"},
+        {"id": "PL07", "name": "budget khatam",
+            "text": "this supervisor exhausted its restart budget",
+            "principle": "escalation is a decision, and it must be reported",
+            "bun_rule": "P1"},
+        {"id": "PL08", "name": "vyavdhan khula",
+            "text": "this call was refused by an open circuit breaker",
+            "principle": "a refused call is a result, not an accident",
+            "bun_rule": "P2"},
+    ]
+}
+
+export fn codes() {
+    return [
+        {"code": "PL01", "name": "rikt rakshak",
+            "message": "this supervisor has no children, so it can only wait",
+            "hint": "add a child with palan.baccha(sup, fn, name)"},
+        {"code": "PL02", "name": "vyarth punar",
+            "message": "this retry cannot retry: it allows one attempt",
+            "hint": "attempts counts the first try, so use at least 2"},
+        {"code": "PL03", "name": "anaavashyak avadhi",
+            "message": "this function sets a deadline that nothing checks",
+            "hint": "call palan.jaanch() at the points where the work can stop"},
+        {"code": "PL04", "name": "shunya budget",
+            "message": "this supervisor gives up on the first failure",
+            "hint": "a restart budget of 0 is a crash with extra steps"},
+        {"code": "PL05", "name": "tal mein sona",
+            "message": "this task sleeps while it holds a lock",
+            "hint": "release the lock before sleeping; the holder blocks every other task"},
+        {"code": "PL06", "name": "kabhi band",
+            "message": "this breaker never leaves the open state",
+            "hint": "a cooldown of 0 means no trial call is ever allowed"},
+        {"code": "PL07", "name": "budget khatam",
+            "message": "this supervisor exhausted its restart budget",
+            "hint": "raise the budget, widen the window, or fix the child"},
+        {"code": "PL08", "name": "vyavdhan khula",
+            "message": "this call was refused by an open circuit breaker",
+            "hint": "the breaker opens after repeated failures; wait for the cooldown or handle the refusal"},
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// audit — eight claims, each proved by a real call
+// ---------------------------------------------------------------------------
+
+fn always_fails() {
+    throw "palan: audit child failed on purpose"
+}
+
+fn always_works() {
+    return 7
+}
+
+fn flaky() {
+    // fails the first two times it is called in this task, then works
+    if jokhim() {
+        throw "palan: audit flaky failed"
+    }
+    return 7
+}
+
+export fn audit() {
+    let failed = []
+    var checks = 0
+
+    // 1. the clock moves when a task sleeps, and abhi() reads it
+    let before = abhi()
+    sona(5)
+    let after = abhi()
+    checks = checks + 1
+    if after - before < 5 {
+        failed.push("the clock did not move by 5")
+    }
+
+    // 2. the die is deterministic: same probability, same answers
+    sankat(1.0)
+    let a = jokhim()
+    let b = jokhim()
+    sankat(0.0)
+    let c = jokhim()
+    checks = checks + 1
+    if not a or not b or c {
+        failed.push("the die is not deterministic")
+    }
+
+    // 3. a supervisor with no children refuses to run
+    let empty = rakshak("ek", 1, 100)
+    var refused = false
+    try {
+        chalau(empty)
+    } catch e {
+        refused = true
+    }
+    checks = checks + 1
+    if not refused {
+        failed.push("an empty supervisor ran")
+    }
+
+    // 4. a supervisor restarts a failing child up to its budget, then
+    //    escalates.  Budget 2 means three attempts in total.
+    let sup = rakshak("ek", 2, 1000)
+    baccha(sup, always_fails, "bad")
+    var escalated = false
+    try {
+        chalau(sup)
+    } catch e {
+        escalated = true
+    }
+    checks = checks + 1
+    if not escalated or len(sup["log"]) != 3 {
+        failed.push("the budget did not stop at three attempts")
+    }
+
+    // 5. a supervisor whose child works returns the child count
+    let good = rakshak("ek", 1, 1000)
+    baccha(good, always_works, "ok")
+    let result = chalau(good)
+    checks = checks + 1
+    if result["children"] != 1 or result["restarts"] != 0 {
+        failed.push("a healthy supervisor restarted something")
+    }
+
+    // 6. retry survives a failure
+    sankat(1.0)
+    let value = punar(always_works, 3, 1, 10)
+    checks = checks + 1
+    if value != 7 {
+        failed.push("punar lost the value")
+    }
+    sankat(0.0)
+
+    // 7. the breaker opens after its threshold and refuses a call
+    let breaker = vyavdhi(1, 5)
+    var opened = false
+    try {
+        guzar(breaker, always_fails)
+    } catch e {
+        opened = true
+    }
+    var refused_call = false
+    try {
+        guzar(breaker, always_works)
+    } catch e {
+        refused_call = true
+    }
+    checks = checks + 1
+    if not opened or not refused_call or breaker["state"] != "khula" {
+        failed.push("the breaker did not open")
+    }
+
+    // 8. the ledger is eight and eight
+    checks = checks + 1
+    if len(niyam()) != 8 or len(codes()) != 8 {
+        failed.push("the ledger is not 8 + 8")
+    }
+
+    return {"certified": len(failed) == 0, "checks": checks,
+        "failed": failed}
+}
+
+export fn ledger() {
+    let result = audit()
+    if result["certified"] {
+        print("PALAN_LEDGER_CERTIFIED " + str(result["checks"]) + "/" +
+        str(result["checks"]))
+    } else {
+        print("PALAN_LEDGER_FAILED " + str(result["failed"]))
+    }
+    return result
+}

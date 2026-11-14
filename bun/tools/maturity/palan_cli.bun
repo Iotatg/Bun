@@ -1,0 +1,3 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+let b = pl.vyavdhi(3, 0)

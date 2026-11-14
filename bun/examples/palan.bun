@@ -1,0 +1,95 @@
+// examples/palan.bun — Bun 0.9.0 «Palan»
+//
+// A service with a bad disk.  The disk fails 35% of the time, the retry
+// tries three times with exponential backoff, the breaker gives up after
+// four failures in a row, and a supervisor restarts the worker if the
+// worker dies anyway.
+//
+// Nothing here waits in real time.  `pl.sona` moves the *virtual* clock,
+// so the whole program — backoffs, cooldown, deadlines — finishes in
+// microseconds and produces the same numbers on every machine.  The only
+// thing the seed changes is which reads fail.
+//
+//   python3 -m bun examples/palan.bun                 # one seed (0)
+//   python3 -m bun examples/palan.bun --seed 7        # a replay token
+//   python3 -m bun palan examples/palan.bun           # static report
+//   python3 -m bun palan --chaos=0:15 examples/palan.bun
+//
+// The last command is the point of the wave: 16 seeds, 16 worlds, one
+// table.  A failure at seed 7 is a failure you can hand to someone else.
+
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+
+pl.sankat(0.35)
+
+var reads = 0
+var hits = 0
+var retried = 0
+
+let answer = sv.sajha(0, "answer")
+let disk = pl.vyavdhi(4, 25)
+
+fn read(n) {
+    reads = reads + 1
+    if pl.jokhim() {
+        throw "E_IO: read " + str(n) + " failed"
+    }
+    hits = hits + 1
+    return n * n
+}
+
+// One read, through the breaker: after four failures in a row the breaker
+// opens and every call is refused for 25 ticks instead of hammering a disk
+// that is already down.
+fn guarded(n) {
+    return pl.guzar(disk, fn() {
+        return read(n)
+    })
+}
+
+// One read, with three attempts.  The backoff is 2, 4 ticks: the wait
+// doubles and the jitter comes from the seeded die.
+fn patient(n) {
+    return pl.punar(fn() {
+        return guarded(n)
+    }, 3, 2, 16)
+}
+
+fn worker() {
+    pl.avadhi(400)
+    var total = 0
+    for i in range(1, 6) {
+        pl.jaanch()
+        total = total + patient(i)
+    }
+    sv.likh(answer, total)
+    return total
+}
+
+let sup = pl.rakshak("ek", 3, 2000)
+pl.baccha(sup, worker, "worker")
+
+var degraded = false
+var note = ""
+try {
+    pl.chalau(sup)
+} catch e {
+    degraded = true
+    note = e
+}
+
+print("reads", reads)
+print("hits", hits)
+print("answer", sv.padh(answer))
+print("breaker", disk["state"])
+print("trips", disk["trips"])
+print("refusals", disk["refusals"])
+print("ticks", pl.abhi())
+print("degraded", degraded)
+if degraded {
+    print("reason", note)
+    print("PALAN SERVICE DEGRADED")
+} else {
+    print("PALAN SERVICE OK")
+}

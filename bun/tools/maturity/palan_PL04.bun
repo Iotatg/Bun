@@ -1,0 +1,5 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+fn w() { return 1 }
+let s = pl.rakshak("ek", 0, 100)
+pl.baccha(s, w, "w")

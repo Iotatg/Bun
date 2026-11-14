@@ -157,7 +157,9 @@ class Nidan:
     """A Samanvay diagnostic."""
 
     def __init__(self, code, message=None, primary=None, labels=None,
-                 hint=None, notes=None, filename="<program>"):
+                 hint=None, notes=None, filename="<program>",
+                 family="samanvay"):
+        self.family = family
         self.code = code
         self.name = CODES.get(code, {}).get("name", "unknown")
         self.message = message or CODES.get(code, {}).get("message", "")
@@ -178,7 +180,7 @@ class Nidan:
 
     def render(self, source=""):
         lines = source.splitlines() if source else []
-        out = ["samanvay[%s]: %s" % (self.code, self.message),
+        out = ["%s[%s]: %s" % (self.family, self.code, self.message),
                "  --> %s:%s" % (self.filename, self.primary)]
         shown = {self.primary.line} | {c.sthan.line for c in self.labels}
         shown = {n for n in shown if n > 0}
@@ -205,8 +207,8 @@ class Nidan:
         return "\n".join(out)
 
     def __str__(self):
-        return "samanvay[%s]: %s at %s" % (self.code, self.message,
-                                           self.primary)
+        return "%s[%s]: %s at %s" % (self.family, self.code, self.message,
+                                     self.primary)
 
 
 # ---------------------------------------------------------------------------
@@ -910,6 +912,15 @@ class Scheduler:
         self.aborted = None
         self.started = False
         self.max_steps = max_steps
+        # The virtual clock.  One tick per scheduling point, so time moves
+        # only when the program yields or sleeps, never when the machine is
+        # busy.  `sona(n)` parks a task until the clock passes now+n; when
+        # nothing else can run the scheduler jumps the clock to the earliest
+        # wake-up instead of calling it a deadlock.  This is why a timeout is
+        # reproducible: it is measured in steps, not in nanoseconds.
+        self.now = 0
+        self.timers = []          # [(wake_at, tid)] -- kept sorted by use
+        self.wakes = 0            # how many times the clock had to jump
 
     # -- admission ---------------------------------------------------------
 
@@ -937,9 +948,39 @@ class Scheduler:
 
     # -- picking -----------------------------------------------------------
 
+    def _ready_candidates(self):
+        return sorted(tid for tid in self.ready
+                      if self.tasks[tid].state == "ready")
+
+    def _advance_clock(self):
+        """Jump to the earliest timer and wake everything due."""
+        if not self.timers:
+            return False
+        wake = min(item[0] for item in self.timers)
+        if wake > self.now:
+            self.now = wake
+        due = [item for item in self.timers if item[0] <= self.now]
+        self.timers = [item for item in self.timers if item[0] > self.now]
+        self.wakes += 1
+        for _, tid in due:
+            task = self.tasks.get(tid)
+            if task is None or task.state != "blocked":
+                continue
+            wait = task.wait_for
+            if wait and wait[0] == "sona":
+                task.state = "ready"
+                task.wait_for = None
+                if tid not in self.ready:
+                    self.ready.append(tid)
+        return True
+
     def _pick(self):
-        candidates = sorted(tid for tid in self.ready
-                            if self.tasks[tid].state == "ready")
+        candidates = self._ready_candidates()
+        # A sleeper is not a deadlock: if the only runnable thing is the
+        # clock, move the clock.
+        while not candidates and self.timers:
+            self._advance_clock()
+            candidates = self._ready_candidates()
         if not candidates:
             return None
         tid = candidates[self.rng.randrange(len(candidates))]
@@ -1011,6 +1052,8 @@ class Scheduler:
             return "receive on channel #%d" % wait[1].id
         if wait[0] == "bhej":
             return "send on channel #%d" % wait[1].id
+        if wait[0] == "sona":
+            return "the clock (tick %d)" % wait[1]
         return str(wait[0])
 
     # -- scheduling points -------------------------------------------------
@@ -1023,6 +1066,7 @@ class Scheduler:
             task.clock[tid] = task.clock.get(tid, 0) + 1
             self.schedule.append(tid)
             self.steps += 1
+            self.now += 1
             if self.steps > self.max_steps:
                 self.aborted = {"kind": "step_limit", "steps": self.steps,
                                 "reason": "the step limit was reached"}
@@ -1470,6 +1514,27 @@ class Runtime:
         self._record("ajna", task.tid, at=str(self._site()))
         self.scheduler.yield_point(task.tid)
 
+    def sleep(self, millis):
+        """Park the task until the virtual clock has moved `millis` ticks."""
+        task = self._task()
+        ticks = int(millis)
+        if ticks <= 0:
+            self._record("sona", task.tid, until=self.scheduler.now)
+            self.scheduler.yield_point(task.tid)
+            return self.scheduler.now
+        wake = self.scheduler.now + ticks
+        self._record("sona", task.tid, until=wake)
+        self.scheduler.timers.append((wake, task.tid))
+        try:
+            self.scheduler.block(task.tid, ("sona", wake))
+        finally:
+            self.scheduler.timers = [item for item in self.scheduler.timers
+                                     if item != (wake, task.tid)]
+        return self.scheduler.now
+
+    def clock(self):
+        return self.scheduler.now
+
     # -- summary -----------------------------------------------------------
 
     def summary(self):
@@ -1478,6 +1543,8 @@ class Runtime:
         return {
             "seed": sched.seed_value,
             "steps": sched.steps,
+            "ticks": sched.now,
+            "wakes": sched.wakes,
             "tasks": len(sched.tasks),
             "done": done,
             "schedule": list(sched.schedule),

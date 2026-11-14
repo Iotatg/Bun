@@ -747,7 +747,7 @@ def test_usage_and_version_announce_the_wave():
     assert "bun raksha" in help_result.stdout
     version = cli("version", "--short")
     assert version.returncode == 0
-    assert version.stdout.strip() == "0.8.0"
+    assert version.stdout.strip() == "0.9.0"
 
 
 # ---------------------------------------------------------------------------

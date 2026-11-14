@@ -44,22 +44,23 @@ in force. R1–R8 are the short list a new construct is checked against.
 
 ## 3. The origin ledger
 
-`bun:identity` → `families()` records 16 families. This is the honest count,
+`bun:identity` → `families()` records 17 families. This is the honest count,
 not a score to be proud of:
 
 | Origin | Families | Meaning |
 |--------|----------|---------|
-| `bun` | 8 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface, the 0.7.0 safety pass (`safety`), and the 0.8.0 coordination pass (`coordination`). |
+| `bun` | 9 | Bun's own answer: literals (one `null`), the error channels, structured concurrency, language packs, the multi-engine oracle, the queryable diagnostic surface, the 0.7.0 safety pass (`safety`), the 0.8.0 coordination pass (`coordination`), and the 0.9.0 resilience pass (`resilience`). |
 | `borrowed` | 7 | Bindings, functions, control flow, modules, data types, patterns, resources. Each names the languages it came from and the reason it was kept. |
 | `shared` | 1 | Operators — the shared alphabet of arithmetic. |
 
 `bun:identity` → `keywords()` maps **all 37 keywords** (33 hard keywords
 from `bun/lexer.py` plus the 4 soft keywords from `bun/langpacks.py`) to one
-of those families. The 0.7.0 wave added a family and three forms, and the
-0.8.0 wave added one more family and three more forms, without touching this
-table: every new safety and coordination word is a module function name, not
-a keyword. `forms()` records 20 sentence shapes with an origin, a reason, a
-rule and a status (`canonical`, `compatibility`, `rejected`); 17 are
+of those families. The 0.7.0 wave added a family and three forms, the
+0.8.0 wave added one more family and three more forms, and the 0.9.0 wave
+added a third and three more, without touching this table: every new
+safety, coordination and resilience word is a module function name, not a
+keyword. `forms()` records 23 sentence shapes with an origin, a reason, a
+rule and a status (`canonical`, `compatibility`, `rejected`); 20 are
 canonical, 1 is compatibility and 2 are rejected.
 
 `audit()` runs 15 falsifiable checks over these tables: complete
@@ -210,6 +211,20 @@ entries and `audit()` still runs exactly 15 checks.
 | `sv.beej(n)` | bun | R5 | The seed is the replay token: one integer fixes the interleaving, so a failure is repeatable byte for byte. |
 
 The normative reference is `docs/reference/samanvay.md`.
+
+### 4.5 The 0.9.0 resilience forms
+
+The Palan wave adds **one family** (`resilience`, held to R5) and **three
+forms**, and adds **no keyword** — `keywords()` is still 37 entries and
+`audit()` still runs exactly 15 checks.
+
+| Form | Origin | Rule | Why it is Bun's |
+|---|---|---|---|
+| `pl.sona(n)` | bun | R5 | Time is a counter: sleeping parks the task on a scheduler-owned timer, so an hour costs microseconds and lands on the same tick every run. |
+| `pl.sankat(p)` then `pl.jokhim()` | bun | R5 | A failure is declared where it can happen and decided by a seeded roll, so a chaos run is a function of one integer. |
+| `pl.rakshak(strategy, budget, window)` | bun | R5 | Supervision is a value built by calls and run by `chalau`, and the budget is measured in ticks rather than seconds; joining instead of killing is Bun's, because cancellation here is cooperative. |
+
+The normative reference is `docs/reference/palan.md`.
 
 ## 5. Adding a construct
 

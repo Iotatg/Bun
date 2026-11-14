@@ -120,7 +120,8 @@ def main():
 
     # 9. The version is 0.7.0 and the package agrees.
     result = run(["version", "--short"])
-    check("bun version --short is 0.8.0", result.stdout.strip() == "0.8.0",
+    check("bun version --short is at least 0.8.0",
+          tuple(int(p) for p in result.stdout.strip().split(".")) >= (0, 8, 0),
           result.stdout.strip())
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)

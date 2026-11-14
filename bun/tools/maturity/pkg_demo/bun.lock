@@ -1,5 +1,5 @@
 {
-  "generated_by": "bun pkg lock 0.8.0",
+  "generated_by": "bun pkg lock 0.9.0",
   "manifest": "bun.toml",
   "packages": [
     "ai",
@@ -11,6 +11,7 @@
     "math",
     "maturity_demo",
     "nyaya",
+    "palan",
     "physics",
     "polyglot",
     "pramana",
@@ -26,5 +27,5 @@
     "tensor",
     "web"
   ],
-  "sha256": "4a04c4875a59198f62adf6e8629321364ffac5c9fdd745edca3c3a6f406064f6"
+  "sha256": "30b6a6e038c6b1796c159912c9ab8f8e7a8e77defd62a45efba24163aaf4cacf"
 }

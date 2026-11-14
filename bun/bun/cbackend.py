@@ -103,6 +103,8 @@ LANGUAGE_BUILTINS = frozenset([
     "sv_beej", "sv_sajha", "sv_padh", "sv_likh", "sv_tal", "sv_pakad",
     "sv_chhod", "sv_kanal", "sv_bhej", "sv_le", "sv_band", "sv_kary",
     "sv_mel", "sv_chhodo", "sv_ajna", "sv_trace",
+    "pl_abhi", "pl_sona", "pl_avadhi", "pl_jaanch", "pl_sankat",
+    "pl_jokhim", "pl_chunav", "pl_note", "pl_report",
     "exec", "eval", "now",
     "sleep", "spawn", "task_join", "task_done", "cancel", "task_cancelled",
     "sandbox_enter", "sandbox_exit", "mutex", "lock", "unlock", "ffi_load",

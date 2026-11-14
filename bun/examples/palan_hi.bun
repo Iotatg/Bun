@@ -1,0 +1,82 @@
+#!lang hi
+// examples/palan_hi.bun — वही कार्यक्रम, हिन्दी पैक में।
+//
+// केवल कीवर्ड बदलते हैं; print, range, null और pl.* / sv.* के नाम
+// सार्वभौमिक हैं। Palan ने कोई नया कीवर्ड नहीं जोड़ा, इसलिए 118 भाषा पैक
+// आज ही इसे लिख सकते हैं। आउटपुट अंग्रेज़ी संस्करण के साथ बाइट-दर-बाइट
+// समान है — वही बीज, वही दुनिया।
+
+आयात "bun:palan" जैसे pl
+आयात "bun:samanvay" जैसे sv
+
+pl.sankat(0.35)
+
+चल reads = 0
+चल hits = 0
+चल retried = 0
+
+मानी answer = sv.sajha(0, "answer")
+मानी disk = pl.vyavdhi(4, 25)
+
+काम read(n) {
+    reads = reads + 1
+    अगर pl.jokhim() {
+        फेंको "E_IO: read " + str(n) + " failed"
+    }
+    hits = hits + 1
+    लौटो n * n
+}
+
+// एक पढ़ाई, ब्रेकर से होकर: लगातार चार विफलताओं के बाद ब्रेकर खुल जाता है
+// और 25 टिक तक हर कॉल मना कर देता है।
+काम guarded(n) {
+    लौटो pl.guzar(disk, fn() {
+        लौटो read(n)
+    })
+}
+
+// एक पढ़ाई, तीन कोशिशों के साथ। बैकऑफ़ 2, 4 टिक: प्रतीक्षा दुगनी होती है
+// और jitter बीज वाले पासे से आता है।
+काम patient(n) {
+    लौटो pl.punar(fn() {
+        लौटो guarded(n)
+    }, 3, 2, 16)
+}
+
+काम worker() {
+    pl.avadhi(400)
+    चल total = 0
+    हर i में range(1, 6) {
+        pl.jaanch()
+        total = total + patient(i)
+    }
+    sv.likh(answer, total)
+    लौटो total
+}
+
+मानी sup = pl.rakshak("ek", 3, 2000)
+pl.baccha(sup, worker, "worker")
+
+चल degraded = false
+चल note = ""
+कोशिश {
+    pl.chalau(sup)
+} पकड़ो e {
+    degraded = true
+    note = e
+}
+
+print("reads", reads)
+print("hits", hits)
+print("answer", sv.padh(answer))
+print("breaker", disk["state"])
+print("trips", disk["trips"])
+print("refusals", disk["refusals"])
+print("ticks", pl.abhi())
+print("degraded", degraded)
+अगर degraded {
+    print("reason", note)
+    print("PALAN SERVICE DEGRADED")
+} अन्यथा {
+    print("PALAN SERVICE OK")
+}

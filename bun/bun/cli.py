@@ -28,9 +28,14 @@ Usage:
   bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
   bun raksha <file.bun> [--json|--dot|--verify|--stats|--explain]  static safety analysis
   bun check --raksha <file.bun>   type check plus the Raksha safety pass
+  bun check --samanvay <file.bun> type check plus the Samanvay concurrency pass
+  bun check --palan <file.bun>    type check plus the Palan resilience pass
   bun samanvay <file.bun> [--json|--dot|--verify|--stats|--explain]  concurrency report
   bun samanvay --run [--seed=N] <file.bun>   run under the deterministic scheduler
   bun samanvay --seeds=A:B <file.bun>        sweep seeds, report the first finding
+  bun palan <file.bun> [--json|--dot|--verify|--stats|--explain]  resilience report
+  bun palan --run [--seed=N] <file.bun>      run under the virtual clock
+  bun palan --chaos=A:B <file.bun>           sweep seeds, one line per world
   bun --front-end python|bun <file.bun> choose the front end (default: python)
   bun --lang <code>|auto <file.bun>  write Bun in another language (see: bun langs)
   bun langs [--json]              list the language packs of the keywords
@@ -511,8 +516,54 @@ def _raksha_diagnostics(program, path):
     return out
 
 
+def _palan_diagnostics(program, path):
+    """Run the static Palan pass and return `bun check` diagnostics."""
+    from . import palan as palan_module
+
+    analysis = palan_module.analyze_program(program, path)
+    out = []
+    for nidan in analysis.nidan:
+        sthan = nidan.primary
+        out.append({
+            "file": path,
+            "severity": "error",
+            "kind": "palan",
+            "code": nidan.code,
+            "hint": nidan.hint,
+            "message": "palan[%s]: %s" % (nidan.code, nidan.message),
+            "line": getattr(sthan, "line", 0) or 0,
+            "col": getattr(sthan, "col", 0) or 0,
+        })
+    return out
+
+
+def _samanvay_diagnostics(program, path):
+    """Run the static Samanvay pass and return `bun check` diagnostics."""
+    from . import samanvay as samanvay_module
+
+    analysis = samanvay_module.analyze_program(program, path)
+    out = []
+    for nidan in analysis.diagnostics:
+        sthan = nidan.primary
+        out.append({
+            "file": path,
+            "severity": "error",
+            "kind": "samanvay",
+            "code": nidan.code,
+            "hint": nidan.hint,
+            "message": "samanvay[%s]: %s" % (nidan.code, nidan.message),
+            "line": getattr(sthan, "line", 0) or 0,
+            "col": getattr(sthan, "col", 0) or 0,
+        })
+    return out
+
+
 def cmd_check(args, raksha=False):
-    """`bun check [--json] [--raksha] <file.bun>...` — check without running.
+    """`bun check [--json] [--raksha|--samanvay|--palan] <file.bun>...`.
+
+    With a pass flag the type check is followed by that static pass; its
+    nidan are appended to the same diagnostics list, so `--json` consumers
+    see one stream.  Without a flag, nothing changes.
 
     With `raksha=True` (or an explicit `--raksha` flag) the type check is
     followed by the static safety pass; its nidan are appended to the same
@@ -520,6 +571,8 @@ def cmd_check(args, raksha=False):
     """
     as_json = "--json" in args
     raksha = raksha or "--raksha" in args
+    palan = "--palan" in args
+    samanvay = "--samanvay" in args
     paths = [arg for arg in args if not arg.startswith("--")]
     if not paths:
         print("error: bun check expects at least one file", file=sys.stderr)
@@ -561,6 +614,30 @@ def cmd_check(args, raksha=False):
                     "severity": "error",
                     "kind": "raksha",
                     "message": "raksha analysis failed: %s" % error,
+                    "line": 0,
+                    "col": 0,
+                })
+        if samanvay and checked and program is not None:
+            try:
+                diagnostics.extend(_samanvay_diagnostics(program, path))
+            except Exception as error:                       # noqa: BLE001
+                diagnostics.append({
+                    "file": path,
+                    "severity": "error",
+                    "kind": "samanvay",
+                    "message": "samanvay analysis failed: %s" % error,
+                    "line": 0,
+                    "col": 0,
+                })
+        if palan and checked and program is not None:
+            try:
+                diagnostics.extend(_palan_diagnostics(program, path))
+            except Exception as error:                       # noqa: BLE001
+                diagnostics.append({
+                    "file": path,
+                    "severity": "error",
+                    "kind": "palan",
+                    "message": "palan analysis failed: %s" % error,
                     "line": 0,
                     "col": 0,
                 })

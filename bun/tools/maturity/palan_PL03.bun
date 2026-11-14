@@ -1,0 +1,6 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+fn w() {
+    pl.avadhi(50)
+    return 1
+}

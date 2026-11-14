@@ -2384,6 +2384,110 @@ def _sv_trace(args):
     return _sv_value(runtime.summary())
 
 
+
+# ---------------------------------------------------------------------------
+# Palan (पालन) — the resilience wave
+# ---------------------------------------------------------------------------
+#
+# Only the parts that need the scheduler live here: the virtual clock, the
+# seeded die, and the two runtime counters.  The policy — supervisors,
+# retry, breaker — is written in Bun, in lib/bun/palan.bun.
+
+def _pl_module():
+    from . import palan as module
+    return module
+
+
+def _pl_guard(name, function, *args):
+    from .errors import BunRuntimeError as _Error
+    try:
+        return function(*args)
+    except _Error:
+        raise
+    except RuntimeError as error:
+        raise BunRuntimeError(str(error))
+
+
+def _pl_abhi(args):
+    if args:
+        raise BunRuntimeError("pl_abhi() expects no arguments")
+    return _pl_module().clock()
+
+
+def _pl_sona(args):
+    _one("pl_sona", args)
+    ticks = args[0]
+    if not isinstance(ticks, int) or isinstance(ticks, bool) or ticks < 0:
+        raise BunRuntimeError("pl_sona() expects a non-negative tick count")
+    return _pl_guard("pl_sona", _pl_module().sleep, ticks)
+
+
+def _pl_avadhi(args):
+    _one("pl_avadhi", args)
+    ticks = args[0]
+    if not isinstance(ticks, int) or isinstance(ticks, bool) or ticks < 0:
+        raise BunRuntimeError("pl_avadhi() expects a non-negative tick count")
+    return _pl_guard("pl_avadhi", _pl_module().deadline, ticks)
+
+
+def _pl_jaanch(args):
+    if args:
+        raise BunRuntimeError("pl_jaanch() expects no arguments")
+    return _pl_guard("pl_jaanch", _pl_module().check)
+
+
+def _pl_sankat(args):
+    _one("pl_sankat", args)
+    probability = args[0]
+    if not isinstance(probability, (int, float)) or isinstance(probability, bool):
+        raise BunRuntimeError("pl_sankat() expects a number between 0 and 1")
+    if probability < 0 or probability > 1:
+        raise BunRuntimeError("pl_sankat() expects a number between 0 and 1")
+    return _pl_guard("pl_sankat", _pl_module().set_risk, probability)
+
+
+def _pl_jokhim(args):
+    if args:
+        raise BunRuntimeError("pl_jokhim() expects no arguments")
+    return _pl_guard("pl_jokhim", _pl_module().roll)
+
+
+def _pl_chunav(args):
+    _one("pl_chunav", args)
+    limit = args[0]
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise BunRuntimeError("pl_chunav() expects a positive integer")
+    module = _pl_module()
+    # A choice must not consume the failure die: the two streams are
+    # separate so that adding a jitter call cannot change which task fails.
+    tid = module._require_task("chunav")
+    index = module._CHOICES.get(tid, 0)
+    module._CHOICES[tid] = index + 1
+    seed_value = module._runtime().scheduler.seed_value
+    import random as _random
+    return _random.Random("c:%d:%d:%d" % (seed_value, tid, index)).randrange(limit)
+
+
+def _pl_note(args):
+    _one("pl_note", args)
+    code = args[0]
+    if not isinstance(code, str):
+        raise BunRuntimeError("pl_note() expects a string code")
+    _pl_module().note(code)
+    return None
+
+
+def _pl_report(args):
+    if args:
+        raise BunRuntimeError("pl_report() expects no arguments")
+    value = _pl_module().summary()
+    result = BunDict()
+    for key, item in value.items():
+        result.set(key, _sv_value(item))
+    return result
+
+
+
 def register_builtins(env, program_args=None):
     env.define("args", Builtin("args", _make_args(program_args)), False)
     env.define("print", Builtin("print", _print), False)
@@ -2467,6 +2571,17 @@ def register_builtins(env, program_args=None):
     env.define("sv_chhodo", Builtin("sv_chhodo", _sv_chhodo), False)
     env.define("sv_ajna", Builtin("sv_ajna", _sv_ajna), False)
     env.define("sv_trace", Builtin("sv_trace", _sv_trace), False)
+    # Palan: the resilience wave.  The clock and the die are builtins
+    # because only the scheduler may move virtual time.
+    env.define("pl_abhi", Builtin("pl_abhi", _pl_abhi), False)
+    env.define("pl_sona", Builtin("pl_sona", _pl_sona), False)
+    env.define("pl_avadhi", Builtin("pl_avadhi", _pl_avadhi), False)
+    env.define("pl_jaanch", Builtin("pl_jaanch", _pl_jaanch), False)
+    env.define("pl_sankat", Builtin("pl_sankat", _pl_sankat), False)
+    env.define("pl_jokhim", Builtin("pl_jokhim", _pl_jokhim), False)
+    env.define("pl_chunav", Builtin("pl_chunav", _pl_chunav), False)
+    env.define("pl_note", Builtin("pl_note", _pl_note), False)
+    env.define("pl_report", Builtin("pl_report", _pl_report), False)
     env.define("ffi_load", Builtin("ffi_load", _ffi_load), False)
     env.define("list_dir", Builtin("list_dir", _list_dir), False)
     env.define("make_dir", Builtin("make_dir", _make_dir), False)

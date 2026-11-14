@@ -1168,6 +1168,152 @@ def _samanvay_run(path, source, analysis, seed_value, sweep, as_json):
     return 0 if findings == 0 else 1
 
 
+def cmd_palan(args):
+    """Report, check and run the Palan resilience analysis.
+
+    Without `--run` the command never executes the program: it reports the
+    supervisors, their strategies, the retries, the deadlines and the six
+    static nidan.  With `--run` it executes the program on the tree engine
+    under the deterministic scheduler and the virtual clock, and reports
+    what actually happened: how many ticks the clock moved, how many times
+    it had to jump, which tasks rolled the die, and whether a supervisor
+    escalated (PL07) or a breaker refused a call (PL08).
+
+    `--chaos=A:B` runs seeds A..B and prints one line per seed.  Because the
+    clock is virtual and the die is seeded, two seeds that produce the same
+    line produced the same run.
+    """
+    from . import palan as palan_module
+
+    flags = [arg for arg in args if arg.startswith("--")]
+    paths = [arg for arg in args if not arg.startswith("--")]
+    seed_value = None
+    sweep = None
+    for flag in flags:
+        if flag.startswith("--seed="):
+            seed_value = int(flag.split("=", 1)[1])
+        elif flag.startswith("--chaos="):
+            low, _, high = flag.split("=", 1)[1].partition(":")
+            sweep = (int(low), int(high or low))
+    if not paths:
+        print("error: expects a file", file=sys.stderr)
+        return 2
+    path = paths[0]
+    if not os.path.exists(path):
+        print("error: no such file: %s" % path, file=sys.stderr)
+        return 2
+    try:
+        program, source = _parse_program(path)
+        analysis = palan_module.analyze_program(program, path, source)
+        check = palan_module.verify(analysis)
+    except Exception as error:                           # noqa: BLE001
+        print("error: palan failed: %s" % error, file=sys.stderr)
+        return 1
+
+    if "--run" in flags or seed_value is not None or sweep is not None:
+        return _palan_run(path, source, analysis, seed_value, sweep,
+                          "--json" in flags)
+
+    nidans = list(analysis.nidan)
+    ok = bool(check.ok) and not nidans
+    stats = dict(check.stats)
+    if "--json" in flags:
+        print(palan_module.render_json(analysis))
+        return 0 if ok else 1
+    if "--dot" in flags:
+        print(palan_module.render_dot(analysis))
+        return 0 if ok else 1
+    if "--stats" in flags:
+        print(palan_module.render_stats(analysis))
+        return 0 if ok else 1
+    if "--verify" in flags:
+        if ok:
+            print("PALAN: OK (%d supervisor, %d child, %d nidan)"
+                  % (stats.get("supervisors", 0), stats.get("children", 0),
+                     stats.get("nidan", 0)))
+        else:
+            for problem in check.problems:
+                print("PALAN: %s" % problem)
+            for nidan in nidans:
+                print(nidan.render(source))
+            print("PALAN: %d problem(s), %d nidan"
+                  % (len(check.problems), len(nidans)))
+        return 0 if ok else 1
+    if "--explain" in flags:
+        print(palan_module.render_explain(analysis, source))
+        return 0 if ok else 1
+
+    print(palan_module.render_text(analysis))
+    return 0 if ok else 1
+
+
+def _palan_run(path, source, analysis, seed_value, sweep, as_json):
+    """Execute the program on the virtual clock."""
+    import contextlib
+    import io as _io
+    from . import palan as module
+    from . import samanvay as samanvay_module
+    from .cli import run_source
+
+    def one(seed):
+        samanvay_module.reset()
+        module.reset()
+        os.environ["BUN_SAMANVAY_SEED"] = str(seed)
+        buffer = _io.StringIO()
+        failure = None
+        with contextlib.redirect_stdout(buffer):
+            try:
+                run_source(source, filename=path, check=False, engine="tree")
+            except Exception as error:                   # noqa: BLE001
+                failure = str(error)
+        summary = module.summary()
+        summary["seed"] = seed
+        summary["exit"] = 1 if failure else 0
+        summary["error"] = failure
+        summary["output"] = buffer.getvalue()
+        return summary
+
+    if sweep is not None:
+        low, high = sweep
+        found = []
+        for seed in range(low, high + 1):
+            result = one(seed)
+            findings = len(result["events"])
+            print("seed %-4d ticks=%-5d sleeps=%-3d rolls=%-3d failures=%-3d "
+                  "findings=%d"
+                  % (seed, result["ticks"], result["sleeps"],
+                     result["rolls"], result["failures"], findings))
+            if findings or result["exit"]:
+                found.append(seed)
+        print("PALAN CHAOS: %d seed(s), %d with findings%s"
+              % (high - low + 1, len(found),
+                 (", first %d" % found[0]) if found else ""))
+        return 0 if not found else 1
+
+    result = one(seed_value if seed_value is not None else 0)
+    if as_json:
+        print(json.dumps({key: value for key, value in result.items()
+                          if key != "output"}, indent=2, sort_keys=True))
+        return 0 if not (result["events"] or result["exit"]) else 1
+
+    if result["output"]:
+        sys.stdout.write(result["output"])
+    print("PALAN RUN seed=%d ticks=%d sleeps=%d rolls=%d failures=%d "
+          "escalations=%d refusals=%d"
+          % (result["seed"], result["ticks"], result["sleeps"],
+             result["rolls"], result["failures"], result["escalations"],
+             result["refusals"]))
+    for event in result["events"]:
+        row = module.CODES.get(event.get("code"), {})
+        print("  %s %s at tick %s"
+              % (event.get("code"), row.get("message", ""), event.get("tick")))
+    if result["error"]:
+        print("  error: %s" % result["error"].splitlines()[0])
+    findings = len(result["events"]) + (1 if result["exit"] else 0)
+    print("PALAN: %d finding(s)" % findings)
+    return 0 if findings == 0 else 1
+
+
 def cmd_raksha(args):
     """Show, check and measure the Raksha static safety analysis.
 
@@ -1246,6 +1392,7 @@ COMMANDS = {
     "maturity": cmd_maturity, "originality": cmd_originality,
     "antar": cmd_antar, "raksha": cmd_raksha,
     "samanvay": cmd_samanvay,
+    "palan": cmd_palan,
 }
 
 # Flags that route an existing command to its toolchain implementation.

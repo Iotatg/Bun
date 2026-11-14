@@ -1,0 +1,4 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+pl.sona(20)
+print("done")

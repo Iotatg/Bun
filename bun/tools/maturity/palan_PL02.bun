@@ -1,0 +1,4 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+fn w() { return 1 }
+pl.punar(w, 1, 2, 10)

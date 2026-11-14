@@ -1,0 +1,10 @@
+import "bun:palan" as pl
+import "bun:samanvay" as sv
+pl.sankat(0.5)
+fn w() {
+    if pl.jokhim() { throw "x" }
+    return 1
+}
+let s = pl.rakshak("ek", 0, 100)
+pl.baccha(s, w, "w")
+try { pl.chalau(s) } catch e { }

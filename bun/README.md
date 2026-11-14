@@ -26,7 +26,7 @@ The rule, the origin ledger and the checklist for adding a construct are in
 [`docs/reference/bun-identity.md`](docs/reference/bun-identity.md). The
 guard test derives the real keyword set from `bun/lexer.py`, so a new
 keyword without an attributed origin fails the suite. Bun did not invent
-everything; the ledger says exactly which eight of sixteen families are
+everything; the ledger says exactly which nine of seventeen families are
 Bun's own.
 
 ## Raksha — static safety (0.7.0)
@@ -67,6 +67,29 @@ python3 -m bun samanvay --seeds=0:8 examples/samanvay_race.bun
 Cells, channels, locks, the eight codes (SV01–SV08), the scheduler's
 guarantees and the boundaries are in
 [`docs/reference/samanvay.md`](docs/reference/samanvay.md).
+
+## Palan — resilience on a virtual clock (0.9.0)
+
+`bun:palan` is the resilience wave. Time is a counter — one tick per
+scheduling point — so a sleep parks a task on a timer the scheduler owns and
+an hour of backoff costs microseconds. A failure is a seeded roll, so a
+chaos run is a function of one integer. On top of those, supervisors (three
+OTP strategies and a sliding restart budget), retry with deterministic
+jitter, and a circuit breaker whose cooldown is measured in ticks.
+
+```bash
+python3 -m bun examples/palan.bun                    # one world
+python3 -m bun examples/palan_hi.bun                 # byte-identical (Hindi)
+python3 -m bun palan examples/palan.bun              # static report
+python3 -m bun palan --run --seed=7 examples/palan.bun
+python3 -m bun palan --chaos=0:15 examples/palan.bun # 16 worlds, one table
+```
+
+Over 16 seeds the example — a service with a 35%-failing disk, three
+attempts, a breaker at four failures and a supervisor at three restarts —
+degrades in 6 worlds and survives in 10, with the clock running from 2 to 45
+ticks. The eight codes (PL01–PL08), the clock's guarantees and the
+boundaries are in [`docs/reference/palan.md`](docs/reference/palan.md).
 
 ## Requirements
 

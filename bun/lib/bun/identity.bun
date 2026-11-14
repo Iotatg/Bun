@@ -141,6 +141,10 @@ export fn families() {
 
         {"name": "coordination", "origin": "bun", "from": "",
          "reason": "The 0.8.0 wave: one deterministic scheduler, cells read and written through module functions, channels and locks. The happens-before rule is borrowed from race detectors and the repeatable-failure idea from deterministic simulation; the words and the seed-as-replay-token are Bun's own.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "resilience", "origin": "bun", "from": "",
+         "reason": "The 0.9.0 wave: a virtual clock, a seeded die, supervisors with a restart budget, retry with jitter, and a circuit breaker. The restart strategies are Erlang/OTP's and the breaker states are Fowler's; measuring both on a tick counter instead of a wall clock is Bun's own, and it is what makes a failure replayable.",
          "bun_rule": "R5", "status": "canonical"}
     ]
 }
@@ -263,6 +267,18 @@ export fn forms() {
 
         {"name": "sv.beej(n) — the seed is the replay token", "origin": "bun", "from": "",
          "reason": "One integer fixes the interleaving. The same seed reproduces a failure byte for byte, which is what makes a concurrency report actionable; no other language runtime in the family exposes the schedule as a value.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "pl.sona(n) — time is a counter", "origin": "bun", "from": "",
+         "reason": "Sleeping parks the task on a timer the scheduler owns, so an hour of backoff costs microseconds and lands on the same tick every run. No wall clock is readable, so nothing can disagree with the replay.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "pl.sankat(p) then pl.jokhim()", "origin": "bun", "from": "",
+         "reason": "A failure is declared where it can happen and decided by a seeded roll, so a chaos run is a function of one integer. The die is a value a test can replay; a timer is not.",
+         "bun_rule": "R5", "status": "canonical"},
+
+        {"name": "pl.rakshak(strategy, budget, window)", "origin": "bun", "from": "",
+         "reason": "Supervision is a value built by calls and run by chalau, and the budget is measured in ticks rather than seconds. The strategies are borrowed from Erlang/OTP; joining instead of killing is Bun's, because cancellation here is cooperative.",
          "bun_rule": "R5", "status": "canonical"}
     ]
 }
