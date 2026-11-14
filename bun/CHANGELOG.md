@@ -66,7 +66,7 @@ the semantics are Bun's own.
   registry, so the Python checker and the self-hosted checker agree on
   `selfhost/checker.bun` again.
 
-## 0.5.0 — 2026-11-10
+## 0.5.0 — 2026-11-10 (shipped inside v0.6.0)
 
 The engine wave.  It closes the last two open capabilities of the 2026-11-08
 maturity ledger with working code, so the measured score goes from `98/100`
