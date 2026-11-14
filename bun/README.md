@@ -271,18 +271,40 @@ Skip the checker with `--no-check`:
 python3 -m bun --no-check program.bun
 ```
 
-Choose the execution engine with `--engine tree|vm|register|c` (default: `vm`):
+Choose the execution engine with `--engine tree|vm|register|c|wasm|jit|antar`
+(default: `vm`):
 
 ```bash
 python3 -m bun --engine vm program.bun
 python3 -m bun --engine tree program.bun
 python3 -m bun --engine register program.bun
 python3 -m bun --engine c program.bun
+python3 -m bun --engine wasm tools/maturity/engine_core.bun
+python3 -m bun --engine jit tools/maturity/engine_core.bun
+python3 -m bun --engine antar tools/maturity/antar_core.bun
 ```
 
 The `c` engine is the native backend of Phase 13: it turns the program into
 C and lets the compiler of the system do the work. It refuses the constructs
 it cannot translate, by name, at compile time.
+
+`wasm` and `jit` are integer-core engines: `wasm.py` emits a **binary**
+WebAssembly module (not WAT text) and `wasmvm.py` decodes and runs it on a
+machine Bun owns; `jit.py` emits x86-64 machine code into an executable
+`mmap` region and calls it through `ctypes`. Both share `bun/intcore.py` for
+`range`, expression types and the named `Unsupported` refusal, so they agree
+with each other and with the stack VM on the core. A program outside that
+core is refused by name instead of being silently miscompiled. See
+[`docs/reference/engines.md`](docs/reference/engines.md).
+
+`antar` is the graph engine. `bun/antar.py` lowers a program to one
+control-flow graph per function — `khand` (straight-line blocks) ending in
+exactly one `nirnaya` (terminator) — and runs that graph. The same graph is
+what `bun antar` prints and verifies, so the engine is not a private
+lowering: it is one consumer of a structure that can also be dumped as
+JSON or Graphviz, checked before it runs, and analysed for predecessors,
+reverse postorder, dominators and loops. See
+[`docs/reference/antar.md`](docs/reference/antar.md).
 
 The register engine runs the same program with the values of an expression
 in the registers of a frame instead of on an operand stack. It has the same
@@ -431,7 +453,8 @@ down, so a program may call a helper that is written at the end of the file.
 bun <file.bun>                  run a Bun program
 bun -                           run a Bun program from the standard input
 bun --no-check <file.bun>       run without type checking
-bun --engine tree|vm|register|c <file.bun> choose the execution engine (default: vm)
+bun --engine tree|vm|register|c|wasm|jit|antar <file.bun> choose the execution engine (default: vm)
+bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
 bun --engine register --tier <file.bun> run with the superinstructions
 bun --front-end python|bun <file.bun> choose the front end (default: python)
 bun api [--json]                list the builtin signatures
@@ -2517,7 +2540,7 @@ print(decompile("program", "calc"))
 The language of the binary does not matter: ELF, PE or Mach-O; C, C++,
 Rust, Go, Zig or a stripped release build.
 
-## Why five engines
+## Why seven engines
 
 An interpreter is not a slow compiler. The compiler pays the compile
 cost on every change; the interpreter pays the walk cost on every run.
@@ -2525,6 +2548,12 @@ Bun ships both, so a line changes in milliseconds while the program is
 being written and the finished program runs on the C backend.
 `tools/bench_engines.py` measures the gap on one workload; the numbers
 are in `docs/reference/engines.md`.
+
+The seven are `tree`, `vm`, `register` (plus `--tier`), `c`, `wasm`, `jit`
+and `antar`. The first four run the whole language; `wasm` and `jit` run the
+integer core and refuse the rest by name; `antar` runs the control-flow graph
+that `bun antar` prints. All of them agree on the programs the maturity probe
+runs, and the probe fails if they do not.
 
 ## The science stacks — quantum, physics, chemistry
 
@@ -2665,6 +2694,51 @@ print(place(8, 12)["stage"])       // class 11
 Reference: `docs/reference/sutra-school.md`; lab: `bun tools/sutra_school_lab.bun`;
 example: `examples/sutra_school.bun`; tests: `tests/test_sutra_school.py`
 (15 tests, identical output on all four engines).
+
+## One minus sign — SUTRA on a live physics claim
+
+`bun:hawking_page` is SUTRA applied to the Hawking–Page transition, in the only
+form a language can honestly check. A large anti-de Sitter universe has a
+critical temperature `Tc = 3/(2 pi L)`; below it hot radiation wins, above it a
+black hole wins, and because the two branches cross with different slopes the
+change is a jump. That much has been known since 1983.
+
+The module builds the two-branch free energy, measures its shape, and then
+runs the experiment the news story is really about: **flip one sign and the
+answer changes from "jump" to "no jump"**. Four models share the same `Tc` and
+the same `T^4`; only signs differ.
+
+```
+model      crosses  Tc        order   high-T winner
+crossing   yes      0.47746   first   black hole
+flipped    no       none      second  black hole
+reversed   yes      0.47746   first   radiation
+tangent    yes      0.47746   second  black hole
+```
+
+```bun
+import { certificate, sign_audit, claim_ledger } from "bun:hawking_page"
+
+let c = certificate(1.0, 1.0, 1.0)
+print(c["status"], c["passed"], c["total"])   // CERTIFIED 6 6
+for row in claim_ledger() { print(row["status"], row["claim"]) }
+```
+
+Six checks, and the fourth is the one that matters: **direction**. `classify`
+measures how the output moves when the input moves, and `+T^4` and `-T^4` move
+identically — a shape classifier cannot see a sign. The sign shows up only in a
+limit, which is why a shape-only argument about a phase transition proves
+nothing about the transition. The certificate refuses a negative coupling even
+though five of its six checks still pass.
+
+The ledger stays honest: the 1983 results are `KNOWN`, the 2003 small-universe
+question is `UNRESOLVED` (a two-branch model has no small-black-hole saddle and
+cannot answer it), and the 2026 preprint is `UNVERIFIED` here. The module checks
+the *structure* of the claim, not its number.
+
+Reference: `docs/reference/hawking-page.md`; example:
+`examples/hawking_page.bun`; tests: `tests/test_hawking_page.py` (24 cases,
+identical numbers on `tree`, `vm` and `register`).
 
 ## ETH, handled with SUTRA
 

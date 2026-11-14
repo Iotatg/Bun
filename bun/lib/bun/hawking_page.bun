@@ -1,0 +1,362 @@
+// bun:hawking_page — the subject where the answer is one minus sign.
+//
+// In 1983 Hawking and Page showed that a large anti-de Sitter universe has a
+// critical temperature: below it the hot radiation wins, above it a black
+// hole wins.  Because the two free energies cross with *different slopes*,
+// the change is a jump, not a slide.  In 2003 Aharony and four colleagues
+// asked the same question for the small case, and the calculation was long
+// enough that it stayed open.
+//
+// This module does not claim to settle that calculation.  It does something
+// narrower and checkable: it builds the two-branch free energy that the 1983
+// result rests on, measures its shape with `bun:sutra`, and then runs the
+// experiment the news story is really about —
+//
+//     flip one sign, and the answer changes from "jump" to "no jump".
+//
+// The lesson SUTRA draws here is sharp: a *shape* classifier cannot see a
+// sign.  `classify` measures how the answer moves when the input moves; +T^4
+// and -T^4 move identically.  The sign lives in the boundary condition —
+// which phase wins at high temperature — and that is why the certificate
+// below has a direction check that a shape-only check would pass while being
+// completely wrong.
+//
+//   transition_temperature(1.0)      // 0.4774648293  (3 / 2 pi)
+//   order_of("crossing")             // "first"
+//   order_of("tangent")              // "second"
+//   sign_audit()                     // four models, four honest answers
+//   claim_ledger()                   // what is known, what is not
+
+import { classify, num, fmt, has_key } from "bun:sutra"
+
+let M = ffi_load("math")
+let f_pow = M["pow"]
+let f_abs = M["fabs"]
+
+export let pi = 3.141592653589793
+
+// ---------------------------------------------------------------------------
+// 1. The model
+//
+// Two branches, in units where the overall positive constant is 1:
+//
+//   F_gas(T) = -a V T^4                      radiation
+//   F_BH(T)  = F_gas(T) + k V (Tc^4 - T^4)   black hole
+//
+// Only the *difference* matters for the transition, and it is fixed by the
+// two facts everyone agrees on: the difference vanishes at Tc, and it falls
+// as T^4 (radiation in four dimensions).  k > 0 and V > 0 are positive.
+//
+// The sign in front of Tc^4 is the whole subject.  Keep it and the branches
+// cross; flip it and they never meet.
+// ---------------------------------------------------------------------------
+
+// The Hawking-Page temperature of a large AdS universe of radius L.
+// Derived from T = (d-1) / (2 pi L) with d = 3 spatial dimensions.
+export fn transition_temperature(L) {
+    return 3.0 / (2.0 * pi * L)
+}
+
+// F_BH - F_gas, with the sign that physics requires: positive below Tc
+// (radiation wins), negative above Tc (black hole wins), zero at Tc.
+export fn free_energy_difference(T, L, k, V) {
+    let tc = transition_temperature(L)
+    return k * V * (f_pow(tc, 4.0) - f_pow(T, 4.0))
+}
+
+// The same difference with one sign flipped.  This is the model a single
+// typo produces, and it has no transition at all.
+export fn flipped_difference(T, L, k, V) {
+    let tc = transition_temperature(L)
+    return k * V * (0.0 - f_pow(tc, 4.0) - f_pow(T, 4.0))
+}
+
+// The same crossing with the *difference* reversed: still a jump at Tc, but
+// the black hole now wins at low temperature.  Wrong physics, right shape.
+export fn reversed_difference(T, L, k, V) {
+    let tc = transition_temperature(L)
+    return k * V * (f_pow(T, 4.0) - f_pow(tc, 4.0))
+}
+
+// A model whose difference passes through zero with zero slope.  The free
+// energy and its first derivative are both continuous; only the curvature
+// jumps.  This is a second-order transition, the "smooth" answer the 2003
+// question was asking about, and it is the control that proves the order
+// measurement is measuring something.
+export fn tangent_difference(T, L, k, V) {
+    let tc = transition_temperature(L)
+    let gap = T - tc
+    return 0.0 - k * V * gap * gap * gap
+}
+
+// The entropy difference between the two branches: S = -dF/dT.
+export fn entropy_difference(T, L, k, V) {
+    return 4.0 * k * V * f_pow(T, 3.0)
+}
+
+// Latent heat per unit volume at the transition: q = T * dS.
+export fn latent_heat(L, k) {
+    let tc = transition_temperature(L)
+    return 4.0 * k * f_pow(tc, 4.0)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Measurement, not assertion
+//
+// Nothing below is allowed to say "first order" because a paper says so.  It
+// bisects for the crossing, then differentiates the *lower envelope* from
+// both sides.  A jump in that slope is a first-order transition; a continuous
+// slope with a jump in curvature is second order.
+// ---------------------------------------------------------------------------
+
+fn kind_of(name) {
+    if name == "crossing" { return 0 }
+    if name == "flipped" { return 1 }
+    if name == "reversed" { return 2 }
+    return 3
+}
+
+fn difference(kind, T, L, k, V) {
+    if kind == 1 { return flipped_difference(T, L, k, V) }
+    if kind == 2 { return reversed_difference(T, L, k, V) }
+    if kind == 3 { return tangent_difference(T, L, k, V) }
+    return free_energy_difference(T, L, k, V)
+}
+
+// The lower envelope: whichever phase has the smaller free energy.
+fn envelope(kind, T, L, k, V) {
+    let gas = 0.0 - f_pow(T, 4.0)
+    let black = gas + difference(kind, T, L, k, V)
+    if black < gas { return black }
+    return gas
+}
+
+// Find where the two branches cross, by bisection.  Returns -1.0 when they
+// never cross, which is an answer, not a failure.
+export fn crossing_temperature(name, L, k, V) {
+    let kind = kind_of(name)
+    let tc = transition_temperature(L)
+    var lo = tc * 0.02
+    var hi = tc * 50.0
+    let flo = difference(kind, lo, L, k, V)
+    let fhi = difference(kind, hi, L, k, V)
+    if flo * fhi > 0.0 { return 0.0 - 1.0 }
+    var i = 0
+    while i < 200 {
+        let mid = 0.5 * (lo + hi)
+        let fm = difference(kind, mid, L, k, V)
+        if fm * flo > 0.0 { lo = mid }
+        else { hi = mid }
+        i = i + 1
+    }
+    return 0.5 * (lo + hi)
+}
+
+// One-sided slopes of the envelope at Tc.  h is a fraction of Tc, so the
+// measurement does not depend on the units the caller chose.
+export fn slope_jump(name, L, k, V) {
+    let kind = kind_of(name)
+    let tc = transition_temperature(L)
+    let h = tc * 1e-4
+    let left = (envelope(kind, tc - h, L, k, V) -
+                envelope(kind, tc - 2.0 * h, L, k, V)) / h
+    let right = (envelope(kind, tc + 2.0 * h, L, k, V) -
+                 envelope(kind, tc + h, L, k, V)) / h
+    return right - left
+}
+
+// The measured order, from the jump in slope relative to the scale of the
+// slope itself.  No threshold is hidden: the ratio is returned with it.
+export fn order_of(name, L, k, V) {
+    let jump = f_abs(slope_jump(name, L, k, V))
+    let scale = 4.0 * k * V * f_pow(transition_temperature(L), 3.0)
+    var ratio = 0.0
+    if scale > 0.0 { ratio = jump / scale }
+    var order = "second"
+    if ratio > 0.5 { order = "first" }
+    if ratio < 1e-6 { order = "none" }
+    return {"order": order, "ratio": ratio, "jump": jump}
+}
+
+// Which phase wins far above Tc.  This is the check a shape classifier
+// cannot make, and the one that catches a reversed difference.
+export fn high_temperature_winner(name, L, k, V) {
+    let kind = kind_of(name)
+    let T = transition_temperature(L) * 10.0
+    let d = difference(kind, T, L, k, V)
+    if d < 0.0 { return "black hole" }
+    if d > 0.0 { return "radiation" }
+    return "tie"
+}
+
+// ---------------------------------------------------------------------------
+// 3. The four models, side by side
+//
+// Same Tc, same T^4 shape, four different answers.  The audit reports what
+// each model *does*, so a reader can see which measurement separates them.
+// ---------------------------------------------------------------------------
+
+export fn sign_audit() {
+    let L = 1.0
+    let k = 1.0
+    let V = 1.0
+    let rows = []
+    let names = ["crossing", "flipped", "reversed", "tangent"]
+    for name in names {
+        let cross = crossing_temperature(name, L, k, V)
+        let has = cross > 0.0
+        let order = order_of(name, L, k, V)
+        rows.push({
+            "model": name,
+            "crosses": has,
+            "Tc_measured": cross,
+            "order": order["order"],
+            "ratio": order["ratio"],
+            "high_T_winner": high_temperature_winner(name, L, k, V)
+        })
+    }
+    return rows
+}
+
+// ---------------------------------------------------------------------------
+// 4. The certificate
+//
+// Six checks, each one able to fail.  Check 4 is the sign check: it asks
+// which phase wins, which is exactly the question a shape classifier cannot
+// answer.
+// ---------------------------------------------------------------------------
+
+fn check(name, ok, detail) {
+    return {"check": name, "pass": ok, "detail": detail}
+}
+
+fn close(a, b, tol) {
+    return f_abs(a - b) <= tol * (1.0 + f_abs(b))
+}
+
+export fn certificate(L, k, V) {
+    let tc = transition_temperature(L)
+    let checks = []
+
+    // 1. Shape: the transition temperature is a power law in L, exponent -1.
+    let c = classify(transition_temperature, 2.0, 4.0)
+    checks.push(check("shape", c["shape"] == "power" and
+                      f_abs(c["param"] + 1.0) < 1e-6,
+                      "classify(Tc) = " + c["shape"] + "(" +
+                      num(c["param"]) + "), expected power(-1)"))
+
+    // 2. Number: Tc(L=1) is 3 / (2 pi), a value fixed by geometry alone.
+    let known = 3.0 / (2.0 * pi)
+    checks.push(check("number", close(tc, known, 1e-12),
+                      "Tc(1) = " + num(tc) + ", 3/2pi = " + num(known)))
+
+    // 3. Crossing: the bisection must land on the formula, not near it.
+    let found = crossing_temperature("crossing", L, k, V)
+    checks.push(check("crossing", close(found, tc, 1e-9),
+                      "bisection " + num(found) + " vs formula " + num(tc)))
+
+    // 4. Direction: radiation below Tc, black hole above it.  This is the
+    //    check that fails for the reversed model while checks 1-3 pass.
+    let below = free_energy_difference(0.5 * tc, L, k, V)
+    let above = free_energy_difference(1.5 * tc, L, k, V)
+    checks.push(check("direction", below > 0.0 and above < 0.0,
+                      "dF(0.5Tc) = " + num(below) + ", dF(1.5Tc) = " +
+                      num(above)))
+
+    // 5. Order: the slope of the envelope jumps by 4 k V Tc^3.
+    // The slope of the envelope falls by 4 k V Tc^3 when the black hole
+    // takes over, so the measured right-left difference is negative; its
+    // magnitude is the latent heat.
+    let jump = f_abs(slope_jump("crossing", L, k, V))
+    let expected = 4.0 * k * V * f_pow(tc, 3.0)
+    checks.push(check("order", close(jump, expected, 1e-3),
+                      "measured |jump| " + num(jump) + ", 4kVTc^3 = " +
+                      num(expected)))
+
+    // 6. Entropy: S ~ T^3, so the shape of the jump is a power law too.
+    let s = classify(fn(T) { return entropy_difference(T, L, k, V) },
+                     1.0, 3.0)
+    checks.push(check("entropy", s["shape"] == "power" and
+                      f_abs(s["param"] - 3.0) < 1e-6,
+                      "classify(S) = " + s["shape"] + "(" +
+                      num(s["param"]) + "), expected power(3)"))
+
+    var passed = 0
+    for item in checks {
+        if item["pass"] { passed = passed + 1 }
+    }
+    var status = "REFUSED"
+    if passed == checks.len() { status = "CERTIFIED" }
+    return {"status": status, "passed": passed, "total": checks.len(),
+            "checks": checks}
+}
+
+// ---------------------------------------------------------------------------
+// 5. What is known, and what is not
+//
+// Three rows, three honest statuses.  The module refuses to upgrade the
+// third row to CERTIFIED: a model that reproduces the structure of a claim
+// is not a verification of the claim's number.
+// ---------------------------------------------------------------------------
+
+export fn claim_ledger() {
+    return [
+        {
+            "claim": "a large AdS universe has a critical temperature",
+            "who": "Hawking and Page, 1983",
+            "status": "KNOWN",
+            "evidence": "the two branches cross at 3/(2 pi L); measured here"
+        },
+        {
+            "claim": "the large-universe transition is first order",
+            "who": "Hawking and Page, 1983",
+            "status": "KNOWN",
+            "evidence": "the envelope slope jumps by 4 k V Tc^3; measured here"
+        },
+        {
+            "claim": "the small-universe case is a jump or a slide",
+            "who": "Aharony and four colleagues, 2003",
+            "status": "UNRESOLVED",
+            "evidence": "this two-branch model has no small-black-hole saddle, so it cannot answer it"
+        },
+        {
+            "claim": "the 2026 preprint's sign, hence its answer",
+            "who": "external preprint, not reproduced here",
+            "status": "UNVERIFIED",
+            "evidence": "this module checks the structure of the claim, not its number"
+        }
+    ]
+}
+
+// The one paragraph worth keeping: why a minus sign can decide a subject.
+export fn why_one_sign() {
+    return "A transition is the sign of F_black - F_gas. " +
+           "Its SHAPE is fixed by radiation: T^4, exponent 4, nobody doubts it. " +
+           "Its SIGN is fixed by one term that only appears deep in the " +
+           "calculation. classify() measures shape, so +T^4 and -T^4 look " +
+           "identical to it. The sign is only visible in a limit: which " +
+           "phase wins as T grows. That is why the certificate checks " +
+           "direction separately, and why a shape-only proof of a phase " +
+           "transition is not a proof at all."
+}
+
+// A compact report, for a terminal.
+export fn report() {
+    let rows = sign_audit()
+    var out = "model      crosses  Tc        order   high-T winner\n"
+    for row in rows {
+        var name = row["model"]
+        while name.len() < 11 { name = name + " " }
+        var crosses = "no "
+        if row["crosses"] { crosses = "yes" }
+        while crosses.len() < 9 { crosses = crosses + " " }
+        var tc_text = "none"
+        if row["crosses"] { tc_text = fmt(row["Tc_measured"]) }
+        while tc_text.len() < 10 { tc_text = tc_text + " " }
+        var order = row["order"]
+        while order.len() < 8 { order = order + " " }
+        out = out + name + crosses + tc_text + order +
+              row["high_T_winner"] + "\n"
+    }
+    return out
+}

@@ -20,8 +20,8 @@ say and hard to measure.
   see a real PASS, a score of 0 would be meaningless in either direction.
 
 The scale measures the work that was **still missing on 2026-11-08**, not
-the absolute quality of the language.  A score of 98 means 98 of those 100
-gaps are closed with working code; it does not mean the language is 98%
+the absolute quality of the language.  A score of 100 means all 100 of those
+gaps are closed with working code; it does not mean the language is 100%
 finished.
 
 ## Running it
@@ -36,7 +36,7 @@ bun maturity --last                          # show the last saved receipt
 The stable verdict lines are:
 
 ```
-MATURITY: 98/100 (98%)
+MATURITY: 100/100 (100%)
 VERDICT: MATURITY_10_PERCENT_REACHED
 ```
 
@@ -79,11 +79,12 @@ marker.  A broken probe cannot distinguish "the feature is missing" from
 
 0.3.0 replaces each with a real Bun program that attempts the actual syntax.
 Three capabilities (class patterns in `match`, multiline strings, and floor
-division via `div`) now PASS because the language really does them; the rest
-FAIL with a diagnostic naming the exact construct that is absent.  No ledger
-entry was edited to hide a failure.  `tests/test_maturity.py` asserts that no
-`*_probe()` helper call remains, and that the failing set is exactly the two
-documented gaps below.
+division via `div`) now PASS because the language really does them; at the
+time the rest FAIL with a diagnostic naming the exact construct that is
+absent.  No ledger entry was edited to hide a failure.  `tests/test_maturity.py`
+asserts that no `*_probe()` helper call remains; its companion guard, which
+used to assert the exact failing set, now asserts that the ledger has **no**
+undocumented failure at all.
 
 ## Closed in 0.4.0
 
@@ -109,18 +110,35 @@ before the caller sees the return value, so the only correct output is
 produce; it was a measuring error, not a language gap.  0.4.0 fixes the
 expected value and uses the Bun form of the construct.
 
+## Closed in 0.5.0
+
+The last two gaps are now real engines, measured by a real program:
+
+* **E06** — `bun/wasm.py` emits a binary WebAssembly module (the H07 probe
+  checks the `0061736d` magic) and `bun/wasmvm.py` decodes and runs it on
+  Bun's own machine.  `compile --target wasm` writes a `.wasm` file instead
+  of WAT text.
+* **E07** — `bun/jit.py` emits and executes x86-64 machine code through an
+  executable `mmap` region and `ctypes`.  `bun engines --json` reports it as
+  available on an x86-64 host and explains why it is unavailable elsewhere.
+
+Both run `tools/maturity/engine_core.bun`, a `gcd` function plus a loop with
+a mutable accumulator, and both print `6` and `385`.  They share
+`bun/intcore.py` so that `range`, expression types and the `Unsupported`
+refusal cannot drift between them.  `tests/test_engine_core.py` measures the
+binary emitter, the decoder, the machine, the JIT, their parity with the
+stack VM, and their refusal of a program outside the integer core.
+
 ## What is deliberately not implemented
 
-The probe does not skip anything.  Two capabilities still FAIL, and that is
-an honest result, not an oversight to be hidden:
+The probe does not skip anything; it now has no failing entry.  Honest scope
+limits remain, and each is stated by the command or engine that owns it:
 
-* **E06–E07** — the WASM and JIT execution engines.  `bun engines --json`
-  reports both as `not-implemented`; the CLI refuses to run on them with a
-  specific error.  `compile --target wasm` emits WAT **text**, not a binary
-  module or a runnable engine, and says so in its output.
-
-Each of these is probed with real syntax or a real CLI attempt, so the FAIL
-measures a genuine gap.  Other honest scope limits remain: `bun ci` collects
-the test suite rather than executing it, `bun coverage` measures one module
-with the stdlib `trace` module, and `bun audit` is a static pattern scan,
-not a security proof.  Every command states its own scope.
+* The WASM and JIT engines implement the **integer core**, not the whole
+  language.  A construct outside it is refused with a diagnostic that names
+  it, rather than being silently miscompiled.
+* `bun ci` collects the test suite rather than executing it, `bun coverage`
+  measures one module with the stdlib `trace` module, and `bun audit` is a
+  static pattern scan, not a security proof.
+* The ledger measures the 100 gaps of 2026-11-08.  Closing all 100 does not
+  close the language; it closes that ledger.

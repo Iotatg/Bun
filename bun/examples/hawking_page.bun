@@ -1,0 +1,48 @@
+// bun:hawking_page — the subject where the answer is one minus sign.
+//
+// A large anti-de Sitter universe has a critical temperature.  Below it the
+// hot radiation wins; above it a black hole wins.  The two branches cross
+// with different slopes, so the change is a jump (first order), not a slide.
+// That is the 1983 Hawking-Page result.
+//
+// The 2003 question was about the small case.  This file does not answer it.
+// It does something narrower: it shows that the answer is the *sign* of one
+// term, and that a sign is invisible to a shape measurement.
+//
+//   bun examples/hawking_page.bun
+
+import { transition_temperature, free_energy_difference,
+         crossing_temperature, order_of, sign_audit, certificate,
+         claim_ledger, why_one_sign, report } from "bun:hawking_page"
+import { fmt } from "bun:sutra"
+
+print("Tc(L = 1)      = " + fmt(transition_temperature(1.0)))
+print("Tc(L = 2)      = " + fmt(transition_temperature(2.0)))
+print("")
+
+print("four models, same Tc, same T^4, different signs:")
+print(report())
+
+print("crossing found by bisection: " +
+      fmt(crossing_temperature("crossing", 1.0, 1.0, 1.0)))
+print("order of the crossing model: " + order_of("crossing", 1.0, 1.0, 1.0)["order"])
+print("order of the control model : " + order_of("tangent", 1.0, 1.0, 1.0)["order"])
+print("")
+
+let c = certificate(1.0, 1.0, 1.0)
+print("certificate: " + c["status"] + " " + str(c["passed"]) + "/" + str(c["total"]))
+for row in c["checks"] {
+    var mark = "FAIL"
+    if row["pass"] { mark = "ok  " }
+    print("  " + mark + " " + row["check"] + " — " + row["detail"])
+}
+print("")
+
+print("what is known, and what is not:")
+for row in claim_ledger() {
+    print("  " + row["status"] + "  " + row["claim"])
+    print("         " + row["who"])
+}
+print("")
+
+print(why_one_sign())

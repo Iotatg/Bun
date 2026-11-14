@@ -50,6 +50,7 @@ BUILTIN_SIGNATURES = {
     "getenv": [((STRING,), ANY)],
     "getenv_or": [((STRING, STRING), STRING)],
     "json_parse": [((STRING,), ANY)],
+    "lang_table": [((STRING,), STRING)],
     "json_stringify": [((ANY,), STRING)],
     "http_get": [((STRING, DICT, ANY), DICT)],
     "http_post": [((STRING, DICT, STRING, ANY), DICT)],

@@ -338,6 +338,11 @@ DOCS = {
         "summary": "Parse a JSON document.",
         "example": "print(json_parse(\"[1, 2]\")[0])\n",
     },
+    "lang_table": {
+        "signature": "lang_table(code: string) -> string",
+        "summary": "Return a language pack's keyword table as JSON (\"\" if unknown).",
+        "example": "print(len(lang_table(\"hi\")) > 0)\n",
+    },
     "json_stringify": {
         "signature": "json_stringify(value: any) -> string",
         "summary": "Render a value as a JSON document.",

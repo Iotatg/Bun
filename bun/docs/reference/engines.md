@@ -1,6 +1,6 @@
-# The five engines — and why an interpreter is not a slow compiler
+# The engines — and why an interpreter is not a slow compiler
 
-Bun runs the same program on five engines. The choice is not about
+Bun runs the same program on several engines. The choice is not about
 "which one is best"; it is about which cost you are willing to pay.
 
 | Engine | What it does | Start | Hot loop |
@@ -10,13 +10,39 @@ Bun runs the same program on five engines. The choice is not about
 | `register` | register machine over the bytecode | fast | good |
 | `register --tier` | register machine plus the superinstructions | fast | better |
 | `c` | lowers the whole program to C, compiles, runs | slowest | fastest |
+| `wasm` | emits a binary WebAssembly module, runs it on Bun's own machine | fast | good |
+| `jit` | emits x86-64 machine code directly | fast | good |
+| `antar` | lowers to a control-flow graph and walks the graph | fast | good |
 
 ```bash
 bun --engine tree     program.bun
 bun --engine vm       program.bun
 bun --engine register --tier program.bun
 bun --engine c        program.bun
+bun --engine wasm     tools/maturity/engine_core.bun
+bun --engine jit      tools/maturity/engine_core.bun
+bun --engine antar    tools/maturity/antar_core.bun
 ```
+
+`wasm` and `jit` are **integer-core engines**: 64-bit integers, booleans,
+`if`, `while`, `for ... in range(...)`, calls between functions of that
+core, and `print` of an integer, a boolean or a string literal.  They are
+not partial versions of the whole language that quietly miscompile what
+they cannot do — a program outside the core is refused with a diagnostic
+naming the construct.  Both share `bun/intcore.py` for `range`, expression
+types and the `Unsupported` refusal, so the two native backends cannot drift
+into two dialects of Bun.
+
+`antar` is the graph engine, and it is the first engine whose lowering is a
+published artefact.  `bun/antar.py` turns `if`, `else if`, `while`,
+`for ... in range(...)`, `break`, `continue` and `return` into `khand`
+(straight-line blocks) that end in exactly one `nirnaya` (terminator), then
+walks that graph.  The same graph is printed by `bun antar`, checked by
+`verify()`, measured with `predecessors`, `reverse_postorder`, `dominators`
+and `loops`, and exported as JSON or Graphviz.  A construct outside the
+graph is refused by name, like the native engines, and the one semantic
+difference — one environment per flow, so no block scoping — is documented
+in [`antar.md`](antar.md).
 
 ## The two costs
 
@@ -73,6 +99,13 @@ machines sit in between.
 - **`c`** — the finished program: `bun compile --profile` shows where the
   time goes, `build_binary()` writes a standalone ELF that runs without
   Python at all.
+- **`wasm`** — a real binary `.wasm` module (LEB128 sections, a memory,
+  a data segment), decoded and executed by `bun/wasmvm.py`.  Two hidden
+  helpers make `/` and `%` obey Bun's floor-division semantics instead of
+  WebAssembly's truncation toward zero.
+- **`jit`** — x86-64 machine code emitted into an executable `mmap` region
+  and called through `ctypes`.  It is available only on an x86-64 host;
+  `bun engines --json` says why it is missing elsewhere.
 
 The REPL, `bun test --doc`, and the language packs all run on the
 interpreters, because their job is to answer a question in

@@ -1,3 +1,3 @@
-"""Bun programming language (v0.3)."""
+"""Bun programming language (v0.6)."""
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"

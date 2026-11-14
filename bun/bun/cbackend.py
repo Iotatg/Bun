@@ -94,7 +94,7 @@ LANGUAGE_BUILTINS = frozenset([
     "float", "type_of", "bool", "abs", "sum", "any", "all", "min", "max",
     "zip", "enumerate", "sorted", "reversed", "set", "next", "send",
     "dump", "secret", "url_encode", "url_decode",
-    "some", "none", "is_some", "is_none", "has_builtin",
+    "some", "none", "is_some", "is_none", "has_builtin", "lang_table",
     "read_file", "write_file", "append_file", "file_exists", "getenv",
     "getenv_or", "json_parse", "json_stringify", "http_get", "http_post",
     "http_get_bytes", "http_post_bytes", "http_post_multipart",

@@ -1,0 +1,19 @@
+// A real program of the integer core: a function, a loop with a mutable
+// accumulator, and arithmetic.  The WASM and JIT probes run this file, so
+// the two engines are measured on code, not on a single constant.
+fn gcd(a: int, b: int) -> int {
+    while b != 0 {
+        let t = b
+        b = a % b
+        a = t
+    }
+    return a
+}
+
+var total = 0
+for i in range(1, 11) {
+    total = total + i * i
+}
+
+print(gcd(48, 18))
+print(total)

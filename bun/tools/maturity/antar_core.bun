@@ -1,0 +1,40 @@
+// The Antar fixture: one program that exercises every control-flow shape
+// the graph supports — a loop inside a function, an else-if chain, a
+// labelled for with break and continue, a recursive call and a
+// short-circuit condition.  The graph, the verifier and the engine are
+// all measured on this file, not on a constant.
+
+fn gcd(a: int, b: int) -> int {
+    while b != 0 {
+        let t = b
+        b = a % b
+        a = t
+    }
+    return a
+}
+
+fn fib(n: int) -> int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn classify(n: int) -> string {
+    if n < 0 { return "neg" }
+    else if n == 0 { return "zero" }
+    return "pos"
+}
+
+var total = 0
+for i in range(1, 11) as outer {
+    if i % 3 == 0 { continue outer }
+    if i > 8 { break outer }
+    total = total + i
+}
+
+print(gcd(48, 18))
+print(fib(10))
+print(classify(-2))
+print(classify(0))
+print(classify(7))
+print(total)
+print((total > 0) and (gcd(9, 6) == 3))

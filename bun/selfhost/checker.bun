@@ -1,4 +1,4 @@
-import { tokenize } from "./lexer"
+import { tokenize, tokenize_lang } from "./lexer"
 import { parse } from "./parser"
 
 let TYPES = {
@@ -163,6 +163,7 @@ let BUILTIN_SIGNATURES = {
     "type_error": [[["string", "int", "int"], "null"]],
     "module_path": [[["string", "string"], "string"]],
     "read_module": [[["string", "string"], "string"]],
+    "lang_table": [[["string"], "string"]],
     "dump": [[["any"], "string"]],
     "secret": [[["any"], "secret"]],
     "url_encode": [[["string"], "string"]],
@@ -2819,6 +2820,48 @@ fn exported_binding(state, statement) {
     return null
 }
 
+// A module may carry its own `#lang:` directive, and then its keywords are
+// the words of that language even though the entry file has another one.
+// The host hands over the table; the lexing stays in Bun.
+fn module_lang(source) {
+    var first = source
+    let newline = index_of(source, "\n")
+    if newline >= 0 {
+        first = substring(source, 0, newline)
+    }
+    first = trim(first)
+    let prefixes = ["#!lang ", "#lang:", "#lang "]
+    var i = 0
+    while i < prefixes.len() {
+        let prefix = prefixes[i]
+        if starts_with(first, prefix) {
+            let code = trim(substring(first, prefix.len()))
+            if code != "" {
+                return code
+            }
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fn tokenize_module(source) {
+    let code = module_lang(source)
+    if code == null {
+        return tokenize(source)
+    }
+    var table = null
+    try {
+        let raw = lang_table(code)
+        if raw != "" {
+            table = json_parse(raw)
+        }
+    } catch err {
+        table = null
+    }
+    return tokenize_lang(source, table)
+}
+
 fn module_exports(state, path, node) {
     var full_path = null
     try {
@@ -2840,7 +2883,7 @@ fn module_exports(state, path, node) {
     }
     var program = null
     try {
-        program = parse(tokenize(source))
+        program = parse(tokenize_module(source))
     } catch err {
         fail(module_error_message(path, err), node)
     }

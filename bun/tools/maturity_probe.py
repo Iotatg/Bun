@@ -259,14 +259,16 @@ add("E04", Ea, "bytes slice without copying a list",
 add("E05", Ea, "bun compile --cache reuses a bytecode cache",
     cli_command(["compile", "--cache", "tools/maturity/format_ok.bun"],
                 "cached"))
-# E06/E07 are genuine gaps, measured with a real CLI attempt: the CLI lists
-# wasm/jit as known engine labels in `bun engines --json` (E09 passes) but
-# refuses to execute on them, so these FAIL with a specific diagnostic.
-# `compile --target wasm` emits WAT text, not a runnable engine.
+# E06/E07 run a real program of the integer core (a function, a loop with a
+# mutable accumulator, and arithmetic), not a single constant, so a passing
+# engine has to compile and run code.  Both engines refuse a program outside
+# that core by name; the refusal is measured in `tests/test_engine_core.py`.
 add("E06", Ea, "a WASM execution engine",
-    cli_command(["--engine", "wasm", "tools/maturity/format_ok.bun"], "42"))
-add("E07", Ea, "an optimising JIT engine",
-    cli_command(["--engine", "jit", "tools/maturity/format_ok.bun"], "42"))
+    cli_command(["--engine", "wasm", "tools/maturity/engine_core.bun"],
+                "6\n385"))
+add("E07", Ea, "a native x86-64 JIT engine",
+    cli_command(["--engine", "jit", "tools/maturity/engine_core.bun"],
+                "6\n385"))
 add("E08", Ea, "bun startup reports a measured budget",
     cli_command(["startup"], "ms"))
 add("E09", Ea, "bun engines lists pluggable engines",
@@ -340,9 +342,9 @@ add("H05", H, "bun pkg list --json returns manifest fields",
                  "tools/maturity/pkg_demo"], "name"))
 add("H06", H, "bun doc <module> --exports lists exports",
     cli_command(["doc", "bun:maturity_demo", "--exports"], "export"))
-add("H07", H, "bun compile --target wasm emits a module",
+add("H07", H, "bun compile --target wasm emits a binary module",
     cli_command(["compile", "--target", "wasm",
-                 "tools/maturity/format_ok.bun"], "wasm"))
+                 "tools/maturity/format_ok.bun"], "0061736d"))
 add("H08", H, "bun pkg search queries a registry",
     cli_command(["pkg", "search", "text"], "result"))
 add("H09", H, "bun pkg install --offline uses a cache",

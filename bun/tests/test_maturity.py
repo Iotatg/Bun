@@ -1,4 +1,4 @@
-"""Tests of the 0.2.0, 0.3.0 and 0.4.0 maturity waves.
+"""Tests of the 0.2.0, 0.3.0, 0.4.0 and 0.5.0 maturity waves.
 
 These tests check the things a checklist cannot: that the six registries
 really agree, that the runtime really carries every builtin, that both
@@ -10,6 +10,8 @@ capability is measured by a broken placeholder).
 
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 
@@ -258,9 +260,15 @@ def test_native_value_classes_are_zero_copy_and_compare_by_content():
 # ---------------------------------------------------------------------------
 
 def test_version_matches_the_version_file_and_package():
+    # The three version sources must agree.  No release number is hardcoded
+    # here: a version bump changes the VERSION file, not this test.
     version_file = open(os.path.join(ROOT, "VERSION"),
                         encoding="utf-8").read().strip()
-    assert __version__ == version_file == "0.4.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version_file), version_file
+    assert __version__ == version_file
+    project = open(os.path.join(ROOT, "pyproject.toml"),
+                   encoding="utf-8").read()
+    assert 'version = "%s"' % version_file in project
     assert cli("version", "--short").stdout.strip() == __version__
     assert "Bun %s" % __version__ in cli("version").stdout
 
@@ -309,13 +317,20 @@ def test_docs_html_and_exports(tmp_path):
                                     "--exports").stdout
 
 
-def test_compile_cache_and_wat_target():
+def test_compile_cache_and_binary_wasm_target():
     first = cli("compile", "--cache", "tools/maturity/format_ok.bun")
     second = cli("compile", "--cache", "tools/maturity/format_ok.bun")
     assert "cached:" in first.stdout and "cached:" in second.stdout
     assert "reused" in second.stdout
-    assert "wasm:" in cli("compile", "--target", "wasm",
-                          "tools/maturity/format_ok.bun").stdout
+    wasm = cli("compile", "--target", "wasm",
+               "tools/maturity/format_ok.bun")
+    assert "wasm:" in wasm.stdout
+    # 0.5.0 emits a real binary module, not WAT text.  The magic bytes are
+    # checked here as well as in the H07 capability probe.
+    assert "0061736d" in wasm.stdout
+    emitted = open(os.path.join(ROOT, "tools", "maturity",
+                                "format_ok.wasm"), "rb").read()
+    assert emitted[:4] == b"\x00asm"
 
 
 def test_check_finds_an_import_cycle():
@@ -324,12 +339,17 @@ def test_check_finds_an_import_cycle():
     assert "cycle: tools/maturity/cycle_a.bun -> " in result.stdout
 
 
-def test_engines_reports_what_is_and_is_not_implemented():
+def test_engines_reports_real_statuses():
+    # 0.5.0 closed the two engine gaps: `wasm` is a real binary backend and
+    # `jit` emits real x86-64 machine code.  Neither may be advertised as
+    # "not-implemented", and neither may silently disappear from the table.
     data = json.loads(cli("engines", "--json").stdout)
     names = {item["name"] for item in data["engines"]}
     assert {"tree", "vm", "register", "c", "wasm", "jit"} <= names
-    wasm = [item for item in data["engines"] if item["name"] == "wasm"][0]
-    assert wasm["status"] == "not-implemented"
+    by_name = {item["name"]: item for item in data["engines"]}
+    assert by_name["wasm"]["status"] == "available"
+    assert by_name["jit"]["status"] in (
+        "available", "unavailable (%s)" % platform.machine())
 
 
 def test_engineering_commands_do_real_work():
@@ -364,18 +384,19 @@ def test_no_capability_probe_is_an_undefined_helper_call():
         assert helper not in source, "broken placeholder probe: " + helper
 
 
-def test_the_remaining_failures_are_the_documented_gaps():
-    # The two open items are genuine, honestly-measured gaps, not broken
-    # instruments.  Lock this in so a future wave cannot silently "pass"
-    # them by editing the ledger into something easier to satisfy.
+def test_the_ledger_has_no_undocumented_failures():
+    # 0.5.0 closed E06 (WASM) and E07 (JIT) with real engines, so the
+    # ledger now has no open gap.  Keep this guard: a future wave may add
+    # capabilities, but it may not silently reintroduce a failing one by
+    # weakening a probe or by editing the ledger into something easier.
     result = subprocess.run(
         [sys.executable, os.path.join(ROOT, "tools", "maturity_probe.py"),
          "--json"], cwd=ROOT, capture_output=True, text=True, timeout=600)
     data = json.loads(result.stdout)
     failed = {item["id"] for item in data["results"]
               if not item["passed"]}
-    assert failed == {"E06", "E07"}, failed
-    assert data["passed"] == 98, data["passed"]
+    assert failed == set(), failed
+    assert data["passed"] == data["total"], data["passed"]
 
 
 def test_the_maturity_probe_reports_a_real_score():

@@ -7,8 +7,9 @@ stub that prints a word it has not earned:
     lint      really scans declarations and their uses
     pkg       really writes and reads a manifest, a lockfile and a cache
     doc       really renders the docs registry to HTML / lists real exports
-    compile   really compiles to bytecode, caches it, or emits a WAT module
+    compile   really compiles to bytecode, caches it, or emits a .wasm module
     check     really walks the import graph to find cycles
+    antar     really lowers a program to a control-flow graph and checks it
     startup   really measures the interpreter start-up
     parallel  really runs workers
     coverage  really measures line execution with `trace`
@@ -18,14 +19,16 @@ stub that prints a word it has not earned:
               forms Bun spells in its own way
 
 The scope of a command that is deliberately limited is stated in its
-output.  WASM emission is WAT text, not a binary module; `ci` collects the
-suite rather than executing it; `audit` is a static scan, not a proof.
+output.  WASM emission is a binary module with its own machine; `ci`
+collects the suite rather than executing it; `audit` is a static scan, not
+a proof.
 """
 
 import hashlib
 import html
 import json
 import os
+import platform
 import random
 import re
 import shutil
@@ -439,18 +442,20 @@ def _compile_code(path):
     return Compiler(path, source).compile_program(program), source
 
 
-def _wat_module(source, path):
-    """Emit a real (text-format) WebAssembly module for the program."""
-    numbers = re.findall(r"\b\d+\b", _strip_code(source))
-    lines = ["(module", "  ;; Emitted by `bun compile --target wasm`.",
-             "  ;; WAT text, not a binary .wasm module.",
-             "  (func (export \"main\") (result i32)"]
-    if numbers:
-        lines.append("    i32.const %s" % numbers[-1])
-    else:
-        lines.append("    i32.const 0")
-    lines += ["  )", ")"]
-    return "\n".join(lines) + "\n"
+def _parse_program(path):
+    from .checker import Checker
+    from .lexer import Lexer
+    from .parser import Parser
+    source = _read(path)
+    program = Parser(Lexer(source).tokenize()).parse()
+    Checker().check(program, base_dir=os.path.dirname(os.path.abspath(path)))
+    return program, source
+
+
+def _wasm_module(program, path):
+    """Build a binary WebAssembly module for the program."""
+    from . import wasm
+    return wasm.compile_program(program, path)
 
 
 def cmd_compile(args):
@@ -477,9 +482,13 @@ def cmd_compile(args):
                   % (cached, len(code["code"])))
         return 0
     if "--target" in args and "wasm" in args:
-        target = path + ".wat"
-        _write(target, _wat_module(source, path))
-        print("wasm: emitted WAT text module at %s" % target)
+        program, _ = _parse_program(path)
+        data = _wasm_module(program, path)
+        target = path[:-4] + ".wasm" if path.endswith(".bun") else path + ".wasm"
+        with open(target, "wb") as handle:
+            handle.write(data)
+        print("wasm: emitted %d bytes of binary WebAssembly (magic %s) at %s"
+              % (len(data), data[:4].hex(), target))
         return 0
     print("error: unsupported compile flags", file=sys.stderr)
     return 2
@@ -537,14 +546,26 @@ def cmd_check(args):
 # engines / startup / parallel
 # ---------------------------------------------------------------------------
 
+def _jit_status():
+    """The JIT emits x86-64 code, so it exists only on an x86-64 host."""
+    if sys.platform.startswith("linux") and platform.machine() in (
+            "x86_64", "AMD64"):
+        return "available"
+    return "unavailable (%s)" % platform.machine()
+
+
 ENGINES = [
     ("tree", "available", "tree-walking interpreter"),
     ("vm", "available", "stack virtual machine (default)"),
     ("register", "available", "register virtual machine"),
     ("c", "available" if shutil.which("cc") else "unavailable (no cc)",
      "native C backend"),
-    ("wasm", "not-implemented", "WebAssembly execution engine"),
-    ("jit", "not-implemented", "optimising JIT engine"),
+    ("wasm", "available",
+     "binary WebAssembly backend and Bun's own WebAssembly machine"),
+    ("jit", _jit_status(),
+     "x86-64 JIT for the integer core"),
+    ("antar", "available",
+     "unified control-flow graph (khand + nirnaya)"),
 ]
 
 
@@ -923,6 +944,59 @@ def cmd_originality(args):
     return 0
 
 
+def cmd_antar(args):
+    """Show, check and measure the Antar control-flow graph.
+
+    The command never runs the program.  It reads the source, checks it,
+    lowers it to one graph per function and then answers a question about
+    the shape: what the khand are, which edges join them, whether the
+    graph is structurally sound, and where the loops are.
+    """
+    from . import antar as graph_module
+
+    flags = {arg for arg in args if arg.startswith("--")}
+    paths = [arg for arg in args if not arg.startswith("--")]
+    if not paths:
+        print("error: expects a file", file=sys.stderr)
+        return 2
+    path = paths[0]
+    try:
+        program, _ = _parse_program(path)
+        graph = graph_module.lower_program(program, path)
+    except Exception as error:                           # noqa: BLE001
+        print("error: antar failed: %s" % error, file=sys.stderr)
+        return 1
+
+    check = graph_module.verify(graph)
+    if "--json" in flags:
+        print(graph_module.render_json(graph))
+        return 0 if check.ok else 1
+    if "--dot" in flags:
+        print(graph_module.render_dot(graph))
+        return 0 if check.ok else 1
+    if "--stats" in flags:
+        payload = dict(check.stats)
+        payload["loops"] = sum(len(graph_module.loops(flow))
+                               for flow in graph.all_flows())
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if check.ok else 1
+    if "--verify" in flags:
+        if check.ok:
+            print("ANTAR: OK (%d pravah, %d khand, %d kinara, %d dead)"
+                  % (check.stats["flows"], check.stats["blocks"],
+                     check.stats["edges"], len(check.stats["dead"])))
+        else:
+            for problem in check.problems:
+                print("ANTAR: %s" % problem)
+            print("ANTAR: %d problem(s)" % len(check.problems))
+        return 0 if check.ok else 1
+
+    print(graph_module.render_text(graph))
+    for problem in check.problems:
+        print("antar: %s" % problem, file=sys.stderr)
+    return 0 if check.ok else 1
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -934,6 +1008,7 @@ COMMANDS = {
     "release": cmd_release, "coverage": cmd_coverage, "fuzz": cmd_fuzz,
     "bench": cmd_bench, "audit": cmd_audit, "doctor": cmd_doctor,
     "maturity": cmd_maturity, "originality": cmd_originality,
+    "antar": cmd_antar,
 }
 
 # Flags that route an existing command to its toolchain implementation.

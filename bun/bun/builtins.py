@@ -228,6 +228,25 @@ def _getenv_or(args):
     return os.environ.get(args[0], args[1])
 
 
+def _lang_table(args):
+    """The localized-keyword table of a language pack, as a JSON string.
+
+    The table is data, not behaviour: it says which words a `#lang:` pack
+    spells for which token kind.  A front end can therefore read a
+    localized module without owning the language packs itself.  An unknown
+    code returns the empty string, which is a value the caller can test.
+    """
+    _one("lang_table", args)
+    if not isinstance(args[0], str):
+        raise BunRuntimeError("lang_table() expects a string")
+    from .lexer import Lexer
+    from . import langpacks
+    if not langpacks.has_pack(args[0]):
+        return ""
+    return json.dumps(Lexer("", lang=args[0]).lang_aliases(),
+                      ensure_ascii=False, sort_keys=True)
+
+
 def _json_parse(args):
     _one("json_parse", args)
     if not isinstance(args[0], str):
@@ -2195,6 +2214,7 @@ def register_builtins(env, program_args=None):
     env.define("getenv", Builtin("getenv", _getenv), False)
     env.define("getenv_or", Builtin("getenv_or", _getenv_or), False)
     env.define("json_parse", Builtin("json_parse", _json_parse), False)
+    env.define("lang_table", Builtin("lang_table", _lang_table), False)
     env.define("json_stringify", Builtin("json_stringify", _json_stringify), False)
     env.define("http_get", Builtin("http_get", _http_get), False)
     env.define("http_post", Builtin("http_post", _http_post), False)

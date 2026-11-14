@@ -22,8 +22,10 @@ Usage:
   bun <file.bun>                  run a Bun program
   bun -                           run a Bun program from the standard input
   bun --no-check <file.bun>       run without type checking
-  bun --engine tree|vm|register|c <file.bun> choose the execution engine (default: vm)
+  bun --engine tree|vm|register|c|wasm|jit|antar <file.bun> choose the execution
+                                  engine (default: vm)
   bun --engine register --tier <file.bun> run with the superinstructions
+  bun antar <file.bun> [--json|--dot|--verify|--stats]  show the control-flow graph
   bun --front-end python|bun <file.bun> choose the front end (default: python)
   bun --lang <code>|auto <file.bun>  write Bun in another language (see: bun langs)
   bun langs [--json]              list the language packs of the keywords
@@ -79,6 +81,19 @@ def run_source(source, filename="<stdin>", check=True, engine="vm",
     if engine == "c":
         return _run_with_c_backend(source, filename, program, program_args,
                                    base_dir)
+    if engine == "wasm":
+        from . import wasm, wasmvm
+        data = wasm.compile_program(program, filename)
+        wasmvm.run_module(wasmvm.decode(data), "main")
+        return {}
+    if engine == "jit":
+        from .jit import run_program
+        run_program(program, filename)
+        return {}
+    if engine == "antar":
+        from .antar import run_program as run_antar
+        run_antar(program, filename, program_args, base_dir=base_dir)
+        return {}
     if engine == "vm":
         vm = VM(program_args)
         code = Compiler(filename, source).compile_program(program)
@@ -546,10 +561,10 @@ def main(argv=None):
         check = False
     if "--engine" in args:
         index = args.index("--engine")
-        if index + 1 >= len(args) or args[index + 1] not in ("tree", "vm",
-                                                             "register", "c"):
-            print("error: --engine expects 'tree', 'vm', 'register' or 'c'",
-                  file=sys.stderr)
+        if index + 1 >= len(args) or args[index + 1] not in (
+                "tree", "vm", "register", "c", "wasm", "jit", "antar"):
+            print("error: --engine expects 'tree', 'vm', 'register', 'c',"
+                  " 'wasm', 'jit' or 'antar'", file=sys.stderr)
             return 2
         engine = args[index + 1]
         del args[index:index + 2]
